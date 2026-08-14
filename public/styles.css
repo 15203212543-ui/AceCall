@@ -78,6 +78,8 @@ p { color: var(--muted); }
 .input-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 17px; padding-top: 22px; }
 label > span, .transcript-label > span { display: block; margin-bottom: 7px; color: #34443c; font-size: 12px; font-weight: 700; }
 label em { color: var(--amber); font-style: normal; font-size: 10px; margin-left: 5px; }
+.field-label { display: block; margin-bottom: 7px; color: #34443c; font-size: 12px; font-weight: 700; }
+.field-label em { color: var(--amber); font-style: normal; font-size: 10px; margin-left: 5px; }
 .file-trigger { float: right; padding: 0; border: 0; background: transparent; color: var(--blue); font-size: 11px; }
 .full { grid-column: 1 / -1; }
 input, textarea { width: 100%; border: 1px solid #cbd5ce; border-radius: 4px; background: #fcfdfc; color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s, background .15s; }
@@ -86,6 +88,19 @@ input { height: 40px; padding: 0 11px; }
 textarea { padding: 11px; resize: vertical; line-height: 1.65; }
 input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(23,107,75,.1); }
 textarea:focus, input:focus { background: white; }
+.resume-upload { width: 100%; min-height: 76px; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 12px; padding: 13px 15px; text-align: left; border: 1px dashed #9fb2a7; border-radius: 5px; background: #f6faf8; color: var(--ink); }
+.resume-upload:hover { border-color: var(--green); background: #f0f7f3; }
+.resume-upload.dragging { border-style: solid; border-color: var(--green); background: #e9f5ef; }
+.upload-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: #dcece4; color: var(--green); font-size: 20px; font-weight: 700; }
+.resume-upload b, .resume-upload small { display: block; }
+.resume-upload b { font-size: 12px; }
+.resume-upload small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.upload-action { padding: 7px 10px; border: 1px solid #c2cec7; border-radius: 4px; background: white; color: var(--green); font-size: 11px; font-weight: 700; }
+.parse-status { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; margin-top: 9px; padding: 10px 12px; border: 1px solid #cfe0d6; border-radius: 4px; background: #f2f8f5; font-size: 11px; }
+.parse-status strong { display: block; color: var(--ink); }
+.parse-status small { color: var(--muted); }
+.parse-status.error { border-color: #e4c4c1; background: #fff5f4; color: var(--red); }
+.resume-text { display: block; margin-top: 12px; }
 .action-row { display: flex; justify-content: flex-end; padding-top: 20px; }
 .result-area { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 22px; }
 .hidden { display: none; }
@@ -94,6 +109,16 @@ textarea:focus, input:focus { background: white; }
 .result-block.wide { grid-column: 1 / -1; }
 .result-block h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; color: var(--green); }
 .result-block p, .result-block li { font-size: 12px; line-height: 1.65; }
+.evidence-item { padding: 9px 0; border-bottom: 1px solid #e8ece9; }
+.evidence-item:last-child { border-bottom: 0; }
+.evidence-item strong { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.evidence-item p { margin: 4px 0 0; color: var(--muted); }
+.confidence, .priority, .source-tag { flex: 0 0 auto; padding: 2px 6px; border-radius: 3px; background: #e8f1ed; color: var(--green); font-size: 9px; font-weight: 700; }
+.priority.high { background: #fff0df; color: var(--amber); }
+.summary-band { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+.summary-stat { padding: 12px; border: 1px solid var(--line); background: #fbfcfb; }
+.summary-stat strong { display: block; font-size: 20px; }
+.summary-stat span { color: var(--muted); font-size: 10px; }
 .result-block ul { margin: 0; padding-left: 18px; }
 .checklist { margin: 20px 0; }
 .check-item { display: grid; grid-template-columns: 22px 100px 1fr; gap: 8px; padding: 10px 5px; border-bottom: 1px solid #edf0ee; align-items: start; font-size: 12px; }

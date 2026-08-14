@@ -1,7 +1,7 @@
 const storageKey = 'acecall-cases-v1';
 const jobStorageKey = 'acecall-jobs-v1';
 const industries = ['全部行业', '金融', '互联网', '企业服务', '消费零售', '制造业', '其他'];
-const state = { cases: loadCases(), jobs: loadJobs(), selectedJobId: null, currentId: null, preparation: null, report: null };
+const state = { cases: loadCases(), jobs: loadJobs(), selectedJobId: null, currentId: null, preparation: null, communicationSummary: null, report: null, resumeMeta: null };
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -17,6 +17,7 @@ function bindEvents() {
   $$('.step').forEach(button => button.addEventListener('click', () => showStep(button.dataset.step)));
   $('#prepareButton').addEventListener('click', prepareCase);
   $('#reportButton').addEventListener('click', generateReport);
+  $('#synthesizeButton').addEventListener('click', synthesizeReport);
   $('#newCaseButton').addEventListener('click', () => newCase(true));
   $('#exportButton').addEventListener('click', exportReport);
   $('#deleteButton').addEventListener('click', deleteCurrentCase);
@@ -29,6 +30,9 @@ function bindEvents() {
   $('#cancelJobButton').addEventListener('click', closeJobDialog);
   $('#jobForm').addEventListener('submit', saveJob);
   $('#deleteJobButton').addEventListener('click', deleteJob);
+  $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
+  $('#resumeFileInput').addEventListener('change', event => handleResumeFile(event.target.files?.[0]));
+  bindResumeDropzone();
   $$('.file-trigger').forEach(button => button.addEventListener('click', () => selectTextFile(button.dataset.target)));
 }
 
@@ -57,9 +61,12 @@ async function prepareCase() {
   await withLoading($('#prepareButton'), '正在分析', async () => {
     const { result, mode } = await postGenerate(payload);
     state.preparation = result;
+    state.communicationSummary = null;
+    state.report = null;
     renderPreparation(result);
     renderChecklist(result.questions || []);
-    saveCurrent({ ...payload, preparation: result, mode });
+    resetDownstreamOutputs();
+    saveCurrent({ ...payload, preparation: result, communicationSummary: null, report: null, mode });
     toast('初筛方案已生成');
   });
 }
@@ -67,7 +74,7 @@ async function prepareCase() {
 async function generateReport() {
   if (!$('#consentConfirmed').checked) return toast('请先确认已完成录音或转写告知');
   const payload = {
-    action: 'report',
+    action: 'summarize',
     roleName: $('#roleName').value.trim(),
     candidateName: $('#candidateName').value.trim(),
     jd: $('#jdInput').value.trim(),
@@ -79,11 +86,24 @@ async function generateReport() {
   };
   await withLoading($('#reportButton'), '正在生成', async () => {
     const { result, mode } = await postGenerate(payload);
+    state.communicationSummary = result;
+    state.report = null;
+    renderCommunicationSummary(result);
+    $('#synthesizeButton').disabled = false;
+    saveCurrent({ ...payload, communicationSummary: result, report: null, mode });
+    toast('沟通总结已生成，请先核对后再综合审核');
+  });
+}
+
+async function synthesizeReport() {
+  if (!state.preparation || !state.communicationSummary) return toast('请先完成初筛方案和沟通总结');
+  const payload = { action: 'synthesize', roleName: $('#roleName').value.trim(), jd: $('#jdInput').value.trim(), rules: $('#rulesInput').value.trim(), keywords: parseKeywords($('#keywordsInput').value), preparation: state.preparation, communicationSummary: state.communicationSummary };
+  await withLoading($('#synthesizeButton'), '正在综合', async () => {
+    const { result, mode } = await postGenerate(payload);
     state.report = result;
     renderReport(result);
-    saveCurrent({ ...payload, report: result, mode });
-    showStep('3');
-    toast('报告已生成，请进行人工审核');
+    saveCurrent({ report: result, mode });
+    toast('综合审核已生成，请进行人工确认');
   });
 }
 
@@ -100,23 +120,34 @@ function generateLocalDemo(payload) {
     const terms = [...new Set(['证券', '场外期权', '衍生品', '交易', '产品', '研发', '量化', '风险', '管理', '金融科技', '询报价', '生命周期', ...(payload.keywords || [])])];
     const shared = terms.filter(term => payload.jd.includes(term) && payload.resume.includes(term));
     return {
-      summary: `${payload.candidateName || '候选人'}正在评估${payload.roleName || '目标岗位'}。简历体现了相关金融科技经历，工作年限、职责边界、项目结果及求职条件仍需在电话中核实。`,
-      matches: shared.length ? shared.slice(0, 5).map(term => `岗位与简历均提及：${term}`) : ['具备待进一步核实的相关经历'],
-      risks: ['项目中的个人职责边界未量化', '项目结果与业务影响需核实', '期望薪资与到岗周期待确认'],
-      verification: ['核心项目是否真实上线及使用方', '个人负责模块与团队分工', '当前薪资、期望薪资与到岗时间'],
+      summary: { headline: `${payload.candidateName || '候选人'}正在评估${payload.roleName || '目标岗位'}`, experience: '简历体现相关从业经历，具体年限需在电话中核实', relevantBackground: shared.length ? `共同关键词：${shared.join('、')}` : '岗位相关背景需进一步确认', openFacts: '个人职责、项目结果、薪资和到岗条件仍待核验' },
+      matches: (shared.length ? shared.slice(0, 5) : ['相关经历']).map(term => ({ requirement: term, evidence: `岗位与简历均提及“${term}”`, confidence: term === '相关经历' ? '低' : '中' })),
+      risks: [{ risk: '个人职责边界不清', evidence: '简历未量化个人决策范围', impact: '可能无法区分参与和主导经验' }, { risk: '项目结果缺少量化', evidence: '未提供上线效果或业务指标', impact: '难以判断实际交付质量' }],
+      verification: [{ item: '核心项目是否上线及使用方', reason: '核实真实性和业务影响', priority: '高' }, { item: '个人负责模块与团队分工', reason: '确认贡献边界', priority: '高' }, { item: '薪资、到岗和竞业条件', reason: '确认推进可行性', priority: '中' }],
       questions: localQuestions(payload.rules)
     };
   }
+  if (payload.action === 'summarize') return generateLocalSummary(payload);
+  return generateLocalSynthesis(payload);
+}
+
+function generateLocalSummary(payload) {
   const statements = payload.transcript.split(/[。！？\n]/).map(item => item.trim()).filter(item => item.length > 10);
   const readField = label => payload.transcript.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim() || '待确认';
+  const questions = payload.preparation?.questions || [];
   return {
-    basicInfo: { currentCompanyRole: readField('目前'), location: readField('地点'), currentSalary: readField('当前薪资'), expectedSalary: readField('期望薪资'), availability: readField('到岗'), motivation: readField('考虑机会'), nonCompete: readField('竞业') },
-    capabilities: ['已提供核心经历陈述，需由招聘人员核对原始转写', '项目职责与成果仍需结合岗位标准判断'],
-    evidence: statements.slice(0, 4),
-    risks: ['本地演示模式不进行事实推断', '未明确回答的字段均应补充核实'],
-    conclusion: '信息不足', conclusionReason: '已有信息可形成初步纪要，但不足以自动得出推荐结论。', nextStep: '补充电话沟通',
+    overview: `本次沟通识别到 ${statements.length} 条候选人陈述，请对照原始转写核验。`,
+    confirmed: statements.slice(0, 3).map(item => ({ item: '候选人陈述', evidence: item })), contradicted: [],
+    missing: [{ item: '量化业务结果', evidence: '转写中未识别到明确数据' }],
+    questionCoverage: { covered: Math.min(statements.length, questions.length), total: questions.length, unanswered: questions.slice(statements.length, statements.length + 3).map(item => item.question) },
+    keyFacts: { currentCompanyRole: readField('目前'), location: readField('地点'), currentSalary: readField('当前薪资'), expectedSalary: readField('期望薪资'), availability: readField('到岗'), motivation: readField('考虑机会'), nonCompete: readField('竞业') },
+    candidateSignals: ['已提供部分核心经历陈述', '项目结果仍需量化核实'],
     followUps: ['请确认个人负责模块及决策范围', '请量化项目上线结果或业务影响', '请确认薪资、到岗时间与竞业限制']
   };
+}
+
+function generateLocalSynthesis(payload) {
+  return { basicInfo: payload.communicationSummary?.keyFacts || {}, capabilities: (payload.preparation?.matches || []).slice(0, 4).map(item => ({ item: item.requirement, evidence: item.evidence, assessment: '信息不足' })), evidence: (payload.communicationSummary?.confirmed || []).map(item => item.evidence), conflicts: payload.communicationSummary?.contradicted || [], risks: [...(payload.communicationSummary?.missing || []).map(item => item.item), '本地演示模式不进行最终事实推断'], conclusion: '信息不足', conclusionReason: '初筛方案和沟通总结已经合并，但关键项目结果仍缺少充分证据。', nextStep: '补充电话沟通', followUps: payload.communicationSummary?.followUps || [] };
 }
 
 function localQuestions(rules) {
@@ -133,16 +164,17 @@ function localQuestions(rules) {
     ['合规', '是否存在竞业限制或其他入职约束？', '识别入职风险']
   ];
   if (rules?.trim()) rows.push(['岗位规则', '你最符合哪项岗位要求，仍需补足哪一项？', '针对岗位标准补充事实']);
-  return rows.map(([category, question, reason]) => ({ category, question, reason }));
+  return rows.map(([category, question, reason], index) => ({ category, question, reason, source: index < 6 ? '重点核验' : '通用' }));
 }
 
 function renderPreparation(result) {
+  const summary = typeof result.summary === 'string' ? { headline: result.summary } : result.summary || {};
   $('#prepareResult').classList.remove('hidden');
   $('#prepareResult').innerHTML = `<div class="result-grid">
-    ${block('候选人摘要', `<p>${escapeHtml(result.summary)}</p>`, true)}
-    ${block('匹配点', list(result.matches))}
-    ${block('风险点', list(result.risks))}
-    ${block('重点核验', list(result.verification), true)}
+    ${block('候选人摘要', `<div class="evidence-item"><strong>${escapeHtml(summary.headline || '候选人概况')}</strong><p>${escapeHtml(summary.experience || '')}</p><p>${escapeHtml(summary.relevantBackground || '')}</p><p>${escapeHtml(summary.openFacts || '')}</p></div>`, true)}
+    ${block('匹配点', evidenceList(result.matches, 'requirement', 'evidence', 'confidence'))}
+    ${block('风险点', evidenceList(result.risks, 'risk', 'evidence', 'impact'))}
+    ${block('重点核验', evidenceList(result.verification, 'item', 'reason', 'priority'), true)}
   </div>`;
 }
 
@@ -150,8 +182,22 @@ function renderChecklist(questions) {
   const container = $('#questionChecklist');
   container.className = 'checklist';
   container.innerHTML = questions.map((item, index) => `<label class="check-item">
-    <input type="checkbox" data-question="${index}"><b>${escapeHtml(item.category)}</b><span>${escapeHtml(item.question)}<br><small>${escapeHtml(item.reason || '')}</small></span>
+    <input type="checkbox" data-question="${index}"><b>${escapeHtml(item.category)}</b><span>${escapeHtml(item.question)} <i class="source-tag">${escapeHtml(item.source || '初筛方案')}</i><br><small>${escapeHtml(item.reason || '')}</small></span>
   </label>`).join('');
+}
+
+function renderCommunicationSummary(summary) {
+  const coverage = summary.questionCoverage || { covered: 0, total: 0, unanswered: [] };
+  $('#communicationResult').classList.remove('hidden');
+  $('#communicationResult').innerHTML = `<div class="summary-band"><div class="summary-stat"><strong>${coverage.covered || 0}</strong><span>已覆盖问题</span></div><div class="summary-stat"><strong>${Math.max((coverage.total || 0) - (coverage.covered || 0), 0)}</strong><span>未覆盖问题</span></div><div class="summary-stat"><strong>${(summary.confirmed || []).length}</strong><span>确认事实</span></div></div><div class="result-grid">
+    ${block('沟通概览', `<p>${escapeHtml(summary.overview || '')}</p>`, true)}
+    ${block('已确认信息', evidenceList(summary.confirmed, 'item', 'evidence'))}
+    ${block('矛盾或修正', evidenceList(summary.contradicted, 'item', 'evidence'))}
+    ${block('仍缺失信息', evidenceList(summary.missing, 'item', 'evidence'))}
+    ${block('关键条件', `<dl class="facts">${Object.entries(summary.keyFacts || {}).map(([key,value]) => `<div><dt>${escapeHtml(infoLabels[key] || key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`)}
+    ${block('未覆盖问题', list(coverage.unanswered), true)}
+  </div><div class="action-row"><button class="secondary-button" type="button" id="goSynthesisButton">进入综合审核 →</button></div>`;
+  $('#goSynthesisButton').addEventListener('click', () => showStep('3'));
 }
 
 function renderReport(report) {
@@ -162,8 +208,9 @@ function renderReport(report) {
     <label><span>最终动作</span><select id="finalDecision">${['推荐业务面试','补充电话沟通','转入其他岗位','暂不推进','纳入人才库长期维护'].map(value => `<option ${value === report.nextStep ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
   </div><div class="report-grid" style="margin-top:14px">
     ${block('基本信息', `<dl class="facts">${Object.entries(info).map(([key,value]) => `<div><dt>${escapeHtml(infoLabels[key] || key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`, true)}
-    ${block('能力与经历', list(report.capabilities))}
+    ${block('能力与经历', evidenceList(report.capabilities, 'item', 'evidence', 'assessment'))}
     ${block('事实依据', list(report.evidence))}
+    ${block('材料矛盾', evidenceList(report.conflicts, 'topic', 'callEvidence'))}
     ${block('风险与缺口', list(report.risks))}
     ${block('建议补充问题', list(report.followUps))}
   </div><section class="review-box"><label><span>招聘人员审核备注</span><textarea id="reviewNotes" rows="4" placeholder="补充事实核验、判断依据或后续安排">${escapeHtml(report.reviewNotes || '')}</textarea></label><label class="review-confirm"><input type="checkbox" id="reviewConfirmed" ${report.reviewConfirmed ? 'checked' : ''}><span>我已核对原始材料并确认最终动作</span></label></section>`;
@@ -179,6 +226,14 @@ const infoLabels = { currentCompanyRole: '当前公司及职位', location: '当
 
 function block(title, content, wide = false) { return `<section class="result-block ${wide ? 'wide' : ''}"><h3>${title}</h3>${content}</section>`; }
 function list(items = []) { return `<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>待确认</li>'}</ul>`; }
+function evidenceList(items = [], titleKey, detailKey, tagKey) {
+  if (!items.length) return '<p>暂无</p>';
+  return items.map(item => {
+    if (typeof item === 'string') return `<div class="evidence-item"><strong>${escapeHtml(item)}</strong></div>`;
+    const tag = tagKey && item[tagKey] ? `<span class="${tagKey === 'priority' ? `priority ${item[tagKey] === '高' ? 'high' : ''}` : 'confidence'}">${escapeHtml(item[tagKey])}</span>` : '';
+    return `<div class="evidence-item"><strong>${escapeHtml(item[titleKey] || '待确认')}${tag}</strong><p>${escapeHtml(item[detailKey] || '')}</p></div>`;
+  }).join('');
+}
 function escapeHtml(value = '') { return String(value).replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char])); }
 
 function showStep(step) {
@@ -190,7 +245,7 @@ function saveCurrent(patch) {
   const now = new Date().toISOString();
   const id = state.currentId || crypto.randomUUID();
   const old = state.cases.find(item => item.id === id) || { id, createdAt: now };
-  const current = { ...old, ...patch, id, jobId: state.selectedJobId, updatedAt: now, roleName: $('#roleName').value.trim(), candidateName: $('#candidateName').value.trim(), jd: $('#jdInput').value, resume: $('#resumeInput').value, rules: $('#rulesInput').value, keywords: parseKeywords($('#keywordsInput').value), transcript: $('#transcriptInput').value, consentConfirmed: $('#consentConfirmed').checked };
+  const current = { ...old, ...patch, id, jobId: state.selectedJobId, updatedAt: now, roleName: $('#roleName').value.trim(), candidateName: $('#candidateName').value.trim(), jd: $('#jdInput').value, resume: $('#resumeInput').value, resumeMeta: state.resumeMeta, rules: $('#rulesInput').value, keywords: parseKeywords($('#keywordsInput').value), transcript: $('#transcriptInput').value, consentConfirmed: $('#consentConfirmed').checked };
   state.currentId = id;
   state.cases = [current, ...state.cases.filter(item => item.id !== id)];
   localStorage.setItem(storageKey, JSON.stringify(state.cases));
@@ -223,7 +278,9 @@ function openCase(id) {
   if (!item) return;
   state.currentId = id;
   state.preparation = item.preparation || null;
+  state.communicationSummary = item.communicationSummary || null;
   state.report = item.report || null;
+  state.resumeMeta = item.resumeMeta || null;
   $('#roleName').value = item.roleName || '';
   $('#candidateName').value = item.candidateName || '';
   $('#jdInput').value = item.jd || '';
@@ -232,17 +289,22 @@ function openCase(id) {
   $('#keywordsInput').value = (item.keywords || []).join('、');
   $('#transcriptInput').value = item.transcript || '';
   $('#consentConfirmed').checked = Boolean(item.consentConfirmed);
+  renderResumeStatus(state.resumeMeta);
   $('#caseTitle').textContent = item.candidateName ? `${item.candidateName} · ${item.roleName || '初筛'}` : '新候选人初筛';
+  resetDownstreamOutputs();
   if (item.preparation) { renderPreparation(item.preparation); renderChecklist(item.preparation.questions || []); } else resetOutputs();
-  if (item.report) renderReport(item.report); else $('#reportResult').className = 'report-layout empty-state';
+  if (item.communicationSummary) renderCommunicationSummary(item.communicationSummary);
+  $('#synthesizeButton').disabled = !item.communicationSummary;
+  if (item.report) renderReport(item.report);
   renderCaseList();
 }
 
 function newCase(showMessage) {
-  state.currentId = null; state.preparation = null; state.report = null;
+  state.currentId = null; state.preparation = null; state.communicationSummary = null; state.report = null; state.resumeMeta = null;
   ['roleName','candidateName','jdInput','resumeInput','rulesInput','keywordsInput','transcriptInput'].forEach(id => $(`#${id}`).value = '');
   applySelectedJob();
   $('#consentConfirmed').checked = false;
+  renderResumeStatus(null);
   $('#caseTitle').textContent = '新候选人初筛';
   resetOutputs();
   showStep('1');
@@ -255,15 +317,22 @@ function resetOutputs() {
   $('#prepareResult').innerHTML = '';
   $('#questionChecklist').className = 'checklist empty-state';
   $('#questionChecklist').textContent = '生成初筛方案后，问题清单会显示在这里。';
+  resetDownstreamOutputs();
+}
+
+function resetDownstreamOutputs() {
+  $('#communicationResult').className = 'result-area hidden';
+  $('#communicationResult').innerHTML = '';
+  $('#synthesizeButton').disabled = true;
   $('#reportResult').className = 'report-layout empty-state';
-  $('#reportResult').textContent = '完成电话记录后，这里将生成结构化报告。';
+  $('#reportResult').textContent = '完成并核对沟通总结后，可生成综合审核。';
 }
 
 function exportReport() {
-  if (!state.report) return toast('请先生成初筛报告');
+  if (!state.report) return toast('请先生成综合审核');
   if (!state.report.reviewConfirmed) return toast('请先完成人工审核确认');
   const item = state.cases.find(entry => entry.id === state.currentId) || {};
-  const report = { candidate: item.candidateName, role: item.roleName, generatedAt: new Date().toISOString(), preparation: state.preparation, report: state.report };
+  const report = { candidate: item.candidateName, role: item.roleName, generatedAt: new Date().toISOString(), preparation: state.preparation, communicationSummary: state.communicationSummary, report: state.report };
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
@@ -291,6 +360,66 @@ function selectTextFile(targetId) {
     toast(`已导入 ${file.name}`);
   };
   input.click();
+}
+
+function bindResumeDropzone() {
+  const zone = $('#resumeUploadButton');
+  for (const eventName of ['dragenter', 'dragover']) zone.addEventListener(eventName, event => { event.preventDefault(); zone.classList.add('dragging'); });
+  for (const eventName of ['dragleave', 'drop']) zone.addEventListener(eventName, event => { event.preventDefault(); zone.classList.remove('dragging'); });
+  zone.addEventListener('drop', event => handleResumeFile(event.dataTransfer?.files?.[0]));
+}
+
+async function handleResumeFile(file) {
+  if (!file) return;
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  if (!['pdf', 'docx', 'txt', 'md'].includes(extension)) return renderResumeError('仅支持 PDF、DOCX、TXT 和 MD 文件');
+  if (file.size > 10_000_000) return renderResumeError('简历文件不能超过 10MB');
+  renderResumeLoading(file.name);
+  try {
+    let result;
+    if (location.protocol === 'file:' && ['txt', 'md'].includes(extension)) {
+      const text = (await file.text()).replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      if (text.length < 20) throw new Error('未提取到足够文字');
+      result = { text, metadata: { fileName: file.name, extension: extension.toUpperCase(), characters: text.length } };
+    } else if (location.protocol === 'file:') {
+      throw new Error('PDF/DOCX 解析需要运行本地服务：在项目目录执行 npm start');
+    } else {
+      const response = await fetch(`/api/parse-resume?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+      result = await response.json();
+      if (!response.ok) throw new Error(result.error || '简历解析失败');
+    }
+    $('#resumeInput').value = result.text;
+    state.resumeMeta = result.metadata;
+    if (!$('#candidateName').value.trim() && result.metadata.candidateName) $('#candidateName').value = result.metadata.candidateName;
+    renderResumeStatus(result.metadata);
+    toast('简历文字已提取，请核对解析内容');
+  } catch (error) {
+    state.resumeMeta = null;
+    renderResumeError(error.message);
+  } finally {
+    $('#resumeFileInput').value = '';
+  }
+}
+
+function renderResumeLoading(fileName) {
+  const container = $('#resumeParseStatus');
+  container.className = 'parse-status';
+  container.innerHTML = `<span><strong>正在解析 ${escapeHtml(fileName)}</strong><small>正在提取正文和基础字段…</small></span><span>处理中</span>`;
+}
+
+function renderResumeStatus(metadata) {
+  const container = $('#resumeParseStatus');
+  if (!metadata) { container.className = 'parse-status hidden'; container.innerHTML = ''; return; }
+  const basics = [metadata.experienceYears ? `${metadata.experienceYears}年经验` : '', metadata.education || '', metadata.email ? '已识别邮箱' : '', metadata.phone ? '已识别电话' : ''].filter(Boolean).join(' · ');
+  container.className = 'parse-status';
+  container.innerHTML = `<span><strong>${escapeHtml(metadata.fileName || '已导入简历')}</strong><small>${escapeHtml(metadata.extension || 'TEXT')} · ${metadata.characters || 0} 字${basics ? ` · ${escapeHtml(basics)}` : ''}</small></span><span>解析完成</span>`;
+}
+
+function renderResumeError(message) {
+  const container = $('#resumeParseStatus');
+  container.className = 'parse-status error';
+  container.innerHTML = `<span><strong>解析失败</strong><small>${escapeHtml(message)}</small></span><span>请重试</span>`;
+  toast(message);
 }
 
 function loadSample() {

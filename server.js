@@ -34,6 +34,13 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { result, mode: process.env.OPENAI_API_KEY ? 'ai' : 'demo' });
     }
 
+    if (request.method === 'POST' && request.url?.startsWith('/api/parse-resume')) {
+      const fileName = new URL(request.url, 'http://localhost').searchParams.get('name') || 'resume';
+      const buffer = await readBuffer(request, 10_000_000);
+      const parsed = await parseResumeFile(fileName, buffer);
+      return sendJson(response, 200, parsed);
+    }
+
     if (request.method !== 'GET') return sendJson(response, 405, { error: 'Method not allowed' });
     serveStatic(request.url, response);
   } catch (error) {
@@ -73,18 +80,66 @@ async function readJson(request) {
   try { return JSON.parse(body || '{}'); } catch { throw Object.assign(new Error('请求格式无效'), { statusCode: 400 }); }
 }
 
+async function readBuffer(request, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) throw Object.assign(new Error('简历文件不能超过 10MB'), { statusCode: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function parseResumeFile(fileName, buffer) {
+  const extension = path.extname(fileName).toLowerCase();
+  let text = '';
+  if (['.txt', '.md'].includes(extension)) {
+    text = buffer.toString('utf8');
+  } else if (extension === '.docx') {
+    const mammoth = require('mammoth');
+    text = (await mammoth.extractRawText({ buffer })).value;
+  } else if (extension === '.pdf') {
+    const pdfParse = require('pdf-parse');
+    text = (await pdfParse(buffer)).text;
+  } else {
+    throw Object.assign(new Error('仅支持 PDF、DOCX、TXT 和 MD 文件'), { statusCode: 415 });
+  }
+  text = normalizeResumeText(text);
+  if (text.length < 20) throw Object.assign(new Error('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR'), { statusCode: 422 });
+  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, ...parseResumeBasics(text) } };
+}
+
+function normalizeResumeText(text = '') {
+  return text.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function parseResumeBasics(text = '') {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  const phone = text.match(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/)?.[0] || '';
+  const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
+  const years = text.match(/(\d{1,2})\s*年[^。\n]{0,12}经验/)?.[1] || '';
+  const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
+  const firstLine = lines.find(line => line.length >= 2 && line.length <= 20 && !/简历|求职|电话|邮箱|手机/.test(line)) || '';
+  return { candidateName: firstLine, phone, email, experienceYears: years, education };
+}
+
 function validatePayload(payload) {
-  if (!['prepare', 'report'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
+  if (!['prepare', 'summarize', 'synthesize'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) {
     throw Object.assign(new Error('请填写 JD 和候选人简历'), { statusCode: 400 });
   }
-  if (payload.action === 'report' && !payload.transcript?.trim()) {
+  if (payload.action === 'summarize' && !payload.transcript?.trim()) {
     throw Object.assign(new Error('请填写电话转写内容'), { statusCode: 400 });
+  }
+  if (payload.action === 'synthesize' && (!payload.preparation || !payload.communicationSummary)) {
+    throw Object.assign(new Error('请先生成初筛方案和沟通总结'), { statusCode: 400 });
   }
 }
 
 async function generateWithOpenAI(payload) {
-  const instructions = `你是金融招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。未知信息写“待确认”。输出严格 JSON，不含 Markdown。所有结论必须附事实依据，最终决策由招聘人员完成。${payload.action === 'prepare' ? prepareSchema() : reportSchema()}`;
+  const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : synthesisSchema();
+  const instructions = `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`;
   const apiResponse = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
@@ -103,11 +158,15 @@ async function generateWithOpenAI(payload) {
 }
 
 function prepareSchema() {
-  return '字段：summary 字符串；matches、risks 字符串数组；questions 数组，每项含 category、question、reason；verification 字符串数组。问题 10-15 个。';
+  return '初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）；questions 数组，每项含 category、question、reason、source（匹配点/风险点/重点核验/通用）。生成12-18个问题，并覆盖所有高优先级核验项。';
 }
 
-function reportSchema() {
-  return '字段：basicInfo 对象；capabilities 字符串数组；evidence 字符串数组；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。';
+function summarySchema() {
+  return '沟通总结字段：overview 字符串；confirmed、contradicted、missing 数组，每项含 item、evidence；questionCoverage 对象含 covered、total、unanswered 数组；keyFacts 对象含 currentCompanyRole、location、currentSalary、expectedSalary、availability、motivation、nonCompete；candidateSignals 字符串数组；followUps 字符串数组。只总结电话内容，不给推荐结论。';
+}
+
+function synthesisSchema() {
+  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。综合初筛方案和沟通总结，明确哪些风险已关闭、哪些仍存在。';
 }
 
 function generateDemo(payload) {
@@ -116,17 +175,29 @@ function generateDemo(payload) {
     const name = firstMeaningfulLine(payload.resume) || '候选人';
     const shared = findSharedTerms(payload.jd, payload.resume, payload.keywords);
     return {
-      summary: `${name}正在评估${role}。演示引擎已完成文本结构化；工作年限、职责范围、项目结果及求职条件需在电话中核实。`,
-      matches: shared.length ? shared.slice(0, 5).map(term => `JD 与简历均提及：${term}`) : ['具备待进一步核实的相关经历'],
-      risks: ['项目中的个人职责边界未量化', '项目结果与业务影响需核实', '期望薪资与到岗周期待确认'],
-      verification: ['核心项目是否真实上线及使用方', '个人负责模块与团队分工', '当前薪资、期望薪资与到岗时间'],
+      summary: { headline: `${name}正在评估${role}`, experience: '简历体现相关从业经历，具体年限需核实', relevantBackground: shared.length ? `与岗位共同关键词：${shared.join('、')}` : '相关背景需在电话中补充', openFacts: '职责范围、项目结果、薪资及到岗条件待确认' },
+      matches: (shared.length ? shared.slice(0, 5) : ['相关经历']).map(term => ({ requirement: term, evidence: `JD 与简历均提及“${term}”`, confidence: term === '相关经历' ? '低' : '中' })),
+      risks: [{ risk: '个人职责边界不清', evidence: '简历未量化个人决策范围', impact: '可能无法区分参与和主导经验' }, { risk: '项目结果缺少量化', evidence: '未提供上线效果或业务指标', impact: '难以判断交付质量' }],
+      verification: [{ item: '核心项目是否上线及使用方', reason: '核实项目真实性和业务影响', priority: '高' }, { item: '个人负责模块与团队分工', reason: '确认实际贡献边界', priority: '高' }, { item: '薪资、到岗和竞业条件', reason: '确认推进可行性', priority: '中' }],
       questions: defaultQuestions(payload.rules)
     };
   }
+  if (payload.action === 'summarize') return generateDemoSummary(payload);
+  return generateDemoSynthesis(payload);
+}
+
+function generateDemoSummary(payload) {
   const transcript = payload.transcript;
   const unknown = value => extractAfter(transcript, value) || '待确认';
+  const questions = payload.preparation?.questions || [];
+  const evidence = transcript.split(/[。！？\n]/).map(item => item.trim()).filter(item => item.length > 12).slice(0, 5);
   return {
-    basicInfo: {
+    overview: `电话沟通已记录 ${evidence.length} 条可复核陈述，仍需招聘人员核对原始转写。`,
+    confirmed: evidence.slice(0, 3).map(item => ({ item: '候选人陈述', evidence: item })),
+    contradicted: [],
+    missing: [{ item: '量化业务结果', evidence: '转写中未识别到明确数据' }],
+    questionCoverage: { covered: Math.min(evidence.length, questions.length), total: questions.length, unanswered: questions.slice(evidence.length, evidence.length + 3).map(item => item.question) },
+    keyFacts: {
       currentCompanyRole: unknown('目前'),
       location: unknown('地点'),
       currentSalary: unknown('当前薪资'),
@@ -135,13 +206,21 @@ function generateDemo(payload) {
       motivation: unknown('考虑机会'),
       nonCompete: unknown('竞业')
     },
-    capabilities: ['已提供核心经历陈述，需由招聘人员核对原始转写', '项目职责与成果仍需结合岗位标准判断'],
-    evidence: transcript.split(/[。！？\n]/).map(item => item.trim()).filter(item => item.length > 12).slice(0, 4),
-    risks: ['演示模式不进行事实推断', '未明确回答的字段均应补充核实'],
-    conclusion: '信息不足',
-    conclusionReason: '当前为本地演示分析，已有信息可形成初步纪要，但不足以自动得出推荐结论。',
-    nextStep: '补充电话沟通',
+    candidateSignals: ['候选人已提供部分核心经历陈述', '项目结果仍需量化核实'],
     followUps: ['请确认个人负责模块及决策范围', '请量化项目上线结果或业务影响', '请确认薪资、到岗时间与竞业限制']
+  };
+}
+
+function generateDemoSynthesis(payload) {
+  const facts = payload.communicationSummary?.keyFacts || {};
+  return {
+    basicInfo: facts,
+    capabilities: (payload.preparation?.matches || []).slice(0, 4).map(item => ({ item: item.requirement || item, evidence: item.evidence || '来自简历初筛', assessment: '信息不足' })),
+    evidence: (payload.communicationSummary?.confirmed || []).map(item => item.evidence).slice(0, 5),
+    conflicts: payload.communicationSummary?.contradicted || [],
+    risks: [...(payload.communicationSummary?.missing || []).map(item => item.item), '演示模式不进行最终事实推断'],
+    conclusion: '信息不足', conclusionReason: '初筛方案和沟通总结已经合并，但关键项目结果仍缺少充分证据。', nextStep: '补充电话沟通',
+    followUps: payload.communicationSummary?.followUps || []
   };
 }
 
@@ -173,7 +252,7 @@ function defaultQuestions(rules = '') {
     ['合规', '是否存在竞业限制或其他入职约束？', '识别入职风险']
   ];
   if (rules.trim()) questions.push(['岗位规则', `结合岗位规则，请说明你最符合的一项以及仍需补足的一项。`, '让候选人针对岗位标准提供事实']);
-  return questions.map(([category, question, reason]) => ({ category, question, reason }));
+  return questions.map(([category, question, reason], index) => ({ category, question, reason, source: index < 6 ? '重点核验' : '通用' }));
 }
 
 function sendJson(response, status, body) {
@@ -183,4 +262,4 @@ function sendJson(response, status, body) {
 
 if (require.main === module) server.listen(port, host, () => console.log(`AceCall running at http://${host}:${port}`));
 
-module.exports = { generateDemo, validatePayload, findSharedTerms, server };
+module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, server };
