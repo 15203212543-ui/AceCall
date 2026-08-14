@@ -1,11 +1,14 @@
 const storageKey = 'acecall-cases-v1';
-const state = { cases: loadCases(), currentId: null, preparation: null, report: null };
+const jobStorageKey = 'acecall-jobs-v1';
+const industries = ['全部行业', '金融', '互联网', '企业服务', '消费零售', '制造业', '其他'];
+const state = { cases: loadCases(), jobs: loadJobs(), selectedJobId: null, currentId: null, preparation: null, report: null };
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
   checkHealth();
+  renderJobSelectors();
   renderCaseList();
   newCase(false);
 });
@@ -18,6 +21,14 @@ function bindEvents() {
   $('#exportButton').addEventListener('click', exportReport);
   $('#deleteButton').addEventListener('click', deleteCurrentCase);
   $('#loadSampleButton').addEventListener('click', loadSample);
+  $('#industrySelect').addEventListener('change', handleIndustryChange);
+  $('#jobSelect').addEventListener('change', handleJobChange);
+  $('#newJobButton').addEventListener('click', () => openJobDialog());
+  $('#manageJobButton').addEventListener('click', () => openJobDialog(state.selectedJobId));
+  $('#closeJobDialog').addEventListener('click', closeJobDialog);
+  $('#cancelJobButton').addEventListener('click', closeJobDialog);
+  $('#jobForm').addEventListener('submit', saveJob);
+  $('#deleteJobButton').addEventListener('click', deleteJob);
   $$('.file-trigger').forEach(button => button.addEventListener('click', () => selectTextFile(button.dataset.target)));
 }
 
@@ -40,7 +51,8 @@ async function prepareCase() {
     candidateName: $('#candidateName').value.trim(),
     jd: $('#jdInput').value.trim(),
     resume: $('#resumeInput').value.trim(),
-    rules: $('#rulesInput').value.trim()
+    rules: $('#rulesInput').value.trim(),
+    keywords: parseKeywords($('#keywordsInput').value)
   };
   await withLoading($('#prepareButton'), '正在分析', async () => {
     const { result, mode } = await postGenerate(payload);
@@ -61,6 +73,7 @@ async function generateReport() {
     jd: $('#jdInput').value.trim(),
     resume: $('#resumeInput').value.trim(),
     rules: $('#rulesInput').value.trim(),
+    keywords: parseKeywords($('#keywordsInput').value),
     preparation: state.preparation,
     transcript: $('#transcriptInput').value.trim()
   };
@@ -84,7 +97,7 @@ async function postGenerate(payload) {
 
 function generateLocalDemo(payload) {
   if (payload.action === 'prepare') {
-    const terms = ['证券', '场外期权', '衍生品', '交易', '产品', '研发', '量化', '风险', '管理', '金融科技', '询报价', '生命周期'];
+    const terms = [...new Set(['证券', '场外期权', '衍生品', '交易', '产品', '研发', '量化', '风险', '管理', '金融科技', '询报价', '生命周期', ...(payload.keywords || [])])];
     const shared = terms.filter(term => payload.jd.includes(term) && payload.resume.includes(term));
     return {
       summary: `${payload.candidateName || '候选人'}正在评估${payload.roleName || '目标岗位'}。简历体现了相关金融科技经历，工作年限、职责边界、项目结果及求职条件仍需在电话中核实。`,
@@ -177,7 +190,7 @@ function saveCurrent(patch) {
   const now = new Date().toISOString();
   const id = state.currentId || crypto.randomUUID();
   const old = state.cases.find(item => item.id === id) || { id, createdAt: now };
-  const current = { ...old, ...patch, id, updatedAt: now, roleName: $('#roleName').value.trim(), candidateName: $('#candidateName').value.trim(), jd: $('#jdInput').value, resume: $('#resumeInput').value, rules: $('#rulesInput').value, transcript: $('#transcriptInput').value, consentConfirmed: $('#consentConfirmed').checked };
+  const current = { ...old, ...patch, id, jobId: state.selectedJobId, updatedAt: now, roleName: $('#roleName').value.trim(), candidateName: $('#candidateName').value.trim(), jd: $('#jdInput').value, resume: $('#resumeInput').value, rules: $('#rulesInput').value, keywords: parseKeywords($('#keywordsInput').value), transcript: $('#transcriptInput').value, consentConfirmed: $('#consentConfirmed').checked };
   state.currentId = id;
   state.cases = [current, ...state.cases.filter(item => item.id !== id)];
   localStorage.setItem(storageKey, JSON.stringify(state.cases));
@@ -189,9 +202,19 @@ function loadCases() {
   try { return JSON.parse(localStorage.getItem(storageKey) || '[]'); } catch { return []; }
 }
 
+function loadJobs() {
+  try { return JSON.parse(localStorage.getItem(jobStorageKey) || '[]'); } catch { return []; }
+}
+
 function renderCaseList() {
-  $('#caseCount').textContent = state.cases.length;
-  $('#caseList').innerHTML = state.cases.map(item => `<button class="case-item ${item.id === state.currentId ? 'active' : ''}" data-id="${item.id}"><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.roleName || '岗位待填写')}</small></button>`).join('') || '<div class="empty-state">暂无案例</div>';
+  const industry = $('#industrySelect')?.value || '全部行业';
+  const industryJobIds = new Set(state.jobs.filter(job => job.industry === industry).map(job => job.id));
+  const cases = state.selectedJobId
+    ? state.cases.filter(item => item.jobId === state.selectedJobId)
+    : industry === '全部行业' ? state.cases : state.cases.filter(item => industryJobIds.has(item.jobId));
+  $('#caseListTitle').textContent = state.selectedJobId ? '该岗位候选人' : industry === '全部行业' ? '全部候选人' : `${industry}候选人`;
+  $('#caseCount').textContent = cases.length;
+  $('#caseList').innerHTML = cases.map(item => `<button class="case-item ${item.id === state.currentId ? 'active' : ''}" data-id="${item.id}"><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.roleName || '岗位待填写')}</small></button>`).join('') || '<div class="empty-state">该岗位暂无候选人</div>';
   $$('.case-item').forEach(button => button.addEventListener('click', () => openCase(button.dataset.id)));
 }
 
@@ -206,6 +229,7 @@ function openCase(id) {
   $('#jdInput').value = item.jd || '';
   $('#resumeInput').value = item.resume || '';
   $('#rulesInput').value = item.rules || '';
+  $('#keywordsInput').value = (item.keywords || []).join('、');
   $('#transcriptInput').value = item.transcript || '';
   $('#consentConfirmed').checked = Boolean(item.consentConfirmed);
   $('#caseTitle').textContent = item.candidateName ? `${item.candidateName} · ${item.roleName || '初筛'}` : '新候选人初筛';
@@ -216,7 +240,8 @@ function openCase(id) {
 
 function newCase(showMessage) {
   state.currentId = null; state.preparation = null; state.report = null;
-  ['roleName','candidateName','jdInput','resumeInput','rulesInput','transcriptInput'].forEach(id => $(`#${id}`).value = '');
+  ['roleName','candidateName','jdInput','resumeInput','rulesInput','keywordsInput','transcriptInput'].forEach(id => $(`#${id}`).value = '');
+  applySelectedJob();
   $('#consentConfirmed').checked = false;
   $('#caseTitle').textContent = '新候选人初筛';
   resetOutputs();
@@ -270,14 +295,105 @@ function selectTextFile(targetId) {
 
 function loadSample() {
   newCase(false);
-  $('#roleName').value = '场外期权产品经理';
+  const sampleJob = {
+    id: state.jobs.find(job => job.name === '场外期权产品经理')?.id || crypto.randomUUID(),
+    industry: '金融', name: '场外期权产品经理',
+    jd: '场外期权产品经理\n负责 RFQ、交易簿记及生命周期管理产品规划；与交易、风控、研发团队协作推动上线。\n必备：3年以上证券或衍生品产品经验，能独立负责复杂项目。\n加分：熟悉定价、Greeks及风险管理。',
+    keywords: ['场外期权', 'RFQ', '交易簿记', '生命周期管理', 'Greeks', '风险管理'],
+    rules: '必须核实本人职责、项目上线结果、服务客户、交易规模。没有场外衍生品经验不直接淘汰，可接受相邻证券交易系统经验。最终结论必须由招聘人员确认。',
+    updatedAt: new Date().toISOString()
+  };
+  state.jobs = [sampleJob, ...state.jobs.filter(job => job.id !== sampleJob.id)];
+  persistJobs(); state.selectedJobId = sampleJob.id; renderJobSelectors('金融'); applySelectedJob();
   $('#candidateName').value = '示例候选人';
-  $('#jdInput').value = '场外期权产品经理\n负责 RFQ、交易簿记及生命周期管理产品规划；与交易、风控、研发团队协作推动上线。\n必备：3年以上证券或衍生品产品经验，能独立负责复杂项目。\n加分：熟悉定价、Greeks及风险管理。';
   $('#resumeInput').value = '示例候选人\n8年金融科技产品经验，其中4年参与证券场外期权系统建设。负责询报价与交易簿记模块，协调6人研发团队完成需求分析和交付。项目已上线，具体客户规模及业务结果待核实。';
-  $('#rulesInput').value = '必须核实本人职责、项目上线结果、服务客户、交易规模。没有场外衍生品经验不直接淘汰，可接受相邻证券交易系统经验。最终结论必须由招聘人员确认。';
   $('#transcriptInput').value = '招聘人员：请介绍最相关的项目。\n候选人：我负责场外期权询报价和交易簿记模块，协调研发推进上线，主要使用方是机构客户。\n招聘人员：项目结果如何？\n候选人：系统已经上线，但交易规模不方便披露。\n招聘人员：为什么考虑机会？\n候选人：希望承担更完整的产品规划职责。地点：上海。到岗：一个月。期望薪资：面议。竞业：没有。';
   $('#consentConfirmed').checked = true;
   toast('示例数据已加载，可直接生成方案');
+}
+
+function renderJobSelectors(preferredIndustry) {
+  const industry = preferredIndustry || $('#industrySelect')?.value || '全部行业';
+  $('#industrySelect').innerHTML = industries.map(value => `<option ${value === industry ? 'selected' : ''}>${value}</option>`).join('');
+  const available = industry === '全部行业' ? state.jobs : state.jobs.filter(job => job.industry === industry);
+  $('#jobSelect').innerHTML = `<option value="">${available.length ? '请选择岗位' : '暂无岗位'}</option>${available.map(job => `<option value="${job.id}" ${job.id === state.selectedJobId ? 'selected' : ''}>${escapeHtml(job.name)}</option>`).join('')}`;
+  renderJobMemory();
+}
+
+function handleIndustryChange() {
+  state.selectedJobId = null;
+  renderJobSelectors($('#industrySelect').value);
+  newCase(false);
+}
+
+function handleJobChange() {
+  state.selectedJobId = $('#jobSelect').value || null;
+  newCase(false);
+  renderJobMemory(); renderCaseList();
+}
+
+function applySelectedJob() {
+  const job = state.jobs.find(item => item.id === state.selectedJobId);
+  if (!job) return;
+  $('#roleName').value = job.name;
+  $('#jdInput').value = job.jd;
+  $('#rulesInput').value = job.rules || '';
+  $('#keywordsInput').value = (job.keywords || []).join('、');
+}
+
+function renderJobMemory() {
+  const job = state.jobs.find(item => item.id === state.selectedJobId);
+  $('#jobMemory').innerHTML = job
+    ? `<b>${escapeHtml(job.keywords?.length || 0)} 个关键词已记忆</b><br>${escapeHtml((job.keywords || []).slice(0, 5).join(' · ') || '尚未设置关键词')}`
+    : '选择岗位后，JD、关键词和初筛规则会自动复用。';
+}
+
+function openJobDialog(jobId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  $('#jobDialogTitle').textContent = job ? '编辑岗位' : '新建岗位';
+  $('#jobIdInput').value = job?.id || '';
+  $('#jobIndustryInput').value = job?.industry || ($('#industrySelect').value === '全部行业' ? '金融' : $('#industrySelect').value);
+  $('#jobNameInput').value = job?.name || '';
+  $('#jobJdInput').value = job?.jd || '';
+  $('#jobKeywordsInput').value = (job?.keywords || []).join('、');
+  $('#jobRulesInput').value = job?.rules || '';
+  $('#deleteJobButton').hidden = !job;
+  $('#jobDialog').showModal();
+}
+
+function closeJobDialog() { $('#jobDialog').close(); }
+
+function saveJob(event) {
+  event.preventDefault();
+  const name = $('#jobNameInput').value.trim();
+  const jd = $('#jobJdInput').value.trim();
+  if (!name || !jd) return toast('请填写岗位名称和 JD');
+  const id = $('#jobIdInput').value || crypto.randomUUID();
+  const old = state.jobs.find(job => job.id === id);
+  const job = { id, industry: $('#jobIndustryInput').value, name, jd, rules: $('#jobRulesInput').value.trim(), keywords: parseKeywords($('#jobKeywordsInput').value).length ? parseKeywords($('#jobKeywordsInput').value) : extractKeywords(jd), createdAt: old?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+  state.jobs = [job, ...state.jobs.filter(item => item.id !== id)];
+  state.selectedJobId = id; persistJobs(); closeJobDialog();
+  renderJobSelectors(job.industry); newCase(false); renderCaseList();
+  toast(old ? '岗位资产已更新，新案例将使用最新版本' : '岗位已保存，后续候选人可直接复用');
+}
+
+function deleteJob() {
+  const id = $('#jobIdInput').value;
+  if (state.cases.some(item => item.jobId === id)) return toast('该岗位已有候选人案例，请保留岗位以便追溯');
+  const job = state.jobs.find(item => item.id === id);
+  if (!job || !confirm(`确认删除岗位“${job.name}”？`)) return;
+  state.jobs = state.jobs.filter(item => item.id !== id); state.selectedJobId = null;
+  persistJobs(); closeJobDialog(); renderJobSelectors(); newCase(false); toast('岗位已删除');
+}
+
+function persistJobs() { localStorage.setItem(jobStorageKey, JSON.stringify(state.jobs)); }
+
+function parseKeywords(value = '') { return [...new Set(value.split(/[、,，;；\n]/).map(item => item.trim()).filter(Boolean))]; }
+
+function extractKeywords(jd) {
+  const dictionary = ['证券', '银行', '保险', '基金', '场外期权', '衍生品', '交易', '产品', '研发', '量化', '风控', '金融科技', '询报价', '交易簿记', '生命周期管理', '定价', 'Greeks', '用户增长', '商业化', 'SaaS', '大模型', '数据分析'];
+  const uppercase = jd.match(/\b[A-Z][A-Z0-9.+-]{1,12}\b/g) || [];
+  return [...new Set([...dictionary.filter(term => jd.includes(term)), ...uppercase])].slice(0, 16);
 }
 
 async function withLoading(button, label, task) {

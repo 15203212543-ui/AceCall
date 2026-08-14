@@ -22,7 +22,14 @@
 
   <main class="workspace">
     <aside class="sidebar">
-      <div class="side-heading"><span>候选人案例</span><span id="caseCount">0</span></div>
+      <section class="job-switcher">
+        <div class="side-heading"><span>岗位资产库</span><button id="manageJobButton" class="side-link">管理</button></div>
+        <label><span>行业</span><select id="industrySelect"></select></label>
+        <label><span>岗位</span><select id="jobSelect"></select></label>
+        <button class="new-job-button" id="newJobButton">＋ 新建岗位</button>
+        <div id="jobMemory" class="job-memory"></div>
+      </section>
+      <div class="side-heading case-heading"><span id="caseListTitle">候选人案例</span><span id="caseCount">0</span></div>
       <div id="caseList" class="case-list"></div>
       <p class="privacy-note">数据仅保存在当前浏览器。AI 结论必须由招聘人员复核。</p>
     </aside>
@@ -47,6 +54,7 @@
           <label class="full"><span>岗位 JD <em>必填</em><button type="button" class="file-trigger" data-target="jdInput">导入文本</button></span><textarea id="jdInput" rows="8" placeholder="粘贴岗位职责、必备条件、加分项和淘汰条件"></textarea></label>
           <label class="full"><span>候选人简历 <em>必填</em><button type="button" class="file-trigger" data-target="resumeInput">导入文本</button></span><textarea id="resumeInput" rows="10" placeholder="粘贴脱敏后的简历文本"></textarea></label>
           <label class="full"><span>岗位画像与初筛规则</span><textarea id="rulesInput" rows="5" placeholder="必备经验、可替代经验、重点核验项、明确不匹配条件"></textarea></label>
+          <label class="full"><span>岗位关键词</span><input id="keywordsInput" placeholder="例如：场外期权、RFQ、交易簿记、生命周期管理"></label>
         </div>
         <div class="action-row"><button class="primary-button" id="prepareButton">生成初筛方案 <span>→</span></button></div>
         <div id="prepareResult" class="result-area hidden"></div>
@@ -69,6 +77,20 @@
 
   <div class="toast" id="toast" role="status"></div>
   <input id="textFileInput" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+  <dialog id="jobDialog" class="job-dialog">
+    <form id="jobForm" method="dialog">
+      <div class="dialog-heading"><div><span class="eyebrow">岗位资产</span><h2 id="jobDialogTitle">新建岗位</h2></div><button type="button" class="dialog-close" id="closeJobDialog" aria-label="关闭">×</button></div>
+      <input type="hidden" id="jobIdInput">
+      <div class="input-grid dialog-grid">
+        <label><span>行业 <em>必填</em></span><select id="jobIndustryInput" required><option>金融</option><option>互联网</option><option>企业服务</option><option>消费零售</option><option>制造业</option><option>其他</option></select></label>
+        <label><span>岗位名称 <em>必填</em></span><input id="jobNameInput" required placeholder="例如：场外期权产品经理"></label>
+        <label class="full"><span>岗位 JD <em>必填</em><button type="button" class="file-trigger" data-target="jobJdInput">导入文本</button></span><textarea id="jobJdInput" rows="8" required placeholder="首次录入后即可持续复用"></textarea></label>
+        <label class="full"><span>关键词</span><input id="jobKeywordsInput" placeholder="用逗号分隔；留空时将从 JD 自动提取"></label>
+        <label class="full"><span>岗位画像与初筛规则</span><textarea id="jobRulesInput" rows="5" placeholder="必备条件、加分项、淘汰条件、可替代经验"></textarea></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="danger-button" id="deleteJobButton">删除岗位</button><div><button type="button" class="secondary-button" id="cancelJobButton">取消</button><button type="submit" class="primary-button">保存并使用</button></div></div>
+    </form>
+  </dialog>
   <script src="./app.js"></script>
 </body>
 </html>

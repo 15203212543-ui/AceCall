@@ -114,7 +114,7 @@ function generateDemo(payload) {
   if (payload.action === 'prepare') {
     const role = firstMeaningfulLine(payload.jd) || '目标岗位';
     const name = firstMeaningfulLine(payload.resume) || '候选人';
-    const shared = findSharedTerms(payload.jd, payload.resume);
+    const shared = findSharedTerms(payload.jd, payload.resume, payload.keywords);
     return {
       summary: `${name}正在评估${role}。演示引擎已完成文本结构化；工作年限、职责范围、项目结果及求职条件需在电话中核实。`,
       matches: shared.length ? shared.slice(0, 5).map(term => `JD 与简历均提及：${term}`) : ['具备待进一步核实的相关经历'],
@@ -149,8 +149,8 @@ function firstMeaningfulLine(text = '') {
   return text.split(/\r?\n/).map(line => line.trim()).find(line => line.length > 2)?.slice(0, 42);
 }
 
-function findSharedTerms(left = '', right = '') {
-  const terms = ['证券', '场外期权', '衍生品', '交易', '产品', '研发', '量化', '风险', '管理', '金融科技', '询报价', '生命周期'];
+function findSharedTerms(left = '', right = '', customTerms = []) {
+  const terms = [...new Set(['证券', '场外期权', '衍生品', '交易', '产品', '研发', '量化', '风险', '管理', '金融科技', '询报价', '生命周期', ...customTerms])];
   return terms.filter(term => left.includes(term) && right.includes(term));
 }
 
