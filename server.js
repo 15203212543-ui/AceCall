@@ -6,6 +6,7 @@ loadEnv(path.join(__dirname, '.env'));
 
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 4173);
+const host = process.env.HOST || '127.0.0.1';
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -180,6 +181,6 @@ function sendJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-if (require.main === module) server.listen(port, () => console.log(`AceCall running at http://localhost:${port}`));
+if (require.main === module) server.listen(port, host, () => console.log(`AceCall running at http://${host}:${port}`));
 
 module.exports = { generateDemo, validatePayload, findSharedTerms, server };
