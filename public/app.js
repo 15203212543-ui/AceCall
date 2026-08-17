@@ -2,6 +2,7 @@ const storageKey = 'acecall-cases-v1';
 const jobStorageKey = 'acecall-jobs-v1';
 const industries = ['全部行业', '金融', '互联网', '企业服务', '消费零售', '制造业', '其他'];
 const state = { cases: loadCases(), jobs: loadJobs(), selectedJobId: null, currentId: null, preparation: null, communicationSummary: null, report: null, resumeMeta: null };
+const isStaticDemo = location.protocol === 'file:' || location.hostname.endsWith('.github.io');
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -37,8 +38,8 @@ function bindEvents() {
 }
 
 async function checkHealth() {
-  if (location.protocol === 'file:') {
-    $('#serviceStatus').innerHTML = '<i></i>本地演示';
+  if (isStaticDemo) {
+    $('#serviceStatus').innerHTML = `<i></i>${location.protocol === 'file:' ? '本地演示' : '在线演示'}`;
     return;
   }
   try {
@@ -108,7 +109,7 @@ async function synthesizeReport() {
 }
 
 async function postGenerate(payload) {
-  if (location.protocol === 'file:') return { result: generateLocalDemo(payload), mode: 'demo' };
+  if (isStaticDemo) return { result: generateLocalDemo(payload), mode: 'demo' };
   const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || '生成失败');
@@ -377,12 +378,12 @@ async function handleResumeFile(file) {
   renderResumeLoading(file.name);
   try {
     let result;
-    if (location.protocol === 'file:' && ['txt', 'md'].includes(extension)) {
+    if (isStaticDemo && ['txt', 'md'].includes(extension)) {
       const text = (await file.text()).replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
       if (text.length < 20) throw new Error('未提取到足够文字');
       result = { text, metadata: { fileName: file.name, extension: extension.toUpperCase(), characters: text.length } };
-    } else if (location.protocol === 'file:') {
-      throw new Error('PDF/DOCX 解析需要运行本地服务：在项目目录执行 npm start');
+    } else if (isStaticDemo) {
+      throw new Error('PDF/DOCX 解析需要后端服务；在线演示版请先使用 TXT/MD 或粘贴文本');
     } else {
       const response = await fetch(`/api/parse-resume?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
       result = await response.json();
