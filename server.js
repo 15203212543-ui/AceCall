@@ -7,6 +7,7 @@ loadEnv(path.join(__dirname, '.env'));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '127.0.0.1';
+const provider = getModelProvider();
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -20,18 +21,19 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/api/health') {
       return sendJson(response, 200, {
         ok: true,
-        mode: process.env.OPENAI_API_KEY ? 'ai' : 'demo',
-        model: process.env.OPENAI_MODEL || 'gpt-5.6-terra'
+        mode: provider === 'demo' ? 'demo' : 'ai',
+        provider,
+        model: provider === 'deepseek' ? (process.env.DEEPSEEK_MODEL || 'deepseek-chat') : (process.env.OPENAI_MODEL || 'gpt-5.6-terra')
       });
     }
 
     if (request.method === 'POST' && request.url === '/api/generate') {
       const payload = await readJson(request);
       validatePayload(payload);
-      const result = process.env.OPENAI_API_KEY
-        ? await generateWithOpenAI(payload)
-        : generateDemo(payload);
-      return sendJson(response, 200, { result, mode: process.env.OPENAI_API_KEY ? 'ai' : 'demo' });
+      const result = provider === 'deepseek'
+        ? await generateWithDeepSeek(payload)
+        : provider === 'openai' ? await generateWithOpenAI(payload) : generateDemo(payload);
+      return sendJson(response, 200, { result, mode: provider === 'demo' ? 'demo' : 'ai', provider });
     }
 
     if (request.method === 'POST' && request.url?.startsWith('/api/parse-resume')) {
@@ -137,16 +139,50 @@ function validatePayload(payload) {
   }
 }
 
-async function generateWithOpenAI(payload) {
+function getModelProvider() {
+  if (process.env.DEEPSEEK_API_KEY) return 'deepseek';
+  if (process.env.OPENAI_API_KEY) return 'openai';
+  return 'demo';
+}
+
+function buildModelPrompt(payload) {
   const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : synthesisSchema();
   const instructions = `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`;
+  return { instructions, input: JSON.stringify(payload) };
+}
+
+async function generateWithDeepSeek(payload) {
+  const { instructions, input } = buildModelPrompt(payload);
+  const apiResponse = await fetch(process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+      messages: [{ role: 'system', content: instructions }, { role: 'user', content: input }],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      stream: false
+    })
+  });
+  if (!apiResponse.ok) {
+    const detail = await apiResponse.text();
+    throw new Error(`DeepSeek API error: ${apiResponse.status}${detail ? ` ${detail.slice(0, 180)}` : ''}`);
+  }
+  const data = await apiResponse.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) throw new Error('DeepSeek 未返回有效内容');
+  return JSON.parse(text);
+}
+
+async function generateWithOpenAI(payload) {
+  const { instructions, input } = buildModelPrompt(payload);
   const apiResponse = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
       instructions,
-      input: JSON.stringify(payload),
+      input,
       text: { format: { type: 'json_object' } }
     })
   });
@@ -262,4 +298,4 @@ function sendJson(response, status, body) {
 
 if (require.main === module) server.listen(port, host, () => console.log(`AceCall running at http://${host}:${port}`));
 
-module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, server };
+module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, getModelProvider, server };

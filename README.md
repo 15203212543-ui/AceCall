@@ -45,6 +45,14 @@ npm start
 如需启用模型，在 `.env` 中配置：
 
 ```env
+DEEPSEEK_API_KEY=your_key
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_BASE_URL=https://api.deepseek.com/chat/completions
+```
+
+服务端优先使用DeepSeek；未配置DeepSeek时才检查OpenAI配置：
+
+```env
 OPENAI_API_KEY=your_key
 OPENAI_MODEL=gpt-5.6-terra
 ```
