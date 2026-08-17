@@ -3,103 +3,60 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="AceCall 金融招聘 AI 电话初筛工作台">
+  <meta name="description" content="AceCall AI 电话初筛工作台">
   <title>AceCall · AI 电话初筛工作台</title>
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles-v2.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="#" aria-label="AceCall 首页">
-      <span class="brand-mark">AC</span>
-      <span><strong>AceCall</strong><small>AI 电话初筛工作台</small></span>
-    </a>
-    <div class="top-actions">
-      <span class="status" id="serviceStatus"><i></i>连接中</span>
-      <button class="text-button" id="loadSampleButton">加载示例</button>
-      <button class="icon-button" id="newCaseButton" title="新建候选人" aria-label="新建候选人">＋</button>
-    </div>
-  </header>
-
-  <main class="workspace">
-    <aside class="sidebar">
-      <section class="job-switcher">
-        <div class="side-heading"><span>岗位资产库</span><button id="manageJobButton" class="side-link">管理</button></div>
-        <label><span>行业</span><select id="industrySelect"></select></label>
-        <label><span>岗位</span><select id="jobSelect"></select></label>
-        <button class="new-job-button" id="newJobButton">＋ 新建岗位</button>
-        <div id="jobMemory" class="job-memory"></div>
-      </section>
-      <div class="side-heading case-heading"><span id="caseListTitle">候选人案例</span><span id="caseCount">0</span></div>
-      <div id="caseList" class="case-list"></div>
-      <p class="privacy-note">数据仅保存在当前浏览器。AI 结论必须由招聘人员复核。</p>
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <a class="brand" href="#dashboard"><span>AC</span><strong>AceCall</strong></a>
+      <nav>
+        <button class="nav-item active" data-view="dashboard"><b>⌂</b><span>工作台</span></button>
+        <button class="nav-item" data-view="candidates"><b>◎</b><span>候选人</span><i id="candidateNavCount">0</i></button>
+        <button class="nav-item" data-view="jobs"><b>▤</b><span>岗位</span></button>
+      </nav>
+      <div class="sidebar-bottom"><button class="nav-item" data-view="settings"><b>⚙</b><span>设置</span></button><p>AI辅助招聘判断<br>最终结论由招聘人员确认</p></div>
     </aside>
 
-    <section class="main-panel">
-      <div class="page-heading">
-        <div><span class="eyebrow">当前工作流</span><h1 id="caseTitle">新候选人初筛</h1></div>
-        <div class="heading-actions"><button class="danger-button" id="deleteButton">删除案例</button><button class="secondary-button" id="exportButton">导出报告</button></div>
+    <main class="app-main">
+      <header class="app-header"><div><span id="breadcrumb">招聘工作台</span></div><div class="header-actions"><span class="service-status" id="serviceStatus"><i></i>连接中</span><span class="avatar">RM</span></div></header>
+      <section class="view active" id="dashboardView"></section>
+      <section class="view" id="candidatesView"></section>
+      <section class="view" id="jobsView"></section>
+      <section class="view" id="candidateDetailView"></section>
+      <section class="view" id="settingsView"></section>
+    </main>
+  </div>
+
+  <dialog id="candidateDialog" class="modal">
+    <form id="candidateForm" method="dialog">
+      <header><div><small>新增候选人</small><h2>建立初筛档案</h2></div><button type="button" class="icon-close" data-close="candidateDialog">×</button></header>
+      <div class="form-grid">
+        <label><span>候选人姓名</span><input id="candidateNameInput" required placeholder="例如：张睿"></label>
+        <label><span>应聘岗位</span><select id="candidateJobInput" required></select></label>
+        <label class="full"><span>候选人简历</span><button type="button" class="upload-zone" id="resumeUploadButton"><b>↑ 上传简历</b><small>PDF、DOCX、TXT、MD，最大10MB</small></button><input id="resumeFileInput" type="file" accept=".pdf,.docx,.txt,.md" hidden><div id="resumeStatus" class="file-status hidden"></div><textarea id="candidateResumeInput" rows="10" required placeholder="上传后自动提取，也可以直接粘贴简历文本"></textarea></label>
       </div>
-
-      <nav class="steps" aria-label="工作流步骤">
-        <button class="step active" data-step="1"><span>1</span><b>电话前准备</b><small>岗位与简历分析</small></button>
-        <button class="step" data-step="2"><span>2</span><b>电话沟通</b><small>问题核验与总结</small></button>
-        <button class="step" data-step="3"><span>3</span><b>综合审核</b><small>合并证据与结论</small></button>
-      </nav>
-
-      <section class="step-panel active" data-panel="1">
-        <div class="section-heading"><div><h2>准备本次初筛</h2><p>输入原始业务材料，系统只依据这些内容生成核验建议。</p></div></div>
-        <div class="input-grid">
-          <label><span>岗位名称</span><input id="roleName" placeholder="例如：场外期权产品经理"></label>
-          <label><span>候选人称呼</span><input id="candidateName" placeholder="例如：王先生"></label>
-          <label class="full"><span>岗位 JD <em>必填</em><button type="button" class="file-trigger" data-target="jdInput">导入文本</button></span><textarea id="jdInput" rows="8" placeholder="粘贴岗位职责、必备条件、加分项和淘汰条件"></textarea></label>
-          <div class="full resume-field">
-            <span class="field-label">候选人简历 <em>必填</em></span>
-            <button type="button" class="resume-upload" id="resumeUploadButton">
-              <span class="upload-icon">↑</span><span><b>上传候选人简历</b><small>支持 PDF、DOCX、TXT、MD，最大 10MB</small></span><span class="upload-action">选择文件</span>
-            </button>
-            <div id="resumeParseStatus" class="parse-status hidden"></div>
-            <label class="resume-text"><span>解析文本 <button type="button" class="file-trigger" data-target="resumeInput">导入纯文本</button></span><textarea id="resumeInput" rows="10" placeholder="上传简历后将自动提取文本，也可以在这里粘贴或校对内容"></textarea></label>
-          </div>
-          <label class="full"><span>岗位画像与初筛规则</span><textarea id="rulesInput" rows="5" placeholder="必备经验、可替代经验、重点核验项、明确不匹配条件"></textarea></label>
-          <label class="full"><span>岗位关键词</span><input id="keywordsInput" placeholder="例如：场外期权、RFQ、交易簿记、生命周期管理"></label>
-        </div>
-        <div class="action-row"><button class="primary-button" id="prepareButton">生成初筛方案 <span>→</span></button></div>
-        <div id="prepareResult" class="result-area hidden"></div>
-      </section>
-
-      <section class="step-panel" data-panel="2">
-        <div class="section-heading"><div><h2>记录电话沟通</h2><p>按原意粘贴转写文本。无法确认的信息会标为“待确认”。</p></div><span class="timer">建议 20–30 分钟</span></div>
-        <div id="questionChecklist" class="checklist empty-state">生成初筛方案后，问题清单会显示在这里。</div>
-        <label class="consent-row"><input type="checkbox" id="consentConfirmed"><span>已按公司规则完成录音或转写告知，并取得必要授权</span></label>
-        <label class="transcript-label"><span>电话转写 <em>必填</em></span><textarea id="transcriptInput" rows="16" placeholder="招聘人员：请介绍一下你负责的核心项目……&#10;候选人：我主要负责……"></textarea></label>
-        <div class="action-row"><button class="primary-button" id="reportButton">生成沟通总结 <span>→</span></button></div>
-        <div id="communicationResult" class="result-area hidden"></div>
-      </section>
-
-      <section class="step-panel" data-panel="3">
-        <div class="section-heading"><div><h2>综合审核与确认</h2><p>综合初筛方案与沟通总结，核对矛盾和事实依据后确认最终动作。</p></div><button class="primary-button" id="synthesizeButton" disabled>生成综合审核</button></div>
-        <div id="reportResult" class="report-layout empty-state">完成电话记录后，这里将生成结构化报告。</div>
-      </section>
-    </section>
-  </main>
-
-  <div class="toast" id="toast" role="status"></div>
-  <input id="textFileInput" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
-  <input id="resumeFileInput" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" hidden>
-  <dialog id="jobDialog" class="job-dialog">
-    <form id="jobForm" method="dialog">
-      <div class="dialog-heading"><div><span class="eyebrow">岗位资产</span><h2 id="jobDialogTitle">新建岗位</h2></div><button type="button" class="dialog-close" id="closeJobDialog" aria-label="关闭">×</button></div>
-      <input type="hidden" id="jobIdInput">
-      <div class="input-grid dialog-grid">
-        <label><span>行业 <em>必填</em></span><select id="jobIndustryInput" required><option>金融</option><option>互联网</option><option>企业服务</option><option>消费零售</option><option>制造业</option><option>其他</option></select></label>
-        <label><span>岗位名称 <em>必填</em></span><input id="jobNameInput" required placeholder="例如：场外期权产品经理"></label>
-        <label class="full"><span>岗位 JD <em>必填</em><button type="button" class="file-trigger" data-target="jobJdInput">导入文本</button></span><textarea id="jobJdInput" rows="8" required placeholder="首次录入后即可持续复用"></textarea></label>
-        <label class="full"><span>关键词</span><input id="jobKeywordsInput" placeholder="用逗号分隔；留空时将从 JD 自动提取"></label>
-        <label class="full"><span>岗位画像与初筛规则</span><textarea id="jobRulesInput" rows="5" placeholder="必备条件、加分项、淘汰条件、可替代经验"></textarea></label>
-      </div>
-      <div class="dialog-actions"><button type="button" class="danger-button" id="deleteJobButton">删除岗位</button><div><button type="button" class="secondary-button" id="cancelJobButton">取消</button><button type="submit" class="primary-button">保存并使用</button></div></div>
+      <footer><button type="button" class="secondary" data-close="candidateDialog">取消</button><button type="submit" class="primary">保存并生成电话准备</button></footer>
     </form>
   </dialog>
-  <script src="./app.js"></script>
+
+  <dialog id="jobDialog" class="modal">
+    <form id="jobForm" method="dialog">
+      <header><div><small>岗位资产</small><h2 id="jobDialogTitle">新建岗位</h2></div><button type="button" class="icon-close" data-close="jobDialog">×</button></header>
+      <input type="hidden" id="jobIdInput">
+      <div class="form-grid">
+        <label><span>行业</span><select id="jobIndustryInput"><option>金融</option><option>互联网</option><option>企业服务</option><option>消费零售</option><option>制造业</option><option>其他</option></select></label>
+        <label><span>岗位名称</span><input id="jobNameInput" required placeholder="例如：场外期权产品经理"></label>
+        <label class="full"><span>岗位JD</span><textarea id="jobJdInput" rows="8" required placeholder="岗位职责、必备条件和加分项"></textarea></label>
+        <label class="full"><span>关键词</span><input id="jobKeywordsInput" placeholder="场外期权、RFQ、交易簿记"></label>
+        <label class="full"><span>初筛规则</span><textarea id="jobRulesInput" rows="5" placeholder="必问项、可替代经验和明确不匹配条件"></textarea></label>
+      </div>
+      <footer><button type="button" class="secondary" data-close="jobDialog">取消</button><button type="submit" class="primary">保存岗位</button></footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="./app-v2.js"></script>
 </body>
 </html>
