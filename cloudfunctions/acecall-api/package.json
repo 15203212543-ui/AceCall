@@ -1,0 +1,10 @@
+{
+  "name": "acecall-api",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@cloudbase/node-sdk": "3.17.0",
+    "mammoth": "1.12.1",
+    "pdf-parse": "1.1.1"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "envId": "yuxiaomiaochongwu-d2dsk55ef4b392",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "acecall-api",
+      "dir": "acecall-api",
+      "type": "HTTP",
+      "runtime": "Nodejs18.15",
+      "timeout": 60,
+      "memorySize": 512,
+      "installDependency": true,
+      "ignore": ["node_modules/**", "test/**", "*.md"]
+    }
+  ]
+}

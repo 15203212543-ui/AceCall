@@ -1,14 +1,20 @@
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
-const STATIC_DEMO = location.protocol === 'file:' || location.hostname.endsWith('.github.io');
+const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
+const REMOTE_BACKEND = Boolean(API_BASE);
+const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
+const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null };
+let cloudbaseAuth = null;
 
-document.addEventListener('DOMContentLoaded', () => {
-  seedJobs();
+document.addEventListener('DOMContentLoaded', async () => {
+  if (!await initializeAuth()) return;
   bindShell();
-  checkService();
+  await hydrateState();
+  seedJobs();
+  await checkService();
   navigate(location.hash.replace('#', '') || 'dashboard');
 });
 
@@ -20,6 +26,47 @@ function bindShell() {
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
+  $('#logoutButton').addEventListener('click', signOut);
+}
+
+async function initializeAuth() {
+  $('#loginForm').addEventListener('submit', signIn);
+  if (!REMOTE_BACKEND) { $('#loginScreen').classList.add('hidden'); return true; }
+  if (!window.cloudbase || !CLOUD_CONFIG.env || !CLOUD_CONFIG.publishableKey) {
+    showLoginMessage('CloudBase登录配置不完整');
+    return false;
+  }
+  const cloudbaseApp = window.cloudbase.init({ env: CLOUD_CONFIG.env, region: CLOUD_CONFIG.region, accessKey: CLOUD_CONFIG.publishableKey });
+  cloudbaseAuth = cloudbaseApp.auth({ persistence: 'local' });
+  const { data, error } = await cloudbaseAuth.getSession();
+  if (error) showLoginMessage(error.message || '登录状态读取失败');
+  if (!data?.session) return false;
+  $('#loginScreen').classList.add('hidden');
+  return true;
+}
+
+async function signIn(event) {
+  event.preventDefault();
+  const button = $('#loginButton');
+  button.disabled = true; button.textContent = '正在登录'; showLoginMessage('正在验证账号', false);
+  try {
+    const { data, error } = await cloudbaseAuth.signInWithPassword({ username: $('#loginUsername').value.trim(), password: $('#loginPassword').value });
+    if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
+    location.reload();
+  } catch (error) {
+    showLoginMessage(error.message || '登录失败');
+    button.disabled = false; button.textContent = '登录';
+  }
+}
+
+async function signOut() {
+  await cloudbaseAuth?.signOut();
+  location.reload();
+}
+
+function showLoginMessage(message, isError = true) {
+  $('#loginMessage').textContent = message;
+  $('#loginMessage').classList.toggle('error', isError);
 }
 
 function navigate(view, updateHash = true) {
@@ -129,7 +176,7 @@ function resumeTab(item) { return `<div class="surface"><div class="surface-head
 function historyTab(item) { const events = [['建立候选人档案',item.createdAt],item.preparation&&['AI完成电话准备',item.createdAt],item.communicationSummary&&['生成沟通总结',item.updatedAt],item.report&&['生成综合初筛结果',item.updatedAt],item.report?.reviewConfirmed&&['招聘人员确认结果',item.updatedAt]].filter(Boolean); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact"><span>${formatDate(event[1])}</span><b>${event[0]}</b></div>`).join('')}</div></div>`; }
 
 function renderSettings() {
-  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>设置</h1><p>模型密钥必须保存在服务器环境变量中。</p></div></div><div class="settings-grid"><div class="surface"><div class="surface-head"><h2>AI服务</h2><span>${STATIC_DEMO ? '演示模式' : '服务端模式'}</span></div><div class="surface-body"><div class="setting-row"><span>API接口</span><b>OpenAI Responses API</b></div><div class="setting-row"><span>模型配置</span><b>OPENAI_MODEL</b></div><div class="setting-row"><span>密钥配置</span><b>OPENAI_API_KEY</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">不能直接使用ChatGPT订阅或Codex会话作为产品接口。请在服务器的 .env 中配置OpenAI API Key。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
+  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>设置</h1><p>模型密钥和候选人数据均由服务端管理。</p></div></div><div class="settings-grid"><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>模型配置</span><b>DEEPSEEK_MODEL</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">API Key仅保存在服务端环境变量中。CloudBase远端接口启用后，本地历史数据会自动迁移，不会把密钥写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
 }
 
 function bindCommonActions(root) {
@@ -159,13 +206,13 @@ async function createCandidate(event) {
   event.preventDefault(); const job = app.jobs.find(item => item.id === $('#candidateJobInput').value); if (!job) return toast('请选择岗位');
   const candidate = { id: crypto.randomUUID(), jobId: job.id, candidateName: $('#candidateNameInput').value.trim(), roleName: job.name, jd: job.jd, rules: job.rules || '', keywords: job.keywords || [], resume: $('#candidateResumeInput').value.trim(), resumeMeta: app.resumeMeta, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   if (!candidate.candidateName || !candidate.resume) return toast('请填写候选人姓名和简历');
-  app.cases.unshift(candidate); persistCases(); $('#candidateDialog').close(); app.candidateId = candidate.id; app.detailTab = 'overview'; navigate('candidate');
+  app.cases.unshift(candidate); persistCases(candidate); $('#candidateDialog').close(); app.candidateId = candidate.id; app.detailTab = 'overview'; navigate('candidate');
   await generatePreparation(candidate);
 }
 
 async function generatePreparation(candidate) {
   if (!candidate) return; const button = $('[data-generate-prep]'); if (button) button.disabled = true;
-  try { candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords }); candidate.updatedAt = new Date().toISOString(); persistCases(); renderCandidateDetail(); toast('电话准备已自动完成'); } catch (error) { toast(error.message); if (button) button.disabled = false; }
+  try { candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords }); candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('电话准备已自动完成'); } catch (error) { toast(error.message); if (button) button.disabled = false; }
 }
 
 async function completeCall() {
@@ -175,13 +222,13 @@ async function completeCall() {
     candidate.transcript = transcript; candidate.consentConfirmed = true;
     candidate.communicationSummary = await generate({ action:'summarize', roleName:candidate.roleName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, preparation:candidate.preparation, transcript });
     candidate.report = await generate({ action:'synthesize', roleName:candidate.roleName, jd:candidate.jd, rules:candidate.rules, keywords:candidate.keywords, preparation:candidate.preparation, communicationSummary:candidate.communicationSummary });
-    candidate.updatedAt = new Date().toISOString(); persistCases(); renderCandidateDetail(); toast('初筛结果已生成，请人工确认');
+    candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已生成，请人工确认');
   } catch (error) { toast(error.message); button.disabled = false; button.textContent = '完成电话并生成结果'; }
 }
 
 function confirmResult() {
   const candidate = currentCandidate(); if (!$('#reviewConfirmed').checked) return toast('请先确认已核对材料');
-  candidate.report.finalDecision = $('#finalDecision').value; candidate.report.reviewNotes = $('#reviewNotes').value.trim(); candidate.report.reviewConfirmed = true; candidate.updatedAt = new Date().toISOString(); persistCases(); renderCandidateDetail(); toast('初筛结果已确认');
+  candidate.report.finalDecision = $('#finalDecision').value; candidate.report.reviewNotes = $('#reviewNotes').value.trim(); candidate.report.reviewConfirmed = true; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已确认');
 }
 
 function openCandidate(id) { app.candidateId = id; app.detailTab = statusOf(app.cases.find(item => item.id === id)) === '待确认' ? 'call' : 'overview'; navigate('candidate'); }
@@ -191,17 +238,17 @@ function openJobDialog(id) {
 }
 
 function saveJob(event) {
-  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
+  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
 }
 
 async function parseResume(file) {
   if (!file) return; if (file.size > 10_000_000) return toast('文件不能超过10MB'); const extension = file.name.split('.').pop().toLowerCase(); $('#resumeStatus').className = 'file-status'; $('#resumeStatus').textContent = `正在解析 ${file.name}…`;
-  try { let result; if (STATIC_DEMO && ['txt','md'].includes(extension)) { const text = await file.text(); result = { text, metadata:{ fileName:file.name, extension:extension.toUpperCase(), characters:text.length } }; } else if (STATIC_DEMO) throw new Error('在线演示版PDF/DOCX解析需要后端服务'); else { const response = await fetch(`/api/parse-resume?name=${encodeURIComponent(file.name)}`, { method:'POST', body:file }); result = await response.json(); if (!response.ok) throw new Error(result.error || '解析失败'); } $('#candidateResumeInput').value = result.text; app.resumeMeta = result.metadata; if (!$('#candidateNameInput').value && result.metadata.candidateName) $('#candidateNameInput').value = result.metadata.candidateName; $('#resumeStatus').textContent = `${file.name} · 已提取 ${result.metadata.characters || result.text.length} 字`; } catch (error) { $('#resumeStatus').textContent = error.message; toast(error.message); }
+  try { let result; if (STATIC_DEMO && ['txt','md'].includes(extension)) { const text = await file.text(); result = { text, metadata:{ fileName:file.name, extension:extension.toUpperCase(), characters:text.length } }; } else if (STATIC_DEMO) throw new Error('在线演示版PDF/DOCX解析需要后端服务'); else { const response = await authenticatedFetch(apiUrl(`/api/parse-resume?name=${encodeURIComponent(file.name)}`), { method:'POST', body:file }); result = await response.json(); if (!response.ok) throw new Error(result.error || '解析失败'); } $('#candidateResumeInput').value = result.text; app.resumeMeta = result.metadata; if (!$('#candidateNameInput').value && result.metadata.candidateName) $('#candidateNameInput').value = result.metadata.candidateName; $('#resumeStatus').textContent = `${file.name} · 已提取 ${result.metadata.characters || result.text.length} 字`; } catch (error) { $('#resumeStatus').textContent = error.message; toast(error.message); }
 }
 
 async function generate(payload) {
   if (STATIC_DEMO) return localGenerate(payload);
-  const response = await fetch('/api/generate', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI服务调用失败'); return data.result;
+  const response = await authenticatedFetch(apiUrl('/api/generate'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI服务调用失败'); return data.result;
 }
 
 function localGenerate(payload) {
@@ -220,15 +267,19 @@ function nextGuidance(item) { const status=statusOf(item); return status==='待�
 function statusClass(status){return ['待确认','补充沟通'].includes(status)?'warn':['暂不推进','待分析'].includes(status)?'neutral':'';}
 function currentCandidate(){return app.cases.find(item=>item.id===app.candidateId);}
 function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch{return [];}}
-function persistCases(){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));$('#candidateNavCount').textContent=app.cases.length;}
-function persistJobs(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));}
+function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));$('#candidateNavCount').textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
+function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
-function seedJobs(){if(app.jobs.length)return;app.jobs=[{id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}];persistJobs();}
+function seedJobs(){if(app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
 function resumeHint(item){return item.resumeMeta?.experienceYears?`${item.resumeMeta.experienceYears}年经验`:item.resumeMeta?.fileName||'简历已录入';}
 function formatDate(value){if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':`${date.getMonth()+1}月${date.getDate()}日`;}
 function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt);}
 function infoLabel(key){return({currentCompanyRole:'当前公司及职位',location:'当前地点',currentSalary:'当前薪资',expectedSalary:'期望薪资',availability:'到岗时间',motivation:'求职动机',nonCompete:'竞业限制'}[key]||key);}
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
-async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await fetch('/api/health');const data=await response.json();$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'AI模式':'演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
+function apiUrl(path){return `${API_BASE}${path}`;}
+async function saveRemote(path,payload){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok)throw new Error('远端保存失败');}catch(error){console.error(error);toast('已保存在本机，CloudBase同步失败');}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{const response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok)throw new Error('CloudBase数据读取失败');const remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));return;}for(const job of app.jobs)await saveRemote(`/api/jobs/${job.id}`,job);for(const candidate of app.cases)await saveRemote(`/api/candidates/${candidate.id}`,candidate);}catch(error){console.error(error);toast('CloudBase暂不可用，已使用本机数据');}}
+async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json();if(!response.ok)throw new Error(data.error||'服务离线');$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
+async function authenticatedFetch(url, options = {}) { const { data, error } = await cloudbaseAuth.getSession(); const token = data?.session?.access_token; if (error || !token) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); } const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}

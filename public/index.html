@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="./styles-v2.css">
 </head>
 <body>
+  <section class="login-screen" id="loginScreen">
+    <form class="login-panel" id="loginForm">
+      <span class="login-mark">AC</span>
+      <p>AceCall 招聘工作台</p>
+      <h1>登录后开始初筛</h1>
+      <label><span>账号</span><input id="loginUsername" autocomplete="username" required placeholder="请输入AceCall账号"></label>
+      <label><span>密码</span><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="请输入密码"></label>
+      <button class="primary" id="loginButton" type="submit">登录</button>
+      <small id="loginMessage">候选人简历和AI结果仅对已授权成员开放</small>
+    </form>
+  </section>
   <div class="app-shell">
     <aside class="app-sidebar">
       <a class="brand" href="#dashboard"><span>AC</span><strong>AceCall</strong></a>
@@ -20,7 +31,7 @@
     </aside>
 
     <main class="app-main">
-      <header class="app-header"><div><span id="breadcrumb">招聘工作台</span></div><div class="header-actions"><span class="service-status" id="serviceStatus"><i></i>连接中</span><span class="avatar">RM</span></div></header>
+      <header class="app-header"><div><span id="breadcrumb">招聘工作台</span></div><div class="header-actions"><span class="service-status" id="serviceStatus"><i></i>连接中</span><button class="avatar" id="logoutButton" type="button" title="退出登录">RM</button></div></header>
       <section class="view active" id="dashboardView"></section>
       <section class="view" id="candidatesView"></section>
       <section class="view" id="jobsView"></section>
@@ -57,6 +68,8 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
+  <script src="./config.js"></script>
+  <script type="module" src="./cloudbase-sdk.js"></script>
   <script src="./app-v2.js"></script>
 </body>
 </html>

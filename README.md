@@ -10,6 +10,37 @@ AceCall 是面向金融招聘团队的 AI 电话初筛工作台。当前 MVP 聚
 4. 综合初筛方案与沟通总结，处理矛盾并生成审核建议。
 5. 招聘人员核对、确认并导出结果。
 
+## CloudBase 后端
+
+AceCall 已接入 CloudBase 开发环境 `yuxiaomiaochongwu-d2dsk55ef4b392`，通过命名空间与原项目隔离：
+
+- `acecall_jobs`：岗位资产、JD、关键词和初筛规则。
+- `acecall_candidates`：候选人基本信息及简历解析结果。
+- `acecall_screenings`：初筛方案、电话转写、沟通总结和审核报告。
+- `acecall_audit_logs`：岗位及候选人数据修改记录。
+- `acecall-api`：私有 HTTP 云函数，负责数据访问、简历解析和 DeepSeek 调用。
+
+所有集合均为仅管理端访问，函数只允许已登录且非匿名用户调用。浏览器通过受保护的 CloudBase HTTP 网关访问后端，统一携带当前用户会话令牌；登录后系统优先读取 CloudBase，若远端为空则顺序迁移现有本地岗位和候选人数据。
+
+客户端后端地址配置在 `public/config.js`：
+
+```js
+window.ACECALL_CONFIG = {
+  apiBaseUrl: 'https://<cloudbase-http-domain>/acecall-api',
+  cloudbase: {
+    env: '<cloudbase-env-id>',
+    region: 'ap-shanghai',
+    publishableKey: '<browser-safe-publishable-key>'
+  }
+};
+```
+
+`Publishable Key` 可公开用于初始化浏览器 SDK，不具备管理权限。`CLOUDBASE_APIKEY` 和 `DEEPSEEK_API_KEY` 仍只能保存在云函数环境变量中。
+
+函数配置位于 `cloudbaserc.json`，代码位于 `cloudfunctions/acecall-api/`。`CLOUDBASE_APIKEY`、`DEEPSEEK_API_KEY` 等密钥只允许通过函数环境变量注入，不得提交到 Git。AceCall 专用 CloudBase API Key 到期时间为 `2026-11-16`，到期前需要轮换并更新函数配置。
+
+CloudBase 环境 ID 不可修改；环境别名可以修改，但当前环境仍承载原宠物项目，不建议将环境别名改为 AceCall。
+
 ## 第一阶段页面
 
 - **工作台**：展示待电话、待确认、补充沟通和已推荐候选人。
@@ -40,7 +71,7 @@ npm start
 
 打开 `http://127.0.0.1:4173`。未设置 `OPENAI_API_KEY` 时，系统自动使用本地演示引擎，适合流程验证。
 
-也可以直接打开 `public/index.html`。直接打开时会启用浏览器端演示模式，样式、案例保存、TXT/MD 简历导入、示例数据和三阶段工作流均可使用；PDF/DOCX 解析和模型调用需要通过 `npm start` 运行。
+正式在线版需要先使用 CloudBase 用户名和密码登录。测试账号由 CloudBase 控制台的身份认证用户管理创建和激活，不在代码或 Git 中保存密码。
 
 如需启用模型，在 `.env` 中配置：
 
@@ -72,6 +103,6 @@ npm test
 ## 当前边界
 
 - 支持可检索文本型 PDF、DOCX、TXT 和 MD；扫描版 PDF 的 OCR 与录音转写留作下一阶段。
-- 数据保存在当前浏览器 `localStorage`，尚未接入用户权限与数据库。
+- 岗位、候选人和初筛结果已接入 CloudBase；浏览器 `localStorage` 仅作为离线副本和首次迁移来源。
 - 不根据性别、婚育、年龄、籍贯等非岗位因素评分或淘汰。
 - 正式试点前需完成录音告知、数据保存期限、删除机制与模型数据政策评审。
