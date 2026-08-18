@@ -1,3 +1,5 @@
+import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@latest/+esm';
+
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
@@ -32,11 +34,11 @@ function bindShell() {
 async function initializeAuth() {
   $('#loginForm').addEventListener('submit', signIn);
   if (!REMOTE_BACKEND) { $('#loginScreen').classList.add('hidden'); return true; }
-  if (!window.cloudbase || !CLOUD_CONFIG.env || !CLOUD_CONFIG.publishableKey) {
+  if (!CLOUD_CONFIG.env || !CLOUD_CONFIG.publishableKey) {
     showLoginMessage('CloudBase登录配置不完整');
     return false;
   }
-  const cloudbaseApp = window.cloudbase.init({ env: CLOUD_CONFIG.env, region: CLOUD_CONFIG.region, accessKey: CLOUD_CONFIG.publishableKey });
+  const cloudbaseApp = cloudbase.init({ env: CLOUD_CONFIG.env, region: CLOUD_CONFIG.region, accessKey: CLOUD_CONFIG.publishableKey });
   cloudbaseAuth = cloudbaseApp.auth({ persistence: 'local' });
   const { data, error } = await cloudbaseAuth.getSession();
   if (error) showLoginMessage(error.message || '登录状态读取失败');
