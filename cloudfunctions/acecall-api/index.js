@@ -9,7 +9,6 @@ const COLLECTIONS = {
   screenings: 'acecall_screenings',
   audit: 'acecall_audit_logs'
 };
-const allowedOrigins = new Set((process.env.ACECALL_ALLOWED_ORIGINS || 'http://127.0.0.1:4173,http://localhost:4173,https://15203212543-ui.github.io').split(',').map(value => value.trim()).filter(Boolean));
 let cloudbaseApp;
 
 function getDatabase() {
@@ -76,8 +75,9 @@ const server = http.createServer(async (request, response) => {
 });
 
 function setCors(response, origin) {
-  if (origin && allowedOrigins.has(origin)) response.setHeader('Access-Control-Allow-Origin', origin);
-  response.setHeader('Vary', 'Origin');
+  // The CloudBase HTTP gateway owns the origin response header. Setting it
+  // here as well makes successful responses contain duplicate origins, which
+  // browsers reject as an invalid CORS response.
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
