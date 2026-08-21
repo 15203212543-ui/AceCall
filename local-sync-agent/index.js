@@ -139,7 +139,6 @@ class SyncAgent {
     candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd || ''; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
     candidate.matching = { ...(match.result || {}), jobId: primary.id, status: '已分配' }; candidate.ingestStatus = '已入库';
   }
-
   async request(endpoint, options = {}) {
     const response = await fetch(`${this.options.apiBase.replace(/\/$/, '')}${endpoint}`, { ...options, headers: { ...(options.headers || {}), ...(this.options.authToken ? { Authorization: `Bearer ${this.options.authToken}` } : {}) } });
     const data = await response.json().catch(() => ({}));
