@@ -10,6 +10,8 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null };
 let cloudbaseAuth = null;
+const importFileCache = new Map();
+const importedFileKeys = new Set(readStore('acecall-import-files-v1'));
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -107,9 +109,18 @@ function renderDashboard() {
 function renderInbox() {
   const pending = app.cases.filter(item => item.ingestStatus === '解析中').length;
   const needsAssignment = app.cases.filter(item => item.matching?.status === '待分配').length;
-  $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><label class="primary upload-trigger">＋ 批量导入简历<input id="batchResumeInput" type="file" accept=".pdf,.docx,.txt,.md" multiple hidden></label></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>支持 PDF、DOCX、TXT、MD</span></div><div class="surface-body"><p style="font-size:11px;line-height:1.7;color:var(--muted);margin:0">选择多个简历文件后，AceCall 会自动提取姓名、联系方式和工作经历，并根据当前岗位库计算主岗位、备选岗位与 0-100 匹配度。低置信度简历仍会入库，不会自动淘汰。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
+  $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><div class="import-actions"><label class="primary upload-trigger">＋ 批量导入简历<input id="batchResumeInput" type="file" accept=".pdf,.docx,.txt,.md" multiple hidden></label><label class="secondary upload-trigger">授权文件夹<input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>支持 PDF、DOCX、TXT、MD</span></div><div class="surface-body"><p style="font-size:11px;line-height:1.7;color:var(--muted);margin:0">可批量选择简历，或主动授权一个文件夹进行本次导入。页面保持打开时可再次选择同一文件夹，新增文件会自动去重并解析；低置信度简历仍会入库，不会自动淘汰。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}${item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? ` <button class="link-action" data-retry-import="${item.id}">重试</button>` : ''}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
   $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
+  $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
   bindCommonActions($('#inboxView'));
+  $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
+}
+
+async function retryImport(id) {
+  const candidate = app.cases.find(item => item.id === id); const file = importFileCache.get(candidate?.ingestFileKey);
+  if (!candidate || !file) return toast('原文件已不在当前会话，请重新选择文件');
+  candidate.ingestStatus = '解析中'; renderCurrent();
+  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
 }
 
 function renderCandidates() {
@@ -226,7 +237,11 @@ async function importResumeBatch(files) {
   const selected = [...(files || [])];
   if (!selected.length) return;
   if (!app.jobs.length) return toast('请先创建至少一个岗位');
+  let queued = 0;
   for (const file of selected) {
+    const fileKey = `${file.name}:${file.size}:${file.lastModified}`;
+    if (importedFileKeys.has(fileKey)) continue;
+    importedFileKeys.add(fileKey); importFileCache.set(fileKey, file); queued += 1;
     const candidate = { id: crypto.randomUUID(), candidateName: '', roleName: '', jobId: '', jd: '', rules: '', keywords: [], resume: '', resumeMeta: null, ingestStatus: '解析中', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     app.cases.unshift(candidate); renderCurrent();
     try {
@@ -234,10 +249,11 @@ async function importResumeBatch(files) {
       candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
       const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
       applyJobMatch(candidate, match); candidate.ingestStatus = '已入库'; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
-    } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); }
+    } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; candidate.ingestFileKey = fileKey; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); }
     renderCurrent();
   }
-  toast(`已处理 ${selected.length} 份简历`);
+  localStorage.setItem('acecall-import-files-v1', JSON.stringify([...importedFileKeys]));
+  toast(queued ? `已处理 ${queued} 份简历${queued < selected.length ? '，重复文件已跳过' : ''}` : '所选文件已导入过，未重复创建');
 }
 
 async function parseResumeFileForImport(file) {
