@@ -38,8 +38,12 @@ async function listFiles(directory) {
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     const fullPath = path.join(directory, entry.name);
-    const stat = await fsp.stat(fullPath);
-    if (isCandidateFile(fullPath, stat)) files.push({ path: fullPath, stat });
+    try {
+      const stat = await fsp.stat(fullPath);
+      if (isCandidateFile(fullPath, stat)) files.push({ path: fullPath, stat });
+    } catch (error) {
+      if (!['ENOENT', 'EPERM'].includes(error.code)) throw error;
+    }
   }
   return files;
 }
@@ -61,6 +65,8 @@ class SyncAgent {
     this.stability = new Map();
     this.watcher = null;
     this.scanTimer = null;
+    this.scanInFlight = false;
+    this.scanQueued = false;
   }
 
   async loadState() {
@@ -81,13 +87,19 @@ class SyncAgent {
     await this.saveState();
     console.log(`[AceCall] ${this.policy.label}监听已启动：${this.directory}`);
     console.log(`[AceCall] 仅处理启动后的新增文件，补偿扫描间隔 ${this.options.interval / 60000} 分钟`);
-    this.watcher = fs.watch(this.directory, { persistent: true }, () => this.scan().catch(error => this.report(error)));
+    this.watcher = fs.watch(this.directory, { persistent: true }, (_event, changedName) => {
+      if (changedName && path.basename(String(changedName)) === path.basename(this.statePath)) return;
+      this.requestScan();
+    });
     this.scanTimer = setInterval(() => this.scan().catch(error => this.report(error)), this.options.interval);
     await this.scan();
     if (this.options.once) await this.stop();
   }
 
   async scan() {
+    if (this.scanInFlight) { this.scanQueued = true; return; }
+    this.scanInFlight = true;
+    try {
     const files = await listFiles(this.directory);
     for (const item of files) {
       const key = fileKey(item.path, item.stat);
@@ -98,7 +110,13 @@ class SyncAgent {
       await this.importFile(item.path, key);
     }
     await this.saveState();
+    } finally {
+      this.scanInFlight = false;
+      if (this.scanQueued) { this.scanQueued = false; this.requestScan(); }
+    }
   }
+
+  requestScan() { this.scan().catch(error => this.report(error)); }
 
   async importFile(filePath, key) {
     try {
