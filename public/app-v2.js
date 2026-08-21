@@ -2,6 +2,7 @@ import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@latest/+es
 
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
+const RULES_KEY = 'acecall-team-rules-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
 const REMOTE_BACKEND = Boolean(API_BASE);
 const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
@@ -12,6 +13,10 @@ const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'das
 let cloudbaseAuth = null;
 const importFileCache = new Map();
 const importedFileKeys = new Set(readStore('acecall-import-files-v1'));
+const teamRules = readStore(RULES_KEY);
+let folderWatchTimer = null;
+let watchedDirectory = null;
+let pendingTeamRule = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -112,8 +117,28 @@ function renderInbox() {
   $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><div class="import-actions"><label class="primary upload-trigger">＋ 批量导入简历<input id="batchResumeInput" type="file" accept=".pdf,.docx,.txt,.md" multiple hidden></label><label class="secondary upload-trigger">授权文件夹<input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>支持 PDF、DOCX、TXT、MD</span></div><div class="surface-body"><p style="font-size:11px;line-height:1.7;color:var(--muted);margin:0">可批量选择简历，或主动授权一个文件夹进行本次导入。页面保持打开时可再次选择同一文件夹，新增文件会自动去重并解析；低置信度简历仍会入库，不会自动淘汰。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}${item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? ` <button class="link-action" data-retry-import="${item.id}">重试</button>` : ''}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
   $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
   $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
+  const watchButton = document.createElement('button');
+  watchButton.className = 'secondary'; watchButton.id = 'watchFolderButton'; watchButton.type = 'button'; watchButton.textContent = '启动页面监听';
+  $('#inboxView .import-actions').append(watchButton); watchButton.addEventListener('click', startFolderWatch);
   bindCommonActions($('#inboxView'));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
+}
+
+async function startFolderWatch() {
+  if (folderWatchTimer) { clearInterval(folderWatchTimer); folderWatchTimer = null; watchedDirectory = null; toast('已停止页面监听'); return; }
+  if (!window.showDirectoryPicker) return toast('当前浏览器不支持持续文件夹监听，请使用“授权文件夹”导入');
+  try {
+    watchedDirectory = await window.showDirectoryPicker({ mode: 'read' });
+    folderWatchTimer = setInterval(scanWatchedDirectory, 8000);
+    await scanWatchedDirectory(); toast('文件夹监听已启动，页面保持打开即可自动导入新增简历');
+  } catch (error) { if (error.name !== 'AbortError') toast('文件夹授权失败，请重新选择'); }
+}
+
+async function scanWatchedDirectory() {
+  if (!watchedDirectory) return;
+  const files = [];
+  for await (const entry of watchedDirectory.values()) if (entry.kind === 'file' && /\.(pdf|docx?|txt|md)$/i.test(entry.name)) files.push(await entry.getFile());
+  if (files.length) await importResumeBatch(files);
 }
 
 async function retryImport(id) {
@@ -146,7 +171,12 @@ function renderJobs() {
   $('#jobsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>岗位</h1><p>一次维护JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select></div><div class="job-grid" id="jobGrid">${jobCards(app.jobs)}</div></div>`;
   bindCommonActions($('#jobsView'));
   $('#jobSearch').addEventListener('input', filterJobs); $('#jobIndustryFilter').addEventListener('input', filterJobs);
+  const library = document.createElement('div'); library.className = 'surface rules-library'; library.innerHTML = `<div class="surface-head"><h2>团队规则库</h2><span>共享给团队成员</span></div><div class="surface-body"><div class="rule-add"><input id="teamRuleInput" placeholder="添加常用核验规则"><button class="secondary" id="addTeamRule" type="button">添加规则</button></div><div class="rule-list">${teamRules.map((rule, index) => `<button class="rule-chip" data-use-rule="${index}" type="button">＋ ${escapeHtml(rule)}</button>`).join('') || '<span class="muted-text">还没有共享规则</span>'}</div></div>`; $('#jobsView .page').append(library);
+  $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
 }
+
+function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) teamRules.push(value); localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
+function useTeamRule(index) { const value = teamRules[index]; if (!value) return; pendingTeamRule = value; openJobDialog(); }
 
 function jobCards(jobs) {
   if (!jobs.length) return '<div class="surface empty">暂无岗位，请先建立岗位标准。</div>';
@@ -299,7 +329,15 @@ function confirmResult() {
 function openCandidate(id) { app.candidateId = id; app.detailTab = statusOf(app.cases.find(item => item.id === id)) === '待确认' ? 'call' : 'overview'; navigate('candidate'); }
 
 function openJobDialog(id) {
-  const job = app.jobs.find(item => item.id === id); $('#jobForm').reset(); $('#jobDialogTitle').textContent = job ? '编辑岗位' : '新建岗位'; $('#jobIdInput').value = job?.id || ''; $('#jobIndustryInput').value = job?.industry || '金融'; $('#jobNameInput').value = job?.name || ''; $('#jobJdInput').value = job?.jd || ''; $('#jobKeywordsInput').value = (job?.keywords || []).join('、'); $('#jobRulesInput').value = job?.rules || ''; $('#jobDialog').showModal();
+  const job = app.jobs.find(item => item.id === id); $('#jobForm').reset(); $('#jobDialogTitle').textContent = job ? '编辑岗位' : '新建岗位'; $('#jobIdInput').value = job?.id || ''; $('#jobIndustryInput').value = job?.industry || '金融'; $('#jobNameInput').value = job?.name || ''; $('#jobJdInput').value = job?.jd || ''; $('#jobKeywordsInput').value = (job?.keywords || []).join('、'); $('#jobRulesInput').value = `${job?.rules || ''}${pendingTeamRule ? `${job?.rules ? '\n' : ''}${pendingTeamRule}` : ''}`; pendingTeamRule = ''; $('#jobDialog').showModal();
+  const keywordLabel = $('#jobKeywordsInput').parentElement; if (!keywordLabel.querySelector('[data-generate-job]')) { const button = document.createElement('button'); button.type = 'button'; button.className = 'link-action'; button.dataset.generateJob = 'keywords'; button.textContent = '自动提取'; keywordLabel.append(button); button.addEventListener('click', () => generateJobProfile('keywords')); }
+  const rulesLabel = $('#jobRulesInput').parentElement; if (!rulesLabel.querySelector('[data-generate-job]')) { const button = document.createElement('button'); button.type = 'button'; button.className = 'link-action'; button.dataset.generateJob = 'rules'; button.textContent = '自动生成'; rulesLabel.append(button); button.addEventListener('click', () => generateJobProfile('rules')); }
+}
+
+function generateJobProfile(type) {
+  const jd = $('#jobJdInput').value.trim(); if (!jd) return toast('请先填写岗位JD'); const terms = [...new Set(findSharedTerms(jd, `${jd} ${$('#jobNameInput').value}`, []))];
+  if (type === 'keywords') { const extra = jd.match(/[A-Za-z][A-Za-z0-9+#.-]{1,20}/g) || []; $('#jobKeywordsInput').value = parseKeywords(`${$('#jobKeywordsInput').value}、${[...terms, ...extra].join('、')}`).join('、'); toast('关键词已自动提取，可继续手动调整'); }
+  else { const rules = ['核实候选人个人职责边界与主导程度', '确认核心项目是否上线及可量化结果', '补充业务规模、协作对象和团队分工']; $('#jobRulesInput').value = `${$('#jobRulesInput').value.trim()}${$('#jobRulesInput').value.trim() ? '\n' : ''}${rules.join('\n')}`; toast('初筛规则已生成，可继续手动调整'); }
 }
 
 function saveJob(event) {
@@ -330,7 +368,7 @@ function localMatch(payload) {
   return { jobId: first.job.id, score: first.score, confidence: first.score >= 75 ? '高' : first.score >= 50 ? '中' : '低', status: first.score >= 50 ? '已分配' : '待分配', dimensions: [{ item: '核心关键词', score: first.score, evidence: first.terms.join('、') || '未识别共同关键词' }], alternativeJobs: ranked.slice(1, 3).map(item => ({ name: item.job.name, score: item.score, reason: item.terms.join('、') || '共同信息较少' })), risks: first.score < 50 ? [{ risk: '岗位匹配度较低', evidence: '简历与岗位共同关键词有限' }] : [] };
 }
 
-function defaultQuestions(){return [['核心项目','请选择最相关的项目，说明背景、职责和结果。','核实经历真实性'],['职责边界','哪些决策由你直接负责？','区分参与和主导'],['项目结果','项目是否上线，有哪些可量化结果？','验证交付质量'],['协作管理','团队如何分工，你如何推动协作？','评估推动能力'],['求职动机','为什么现在考虑新的机会？','判断岗位动机'],['基本条件','请确认地点、薪资和到岗时间。','确认推进可行性'],['合规','是否存在竞业限制？','识别入职风险']].map(([category,question,reason])=>({category,question,reason,source:'初筛准备'}));}
+function defaultQuestions(){return [['基本条件','请确认目前地点、期望工作地点、薪资和到岗时间。','确认基础可行性','必问'],['求职动机','为什么在这个时间点考虑新的机会？','判断动机与岗位内容是否一致','必问'],['核心项目','请选择最相关的项目，说明背景、职责和结果。','核实经历真实性','必问'],['职责边界','哪些决策由你直接负责？哪些工作是参与完成？','区分参与和主导','必问'],['项目结果','项目是否上线，有哪些可量化结果？','验证交付质量','必问'],['专业能力','你负责过哪些业务模块，如何与业务和研发协作？','验证岗位专业能力','建议问'],['风险核验','过去几次工作变动的主要原因分别是什么？','识别稳定性风险','风险追问'],['合规','是否存在竞业限制或其他入职约束？','识别入职风险','必问']].map(([category,question,reason,priority])=>({category,question,reason,priority,source:'初筛准备'}));}
 
 function statusOf(item) { if (item.report?.reviewConfirmed) return '已完成'; if (item.report || item.communicationSummary) return '待确认'; if (item.preparation) return '待电话'; return '待分析'; }
 function displayStatus(item) { if (item.report?.reviewConfirmed) return ({'推荐业务面试':'推荐面试','补充电话沟通':'补充沟通','暂不推进':'暂不推进'}[item.report.finalDecision] || item.report.finalDecision || '已完成'); return statusOf(item); }
