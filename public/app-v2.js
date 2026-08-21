@@ -16,6 +16,12 @@ const importedFileKeys = new Set(readStore('acecall-import-files-v1'));
 let teamRules = readStore(RULES_KEY);
 let folderWatchTimer = null;
 let watchedDirectory = null;
+let folderWatchStartedAt = null;
+let folderWatchPolicy = null;
+let folderWatchBaselineKeys = new Set();
+let folderWatchSeenKeys = new Set();
+const fileStability = new Map();
+const FOLDER_SCAN_INTERVAL_MS = 300000;
 let pendingTeamRule = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -114,31 +120,42 @@ function renderDashboard() {
 function renderInbox() {
   const pending = app.cases.filter(item => item.ingestStatus === '解析中').length;
   const needsAssignment = app.cases.filter(item => item.matching?.status === '待分配').length;
-  $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><div class="import-actions"><label class="primary upload-trigger">＋ 批量导入简历<input id="batchResumeInput" type="file" accept=".pdf,.docx,.txt,.md" multiple hidden></label><label class="secondary upload-trigger">授权文件夹<input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>支持 PDF、DOCX、TXT、MD</span></div><div class="surface-body"><p style="font-size:11px;line-height:1.7;color:var(--muted);margin:0">可批量选择简历，或主动授权一个文件夹进行本次导入。页面保持打开时可再次选择同一文件夹，新增文件会自动去重并解析；低置信度简历仍会入库，不会自动淘汰。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}${item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? ` <button class="link-action" data-retry-import="${item.id}">重试</button>` : ''}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
+  const policy = getPlatformPolicy();
+  const watchStatus = folderWatchTimer ? '监听中' : '未启动';
+  const watchLabel = policy.defaultMode === 'downloads' ? '选择 Downloads 并开始监听' : '选择文件夹并开始监听';
+  $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><div class="import-actions"><label class="primary upload-trigger">＋ 批量导入简历<input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger">本次选择文件夹<input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface watch-panel"><div class="surface-head"><h2>页面文件监听</h2><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>当前设备：<b>${policy.label}</b></span><span>扫描周期：<b>每 5 分钟</b></span><span>处理范围：<b>仅监听开始后新增文件</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 浏览器无法直接读取 Downloads 路径，请在系统选择器中授权 Downloads 文件夹。' : 'Windows 请选择需要持续读取的授权文件夹。'} 支持 PDF、DOC、DOCX、TXT、MD、RTF；页面关闭后监听会停止。</p><button class="secondary" id="watchFolderButton" type="button">${folderWatchTimer ? '停止页面监听' : watchLabel}</button>${folderWatchStartedAt ? `<small class="watch-started">监听开始：${formatDate(folderWatchStartedAt)}</small>` : ''}</div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>自动筛选疑似简历</span></div><div class="surface-body"><p class="muted-text">系统会跳过临时下载文件、空文件和不具备简历特征的文档；无法判断的文件不会删除，可通过批量导入或手动粘贴处理。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}${item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? ` <button class="link-action" data-retry-import="${item.id}">重试</button>` : ''}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
   $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
   $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
-  const watchButton = document.createElement('button');
-  watchButton.className = 'secondary'; watchButton.id = 'watchFolderButton'; watchButton.type = 'button'; watchButton.textContent = '启动页面监听';
-  $('#inboxView .import-actions').append(watchButton); watchButton.addEventListener('click', startFolderWatch);
+  $('#watchFolderButton').addEventListener('click', startFolderWatch);
   bindCommonActions($('#inboxView'));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
 }
 
 async function startFolderWatch() {
-  if (folderWatchTimer) { clearInterval(folderWatchTimer); folderWatchTimer = null; watchedDirectory = null; toast('已停止页面监听'); return; }
+  if (folderWatchTimer) { clearInterval(folderWatchTimer); folderWatchTimer = null; watchedDirectory = null; folderWatchStartedAt = null; folderWatchPolicy = null; folderWatchBaselineKeys = new Set(); folderWatchSeenKeys = new Set(); fileStability.clear(); renderInbox(); toast('已停止页面监听'); return; }
   if (!window.showDirectoryPicker) return toast('当前浏览器不支持持续文件夹监听，请使用“授权文件夹”导入');
   try {
+    folderWatchPolicy = getPlatformPolicy();
     watchedDirectory = await window.showDirectoryPicker({ mode: 'read' });
-    folderWatchTimer = setInterval(scanWatchedDirectory, 8000);
-    await scanWatchedDirectory(); toast('文件夹监听已启动，页面保持打开即可自动导入新增简历');
+    folderWatchStartedAt = Date.now(); folderWatchBaselineKeys = new Set(); folderWatchSeenKeys = new Set(); fileStability.clear();
+    await scanWatchedDirectory(true);
+    folderWatchTimer = setInterval(() => scanWatchedDirectory(false), FOLDER_SCAN_INTERVAL_MS);
+    renderInbox(); toast(`已启动${folderWatchPolicy.label}监听，每 5 分钟检查一次新增简历`);
   } catch (error) { if (error.name !== 'AbortError') toast('文件夹授权失败，请重新选择'); }
 }
 
-async function scanWatchedDirectory() {
+async function scanWatchedDirectory(isBaseline = false) {
   if (!watchedDirectory) return;
   const files = [];
-  for await (const entry of watchedDirectory.values()) if (entry.kind === 'file' && /\.(pdf|docx?|txt|md)$/i.test(entry.name)) files.push(await entry.getFile());
-  if (files.length) await importResumeBatch(files);
+  for await (const entry of watchedDirectory.values()) {
+    if (entry.kind !== 'file' || !isSupportedResumeFileName(entry.name)) continue;
+    const file = await entry.getFile(); const key = fileKeyFor(file);
+    if (isBaseline) { folderWatchBaselineKeys.add(key); folderWatchSeenKeys.add(key); continue; }
+    if (folderWatchBaselineKeys.has(key) || folderWatchSeenKeys.has(key)) continue;
+    if (!isFileStable(file)) continue;
+    folderWatchSeenKeys.add(key); files.push(file);
+  }
+  if (files.length) await importResumeBatch(files, { source: 'folder-watch' });
 }
 
 async function retryImport(id) {
@@ -263,19 +280,20 @@ async function createCandidate(event) {
   await generatePreparation(candidate);
 }
 
-async function importResumeBatch(files) {
-  const selected = [...(files || [])];
+async function importResumeBatch(files, options = {}) {
+  const selected = [...(files || [])].filter(file => isSupportedResumeFile(file));
   if (!selected.length) return;
   if (!app.jobs.length) return toast('请先创建至少一个岗位');
   let queued = 0;
   for (const file of selected) {
-    const fileKey = `${file.name}:${file.size}:${file.lastModified}`;
+    const fileKey = fileKeyFor(file);
     if (importedFileKeys.has(fileKey)) continue;
     importedFileKeys.add(fileKey); importFileCache.set(fileKey, file); queued += 1;
     const candidate = { id: crypto.randomUUID(), candidateName: '', roleName: '', jobId: '', jd: '', rules: '', keywords: [], resume: '', resumeMeta: null, ingestStatus: '解析中', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     app.cases.unshift(candidate); renderCurrent();
     try {
       const result = await parseResumeFileForImport(file);
+      if (!looksLikeResume(result.text)) throw new Error('文件内容不像简历，已跳过，请确认文件后重试');
       candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
       const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
       applyJobMatch(candidate, match); candidate.ingestStatus = '已入库'; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
@@ -284,6 +302,38 @@ async function importResumeBatch(files) {
   }
   localStorage.setItem('acecall-import-files-v1', JSON.stringify([...importedFileKeys]));
   toast(queued ? `已处理 ${queued} 份简历${queued < selected.length ? '，重复文件已跳过' : ''}` : '所选文件已导入过，未重复创建');
+}
+
+function getPlatformPolicy() {
+  const userAgent = navigator.userAgent || '';
+  if (/Macintosh|Mac OS X/i.test(userAgent)) return { platform: 'mac', label: 'Mac', defaultMode: 'downloads', scanIntervalMs: FOLDER_SCAN_INTERVAL_MS };
+  if (/Windows/i.test(userAgent)) return { platform: 'windows', label: 'Windows', defaultMode: 'directory', scanIntervalMs: FOLDER_SCAN_INTERVAL_MS };
+  return { platform: 'other', label: '其他设备', defaultMode: 'manual', scanIntervalMs: FOLDER_SCAN_INTERVAL_MS };
+}
+
+function isSupportedResumeFileName(name = '') {
+  return /\.(pdf|docx?|txt|md|rtf)$/i.test(name) && !/\.(crdownload|part|tmp|download)$/i.test(name);
+}
+
+function isSupportedResumeFile(file) {
+  return Boolean(file && isSupportedResumeFileName(file.name) && Number(file.size || 0) > 1024);
+}
+
+function fileKeyFor(file) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function isFileStable(file) {
+  const key = fileKeyFor(file); const now = Date.now(); const previous = fileStability.get(key);
+  if (!previous || previous.size !== file.size) { fileStability.set(key, { size: file.size, seenAt: now }); return false; }
+  return now - previous.seenAt >= 10000;
+}
+
+function looksLikeResume(text = '') {
+  const normalized = String(text).replace(/\s+/g, ' ').trim();
+  if (normalized.length < 20) return false;
+  const signals = ['简历', '个人信息', '工作经历', '教育经历', '项目经历', '任职', '工作经验', '学历', '邮箱', '手机', '电话', 'resume', 'experience', 'education'];
+  return signals.filter(signal => normalized.toLowerCase().includes(signal.toLowerCase())).length >= 2;
 }
 
 async function parseResumeFileForImport(file) {
