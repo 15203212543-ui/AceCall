@@ -19,6 +19,16 @@ test('prepare demo returns structured questions', () => {
   assert.equal(result.questions[0].category, '求职动机');
 });
 
+test('match demo ranks a resume against saved jobs', () => {
+  const result = generateDemo({ action: 'match', resume: '证券 场外期权 RFQ 产品经理', jobs: [
+    { id: 'job-a', name: '场外期权产品经理', industry: '金融', jd: '负责场外期权 RFQ 产品', keywords: ['场外期权', 'RFQ', '产品'] },
+    { id: 'job-b', name: '互联网运营', industry: '互联网', jd: '负责用户增长和内容运营', keywords: ['用户增长'] }
+  ] });
+  assert.equal(result.jobId, 'job-a');
+  assert.ok(result.score > 0);
+  assert.ok(Array.isArray(result.alternativeJobs));
+});
+
 test('demo separates communication summary from synthesis', () => {
   const preparation = generateDemo({ action: 'prepare', jd: '交易产品经理', resume: '候选人\n负责交易产品' });
   const communicationSummary = generateDemo({ action: 'summarize', transcript: '候选人：我负责交易模块并推动系统上线。地点：上海。到岗：一个月。', preparation });

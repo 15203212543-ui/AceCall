@@ -127,7 +127,8 @@ function parseResumeBasics(text = '') {
 }
 
 function validatePayload(payload) {
-  if (!['prepare', 'summarize', 'synthesize'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
+  if (!['prepare', 'summarize', 'synthesize', 'match'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
+  if (payload.action === 'match' && (!payload.resume?.trim() || !Array.isArray(payload.jobs))) throw Object.assign(new Error('请提供简历和岗位列表'), { statusCode: 400 });
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) {
     throw Object.assign(new Error('请填写 JD 和候选人简历'), { statusCode: 400 });
   }
@@ -146,7 +147,7 @@ function getModelProvider() {
 }
 
 function buildModelPrompt(payload) {
-  const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : synthesisSchema();
+  const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : payload.action === 'synthesize' ? synthesisSchema() : matchSchema();
   const instructions = `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`;
   return { instructions, input: JSON.stringify(payload) };
 }
@@ -197,6 +198,10 @@ function prepareSchema() {
   return '初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）；questions 数组，每项含 category、question、reason、source（匹配点/风险点/重点核验/通用）。生成12-18个问题，并覆盖所有高优先级核验项。';
 }
 
+function matchSchema() {
+  return '岗位匹配字段：jobId 字符串（主岗位ID）；score 0到100整数；confidence（高/中/低）；status（已分配/待分配）；dimensions 数组，每项含 item、score、evidence；alternativeJobs 数组，每项含 name、score、reason；risks 数组，每项含 risk、evidence。根据简历事实和岗位JD、关键词进行语义匹配，缺失信息不等于不匹配，不得使用年龄、性别、婚育、籍贯等因素。';
+}
+
 function summarySchema() {
   return '沟通总结字段：overview 字符串；confirmed、contradicted、missing 数组，每项含 item、evidence；questionCoverage 对象含 covered、total、unanswered 数组；keyFacts 对象含 currentCompanyRole、location、currentSalary、expectedSalary、availability、motivation、nonCompete；candidateSignals 字符串数组；followUps 字符串数组。只总结电话内容，不给推荐结论。';
 }
@@ -206,6 +211,7 @@ function synthesisSchema() {
 }
 
 function generateDemo(payload) {
+  if (payload.action === 'match') return generateDemoMatch(payload);
   if (payload.action === 'prepare') {
     const role = firstMeaningfulLine(payload.jd) || '目标岗位';
     const name = firstMeaningfulLine(payload.resume) || '候选人';
@@ -220,6 +226,13 @@ function generateDemo(payload) {
   }
   if (payload.action === 'summarize') return generateDemoSummary(payload);
   return generateDemoSynthesis(payload);
+}
+
+function generateDemoMatch(payload) {
+  const ranked = payload.jobs.map(job => { const terms = findSharedTerms(`${job.name} ${job.jd}`, payload.resume, job.keywords); const score = Math.min(99, Math.round((terms.length / Math.max((job.keywords || []).length, 4)) * 70 + (payload.resume.includes(job.industry || '') ? 15 : 0) + (terms.length ? 10 : 0))); return { job, score, terms }; }).sort((a, b) => b.score - a.score);
+  const first = ranked[0];
+  if (!first) return { status: '待分配', score: 0, confidence: '低', alternativeJobs: [], risks: [{ risk: '岗位库为空', evidence: '暂无可匹配岗位' }] };
+  return { jobId: first.job.id, score: first.score, confidence: first.score >= 75 ? '高' : first.score >= 50 ? '中' : '低', status: first.score >= 50 ? '已分配' : '待分配', dimensions: [{ item: '核心关键词', score: first.score, evidence: first.terms.join('、') || '未识别共同关键词' }], alternativeJobs: ranked.slice(1, 3).map(item => ({ name: item.job.name, score: item.score, reason: item.terms.join('、') || '共同信息较少' })), risks: first.score < 50 ? [{ risk: '岗位匹配度较低', evidence: '简历与岗位共同关键词有限' }] : [] };
 }
 
 function generateDemoSummary(payload) {

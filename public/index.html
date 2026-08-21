@@ -24,6 +24,7 @@
       <a class="brand" href="#dashboard"><span>AC</span><strong>AceCall</strong></a>
       <nav>
         <button class="nav-item active" data-view="dashboard"><b>⌂</b><span>工作台</span></button>
+        <button class="nav-item" data-view="inbox"><b>↥</b><span>简历中心</span><i id="resumeInboxCount">0</i></button>
         <button class="nav-item" data-view="candidates"><b>◎</b><span>候选人</span><i id="candidateNavCount">0</i></button>
         <button class="nav-item" data-view="jobs"><b>▤</b><span>岗位</span></button>
       </nav>
@@ -33,6 +34,7 @@
     <main class="app-main">
       <header class="app-header"><div><span id="breadcrumb">招聘工作台</span></div><div class="header-actions"><span class="service-status" id="serviceStatus"><i></i>连接中</span><button class="avatar" id="logoutButton" type="button" title="退出登录">RM</button></div></header>
       <section class="view active" id="dashboardView"></section>
+      <section class="view" id="inboxView"></section>
       <section class="view" id="candidatesView"></section>
       <section class="view" id="jobsView"></section>
       <section class="view" id="candidateDetailView"></section>
@@ -45,7 +47,7 @@
       <header><div><small>新增候选人</small><h2>建立初筛档案</h2></div><button type="button" class="icon-close" data-close="candidateDialog">×</button></header>
       <div class="form-grid">
         <label><span>候选人姓名</span><input id="candidateNameInput" required placeholder="例如：张睿"></label>
-        <label><span>应聘岗位</span><select id="candidateJobInput" required></select></label>
+        <label><span>应聘岗位</span><select id="candidateJobInput"><option value="">自动匹配岗位</option></select><small class="field-hint">留空时根据简历内容自动分配岗位</small></label>
         <label class="full"><span>候选人简历</span><button type="button" class="upload-zone" id="resumeUploadButton"><b>↑ 上传简历</b><small>PDF、DOCX、TXT、MD，最大10MB</small></button><input id="resumeFileInput" type="file" accept=".pdf,.docx,.txt,.md" hidden><div id="resumeStatus" class="file-status hidden"></div><textarea id="candidateResumeInput" rows="10" required placeholder="上传后自动提取，也可以直接粘贴简历文本"></textarea></label>
       </div>
       <footer><button type="button" class="secondary" data-close="candidateDialog">取消</button><button type="submit" class="primary">保存并生成电话准备</button></footer>
