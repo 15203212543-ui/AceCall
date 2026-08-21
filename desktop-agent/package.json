@@ -1,0 +1,19 @@
+{
+  "name": "acecall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-assisted phone screening workflow for financial recruiting",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "sync-agent": "node local-sync-agent/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mammoth": "1.12.1",
+    "pdf-parse": "1.1.1"
+  }
+}
