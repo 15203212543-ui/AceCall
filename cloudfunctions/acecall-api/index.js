@@ -7,7 +7,8 @@ const COLLECTIONS = {
   jobs: 'acecall_jobs',
   candidates: 'acecall_candidates',
   screenings: 'acecall_screenings',
-  audit: 'acecall_audit_logs'
+  audit: 'acecall_audit_logs',
+  rules: 'acecall_team_rules'
 };
 let cloudbaseApp;
 
@@ -56,6 +57,11 @@ const server = http.createServer(async (request, response) => {
       await saveCandidate(id, candidate);
       return sendJson(response, 200, { ok: true, id });
     }
+    if (request.method === 'PUT' && url.pathname.startsWith('/api/rules/')) {
+      const id = validateId(url.pathname.slice('/api/rules/'.length)); const rule = await readJson(request); const now = new Date().toISOString();
+      await getDatabase().collection(COLLECTIONS.rules).doc(id).set({ id, content: String(rule.content || '').slice(0, 1000), version: Number(rule.version || 1), status: 'active', updatedAt: now, createdAt: rule.createdAt || now });
+      return sendJson(response, 200, { ok: true, id });
+    }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
       const payload = await readJson(request);
       validatePayload(payload);
@@ -84,10 +90,11 @@ function setCors(response, origin) {
 
 async function loadState() {
   const db = getDatabase();
-  const [jobsResult, candidatesResult, screeningsResult] = await Promise.all([
+  const [jobsResult, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
     db.collection(COLLECTIONS.jobs).orderBy('updatedAt', 'desc').limit(100).get(),
     db.collection(COLLECTIONS.candidates).orderBy('updatedAt', 'desc').limit(500).get(),
-    db.collection(COLLECTIONS.screenings).orderBy('updatedAt', 'desc').limit(500).get()
+    db.collection(COLLECTIONS.screenings).orderBy('updatedAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.rules).orderBy('updatedAt', 'desc').limit(200).get()
   ]);
   const screenings = new Map();
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
@@ -95,7 +102,7 @@ async function loadState() {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'communicationSummary', 'report']) });
   });
-  return { jobs: (jobsResult.data || []).map(cleanDocument), cases };
+  return { jobs: (jobsResult.data || []).map(cleanDocument), cases, rules: (rulesResult.data || []).map(cleanDocument) };
 }
 
 async function saveJob(id, input) {

@@ -13,7 +13,7 @@ const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'das
 let cloudbaseAuth = null;
 const importFileCache = new Map();
 const importedFileKeys = new Set(readStore('acecall-import-files-v1'));
-const teamRules = readStore(RULES_KEY);
+let teamRules = readStore(RULES_KEY);
 let folderWatchTimer = null;
 let watchedDirectory = null;
 let pendingTeamRule = '';
@@ -175,7 +175,7 @@ function renderJobs() {
   $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
 }
 
-function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) teamRules.push(value); localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
+function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) { teamRules.push(value); const rule = { id: crypto.randomUUID(), content: value, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); } localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
 function useTeamRule(index) { const value = teamRules[index]; if (!value) return; pendingTeamRule = value; openJobDialog(); }
 
 function jobCards(jobs) {
@@ -392,7 +392,7 @@ function readField(text,label){return text.match(new RegExp(`${label}[：:为是
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
 function apiUrl(path){return `${API_BASE}${path}`;}
 async function saveRemote(path,payload){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(!response.ok)throw new Error('远端保存失败');}catch(error){console.error(error);toast('已保存在本机，CloudBase同步失败');}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{const response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok)throw new Error('CloudBase数据读取失败');const remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));return;}for(const job of app.jobs)await saveRemote(`/api/jobs/${job.id}`,job);for(const candidate of app.cases)await saveRemote(`/api/candidates/${candidate.id}`,candidate);}catch(error){console.error(error);toast('CloudBase暂不可用，已使用本机数据');}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{const response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok)throw new Error('CloudBase数据读取失败');const remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));return;}for(const job of app.jobs)await saveRemote(`/api/jobs/${job.id}`,job);for(const candidate of app.cases)await saveRemote(`/api/candidates/${candidate.id}`,candidate);for(const content of teamRules)await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1});}catch(error){console.error(error);toast('CloudBase暂不可用，已使用本机数据');}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json();if(!response.ok)throw new Error(data.error||'服务离线');$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
 async function authenticatedFetch(url, options = {}) { const { data, error } = await cloudbaseAuth.getSession(); const token = data?.session?.access_token; if (error || !token) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); } const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
