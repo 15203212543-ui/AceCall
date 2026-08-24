@@ -57,6 +57,9 @@ const server = http.createServer(async (request, response) => {
       await saveCandidate(id, candidate);
       return sendJson(response, 200, { ok: true, id });
     }
+    if (request.method === 'POST' && url.pathname === '/api/migrate-resumes') {
+      return sendJson(response, 200, await migrateStoredResumes());
+    }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/rules/')) {
       const id = validateId(url.pathname.slice('/api/rules/'.length)); const rule = await readJson(request); const now = new Date().toISOString();
       await getDatabase().collection(COLLECTIONS.rules).doc(id).set({ id, content: String(rule.content || '').slice(0, 1000), version: Number(rule.version || 1), status: 'active', updatedAt: now, createdAt: rule.createdAt || now });
@@ -120,7 +123,7 @@ async function saveJob(id, input) {
 async function saveCandidate(id, input) {
   const db = getDatabase();
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'status', 'createdAt', 'updatedAt']);
+  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt']);
   candidate.id = id;
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
@@ -136,6 +139,39 @@ async function saveCandidate(id, input) {
     db.collection(COLLECTIONS.screenings).doc(id).set(screening)
   ]);
   await audit('candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status });
+}
+
+async function migrateStoredResumes() {
+  const db = getDatabase();
+  const [candidateResult, jobResult] = await Promise.all([
+    db.collection(COLLECTIONS.candidates).limit(500).get(),
+    db.collection(COLLECTIONS.jobs).limit(100).get()
+  ]);
+  const jobs = jobResult.data || [];
+  const migrated = []; const failed = [];
+  for (const source of candidateResult.data || []) {
+    const id = source.id || source._id; const originalText = String(source.resume || '').trim();
+    if (!id || !originalText) { failed.push({ id, reason: '没有已保存的简历文本' }); continue; }
+    try {
+      const text = normalizeResumeText(originalText); const basics = parseResumeBasics(text);
+      const job = jobs.find(item => item.id === source.jobId) || jobs.find(item => item.name === source.roleName) || jobs[0];
+      const currentMatch = source.matching || {};
+      const matching = job ? { ...currentMatch, ...generateDemoMatch({ resume: text, jobs: [job] }), jobId: job.id } : currentMatch;
+      const now = new Date().toISOString();
+      await db.collection(COLLECTIONS.candidates).doc(id).set({
+        ...source,
+        id,
+        resume: text,
+        candidateName: basics.candidateName || source.candidateName || '',
+        resumeMeta: { ...(source.resumeMeta || {}), ...basics, textNormalizedAt: now },
+        matching,
+        updatedAt: now
+      });
+      migrated.push(id);
+    } catch (error) { failed.push({ id, reason: error.message }); }
+  }
+  await audit('candidate.resume.migrate', 'all', { migrated: migrated.length, failed: failed.length });
+  return { ok: true, migrated: migrated.length, failed };
 }
 
 async function audit(action, entityId, detail) {
