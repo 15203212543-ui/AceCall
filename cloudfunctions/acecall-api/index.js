@@ -204,14 +204,18 @@ async function parseResumeFile(fileName, buffer) {
   else if (extension === '.docx') text = (await require('mammoth').extractRawText({ buffer })).value;
   else if (extension === '.pdf') text = (await require('pdf-parse')(buffer)).text;
   else throw serviceError('仅支持 PDF、DOCX、TXT 和 MD 文件', 415);
-  text = text.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const lines = String(text).replace(/\r/g, '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/g, '').split('\n').map(line => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+  const counts = new Map(); lines.forEach(line => counts.set(line, (counts.get(line) || 0) + 1));
+  text = lines.filter(line => { if ((counts.get(line) || 0) >= 3 && line.length < 80) return false; const visible = line.replace(/[\u4e00-\u9fffA-Za-z0-9@.+#:/()（）、，。；：\-]/g, ''); return visible.length / Math.max(line.length, 1) < 0.45; }).join('\n').replace(/([A-Za-z])\-\n([A-Za-z])/g, '$1$2').replace(/\n{3,}/g, '\n\n').trim();
   if (text.length < 20) throw serviceError('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR', 422);
-  const phone = text.match(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/)?.[0] || '';
-  const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
-  const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,12}经验/)?.[1] || '';
+  const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
+  const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
+  const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
+  const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
-  const candidateName = text.split('\n').map(line => line.trim()).find(line => line.length >= 2 && line.length <= 20 && !/简历|求职|电话|邮箱|手机/.test(line)) || '';
-  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, phone, email, experienceYears, education } };
+  const labeledName = text.match(/(?:姓名|候选人|Name)\s*[:：]?\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i)?.[1]?.trim() || '';
+  const candidateName = labeledName || text.split('\n').map(line => line.trim()).find(line => /^[\u4e00-\u9fff]{2,4}$/.test(line) || /^[A-Za-z][A-Za-z .'-]{1,30}$/.test(line)) || '';
+  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, phone, email, age, experienceYears, education } };
 }
 
 function validatePayload(payload) {

@@ -50,5 +50,11 @@ test('synthesis requires preparation and communication summary', () => {
 test('normalizes and parses resume basics', () => {
   const text = normalizeResumeText('张三  \n\n\n手机：13800138000\n邮箱：zhang@example.com\n本科，8年金融行业经验');
   assert.equal(text.includes('\n\n\n'), false);
-  assert.deepEqual(parseResumeBasics(text), { candidateName: '张三', phone: '13800138000', email: 'zhang@example.com', experienceYears: '8', education: '本科' });
+  assert.deepEqual(parseResumeBasics(text), { candidateName: '张三', phone: '13800138000', email: 'zhang@example.com', age: '', experienceYears: '8', education: '本科' });
+});
+
+test('cleans repeated PDF watermark noise and extracts labeled identity fields', () => {
+  const text = normalizeResumeText('姓名：李四\n年龄：29岁\n电话：138-0013-8000\n邮箱：li@example.com。\n水印 AceCall\n水印 AceCall\n水印 AceCall');
+  assert.equal(text.includes('水印 AceCall'), false);
+  assert.deepEqual(parseResumeBasics(text), { candidateName: '李四', phone: '13800138000', email: 'li@example.com', age: '29', experienceYears: '', education: '' });
 });

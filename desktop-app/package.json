@@ -1,0 +1,22 @@
+{
+  "name": "acecall-sync-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AceCall local resume sync desktop app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.acecall.sync",
+    "productName": "AceCall Sync",
+    "files": ["main.js", "preload.js", "renderer.html", "local-sync-agent.js"],
+    "mac": { "category": "public.app-category.productivity", "target": ["dmg"] },
+    "win": { "target": ["nsis"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  },
+  "devDependencies": { "electron": "^31.7.7", "electron-builder": "^24.13.3" }
+}

@@ -181,7 +181,7 @@ function filterCandidates() {
 }
 
 function candidateTable(items, title) {
-  return `<div class="surface"><div class="surface-head"><h2>${title}</h2><span>${items.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>应聘岗位</th><th>匹配度</th><th>负责人</th><th>初筛状态</th><th>更新时间</th><th>下一步</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${resumeHint(item)}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>Rick</td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span></td><td>${formatDate(item.updatedAt || item.createdAt)}</td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  return `<div class="surface"><div class="surface-head"><h2>${title}</h2><span>${items.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>应聘岗位</th><th>负责人</th><th>初筛状态</th><th>更新时间</th><th>匹配度</th><th>下一步</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${resumeHint(item)}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>Rick</td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span></td><td>${formatDate(item.updatedAt || item.createdAt)}</td><td>${scoreLabel(item)}</td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`).join('')}</tbody></table></div></div>`;
 }
 
 function renderJobs() {
@@ -352,7 +352,7 @@ function applyJobMatch(candidate, match) {
   const primary = app.jobs.find(job => job.id === match?.jobId) || app.jobs[0];
   if (!primary) return;
   candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
-  candidate.matching = { ...match, jobId: primary.id, status: match?.status || '已分配' };
+  candidate.matching = { ...match, jobId: primary.id, score: normalizedMatchScore(match, candidate.resume, primary), status: match?.status || '已分配' };
 }
 
 async function generatePreparation(candidate) {
@@ -426,7 +426,8 @@ function finalAction(item) { return item.report?.finalDecision || item.report?.n
 function nextAction(item) { const status=statusOf(item); return status==='待分析'?'生成电话准备':status==='待电话'?'开始初筛':status==='待确认'?'查看结果':'查看记录'; }
 function nextGuidance(item) { const status=statusOf(item); return status==='待电话'?'按初筛准备中的重点问题完成电话沟通。':status==='待确认'?'核对AI整理的事实与结论，确认最终动作。':'查看完整初筛记录和人工确认结果。'; }
 function statusClass(status){return ['待确认','补充沟通'].includes(status)?'warn':['暂不推进','待分析'].includes(status)?'neutral':'';}
-function scoreValue(item){const value=Number(item.matching?.score);return Number.isFinite(value)&&value>0?value:'—';}
+function normalizedMatchScore(match = {}, resume = '', job = {}) { const explicit = Number(match.score ?? match.matchScore ?? match.matchingScore ?? match.dimensions?.[0]?.score); if (Number.isFinite(explicit)) return Math.max(0, Math.min(100, Math.round(explicit))); const terms = [...new Set([job.name, ...(job.keywords || [])].filter(Boolean))]; const hits = terms.filter(term => String(resume).toLowerCase().includes(String(term).toLowerCase())).length; return terms.length ? Math.min(100, Math.round((hits / terms.length) * 100)) : 0; }
+function scoreValue(item){const value=Number(item.matching?.score);if(Number.isFinite(value))return Math.max(0,Math.min(100,Math.round(value)));const job=app.jobs.find(candidateJob=>candidateJob.id===item.jobId)||{};return normalizedMatchScore({},item.resume,job);}
 function scoreLabel(item){const value=scoreValue(item);return value==='—'?'<span class="score muted">—</span>':`<strong class="score">${value}分</strong>`;}
 function currentCandidate(){return app.cases.find(item=>item.id===app.candidateId);}
 function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch{return [];}}
