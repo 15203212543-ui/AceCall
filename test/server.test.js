@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics } = require('../server');
+const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName } = require('../server');
 
 test('finds shared financial recruiting terms', () => {
   assert.deepEqual(findSharedTerms('证券场外期权产品', '负责证券场外期权产品系统'), ['证券', '场外期权', '产品']);
@@ -57,4 +57,11 @@ test('cleans repeated PDF watermark noise and extracts labeled identity fields',
   const text = normalizeResumeText('姓名：李四\n年龄：29岁\n电话：138-0013-8000\n邮箱：li@example.com。\n水印 AceCall\n水印 AceCall\n水印 AceCall');
   assert.equal(text.includes('水印 AceCall'), false);
   assert.deepEqual(parseResumeBasics(text), { candidateName: '李四', phone: '13800138000', email: 'li@example.com', age: '29', experienceYears: '', education: '' });
+});
+
+test('extracts names from labeled and mixed header lines without section noise', () => {
+  assert.equal(extractCandidateName(['工作经历', '【券商后端开发】代胜辉 6年']), '代胜辉');
+  assert.equal(extractCandidateName(['姓名：周文超', '出生日期：1995年']), '周文超');
+  assert.equal(extractCandidateName(['Education', 'John Smith', 'john@example.com']), 'John Smith');
+  assert.equal(extractCandidateName(['教育背景', '7年经验', '联系方式']), '');
 });

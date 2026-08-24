@@ -158,8 +158,9 @@ async function migrateStoredResumes() {
       const currentMatch = source.matching || {};
       const matching = job ? { ...currentMatch, ...generateDemoMatch({ resume: text, jobs: [job] }), jobId: job.id } : currentMatch;
       const now = new Date().toISOString();
+      const { _id, _openid, ...stored } = source;
       await db.collection(COLLECTIONS.candidates).doc(id).set({
-        ...source,
+        ...stored,
         id,
         resume: text,
         candidateName: basics.candidateName || source.candidateName || '',
@@ -249,9 +250,21 @@ async function parseResumeFile(fileName, buffer) {
   const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
   const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
-  const labeledName = text.match(/(?:姓名|候选人|Name)\s*[:：]?\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i)?.[1]?.trim() || '';
-  const candidateName = labeledName || text.split('\n').map(line => line.trim()).find(line => /^[\u4e00-\u9fff]{2,4}$/.test(line) || /^[A-Za-z][A-Za-z .'-]{1,30}$/.test(line)) || '';
+  const candidateName = extractCandidateName(text.split('\n').map(line => line.trim()).filter(Boolean));
   return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, phone, email, age, experienceYears, education } };
+}
+
+function extractCandidateName(lines = []) {
+  const clean = value => String(value).replace(/[\u200b\ufeff]/g, '').replace(/^[\s:：|·•\-]+|[\s,，。；;、]+$/g, '').trim();
+  const excluded = /简历|个人信息|基本信息|工作经历|教育背景|教育经历|项目经历|专业技能|自我评价|求职意向|出生日期|年龄|电话|手机|邮箱|微信|职位|岗位|经验|任职|联系方式|summary|resume|experience|education/i;
+  for (const line of lines) { const labeled = line.match(/(?:姓名|候选人|Candidate|Name)\s*[:：]?\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i)?.[1]; if (labeled && !excluded.test(labeled)) return clean(labeled); }
+  for (const line of lines) {
+    if (excluded.test(line) || /@|1[3-9]\d{9}|\d{2,4}[-/.年]/.test(line)) continue;
+    const chinese = [...line.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(item => item[0]);
+    if (chinese.length) return clean(chinese[chinese.length - 1]);
+    const english = line.match(/\b[A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){1,3}\b/)?.[0]; if (english && !excluded.test(english)) return clean(english);
+  }
+  return '';
 }
 
 function validatePayload(payload) {
