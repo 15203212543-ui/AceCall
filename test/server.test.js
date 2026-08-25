@@ -83,3 +83,8 @@ test('rejects resume section noise and uses a valid fallback name', () => {
   assert.equal(chooseCandidateName('姓名：周文超', ''), '周文超');
   assert.equal(chooseCandidateName(extractLabeledCandidateName(['姓名：李四']), '张三', '销售支持'), '李四');
 });
+
+test('cloud function keeps its resume normalization implementation in sync', () => {
+  const source = require('fs').readFileSync(require('path').join(__dirname, '../cloudfunctions/acecall-api/index.js'), 'utf8');
+  assert.match(source, /function normalizeResumeText\(text = ''\)/);
+});

@@ -91,6 +91,22 @@ function setCors(response, origin) {
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
+function normalizeResumeText(text = '') {
+  const lines = String(text)
+    .replace(/\r/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/g, '')
+    .split('\n')
+    .map(line => line.replace(/[ \t]+/g, ' ').trim())
+    .filter(Boolean);
+  const counts = new Map();
+  lines.forEach(line => counts.set(line, (counts.get(line) || 0) + 1));
+  return lines.filter(line => {
+    if ((counts.get(line) || 0) >= 3 && line.length < 80) return false;
+    const visible = line.replace(/[\u4e00-\u9fffA-Za-z0-9@.+#:/()（）\u3001，。；：\-]/g, '');
+    return visible.length / Math.max(line.length, 1) < 0.45;
+  }).join('\n').replace(/([A-Za-z])\-\n([A-Za-z])/g, '$1$2').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 async function loadState() {
   const db = getDatabase();
   const [jobsResult, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
