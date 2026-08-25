@@ -87,4 +87,5 @@ test('rejects resume section noise and uses a valid fallback name', () => {
 test('cloud function keeps its resume normalization implementation in sync', () => {
   const source = require('fs').readFileSync(require('path').join(__dirname, '../cloudfunctions/acecall-api/index.js'), 'utf8');
   assert.match(source, /function normalizeResumeText\(text = ''\)/);
+  assert.match(source, /function parseResumeBasics\(text = ''\)/);
 });

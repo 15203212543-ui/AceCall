@@ -107,6 +107,16 @@ function normalizeResumeText(text = '') {
   }).join('\n').replace(/([A-Za-z])\-\n([A-Za-z])/g, '$1$2').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function parseResumeBasics(text = '') {
+  const lines = String(text).split('\n').map(line => line.trim()).filter(Boolean);
+  const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
+  const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
+  const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
+  const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
+  const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
+  return { candidateName: extractCandidateName(lines), phone, email, age, experienceYears, education };
+}
+
 async function loadState() {
   const db = getDatabase();
   const [jobsResult, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
