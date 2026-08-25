@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractNameFromFileName } = require('../server');
+const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractLabeledCandidateName, extractNameFromFileName, isPlausibleCandidateName, chooseCandidateName } = require('../server');
 
 test('finds shared financial recruiting terms', () => {
   assert.deepEqual(findSharedTerms('证券场外期权产品', '负责证券场外期权产品系统'), ['证券', '场外期权', '产品']);
@@ -69,5 +69,17 @@ test('extracts names from labeled and mixed header lines without section noise',
 test('falls back to candidate names embedded in resume file names', () => {
   assert.equal(extractNameFromFileName('【券商后端开发-Golang_北京 25-50K】代胜辉 6年.pdf'), '代胜辉');
   assert.equal(extractNameFromFileName('张树伟的简历 (1).pdf'), '张树伟');
+  assert.equal(extractNameFromFileName('【人力管培_北京 12-24K】菜苔 26年应届生.pdf'), '菜苔');
+  assert.equal(extractNameFromFileName('【人力管培_北京 12-24K】韩先生 1年.pdf'), '韩先生');
+  assert.equal(extractNameFromFileName('【人力管培_北京 12-24K】石淼晶 26年应届生.pdf'), '石淼晶');
   assert.equal(extractNameFromFileName('CV_for_Lo_Wai_Keung_cn.pdf'), 'Lo Wai Keung');
+});
+
+test('rejects resume section noise and uses a valid fallback name', () => {
+  for (const noise of ['工作经历', '教育背景', '出生日期：95年08月25日', '建联沟通', '画像', '背景信息', '绩点前', '寻访', '武汉科技大学 本科 计算机科学与技术']) {
+    assert.equal(isPlausibleCandidateName(noise), false);
+  }
+  assert.equal(chooseCandidateName('工作经历', '周文超'), '周文超');
+  assert.equal(chooseCandidateName('姓名：周文超', ''), '周文超');
+  assert.equal(chooseCandidateName(extractLabeledCandidateName(['姓名：李四']), '张三', '销售支持'), '李四');
 });
