@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName } = require('../server');
+const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractNameFromFileName } = require('../server');
 
 test('finds shared financial recruiting terms', () => {
   assert.deepEqual(findSharedTerms('证券场外期权产品', '负责证券场外期权产品系统'), ['证券', '场外期权', '产品']);
@@ -64,4 +64,10 @@ test('extracts names from labeled and mixed header lines without section noise',
   assert.equal(extractCandidateName(['姓名：周文超', '出生日期：1995年']), '周文超');
   assert.equal(extractCandidateName(['Education', 'John Smith', 'john@example.com']), 'John Smith');
   assert.equal(extractCandidateName(['教育背景', '7年经验', '联系方式']), '');
+});
+
+test('falls back to candidate names embedded in resume file names', () => {
+  assert.equal(extractNameFromFileName('【券商后端开发-Golang_北京 25-50K】代胜辉 6年.pdf'), '代胜辉');
+  assert.equal(extractNameFromFileName('张树伟的简历 (1).pdf'), '张树伟');
+  assert.equal(extractNameFromFileName('CV_for_Lo_Wai_Keung_cn.pdf'), 'Lo Wai Keung');
 });

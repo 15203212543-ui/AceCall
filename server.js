@@ -109,7 +109,8 @@ async function parseResumeFile(fileName, buffer) {
   }
   text = normalizeResumeText(text);
   if (text.length < 20) throw Object.assign(new Error('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR'), { statusCode: 422 });
-  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, ...parseResumeBasics(text) } };
+  const basics = parseResumeBasics(text); basics.candidateName = basics.candidateName || extractNameFromFileName(fileName);
+  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, ...basics } };
 }
 
 function normalizeResumeText(text = '') {
@@ -148,6 +149,13 @@ function extractCandidateName(lines = []) {
     if (english && !excluded.test(english)) return clean(english);
   }
   return '';
+}
+
+function extractNameFromFileName(fileName = '') {
+  const value = path.basename(fileName, path.extname(fileName)).replace(/【[^】]*】|\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/[_-]+/g, ' ').replace(/\b(?:CV|Resume|for|cn|en)\b/gi, ' ').replace(/(?:的)?简历|工作\s*\d+\s*年|\d+\s*年(?:经验)?|\d{2,4}K|Golang|Java|开发工程师|产品经理|风控专员|服务端开发/g, ' ').replace(/\s+/g, ' ').trim();
+  const chinese = [...value.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(item => item[0]).filter(item => !/券商|后端|招聘|导出|原文|详情|开发|工程师/.test(item));
+  if (chinese.length) return chinese[chinese.length - 1];
+  return value.match(/\b[A-Z][A-Za-z']{1,20}(?:\s+[A-Z][A-Za-z']{1,20}){1,3}\b/)?.[0] || '';
 }
 
 function validatePayload(payload) {
@@ -335,4 +343,4 @@ function sendJson(response, status, body) {
 
 if (require.main === module) server.listen(port, host, () => console.log(`AceCall running at http://${host}:${port}`));
 
-module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, getModelProvider, server };
+module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractNameFromFileName, getModelProvider, server };

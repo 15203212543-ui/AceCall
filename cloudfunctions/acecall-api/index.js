@@ -153,7 +153,7 @@ async function migrateStoredResumes() {
     const id = source.id || source._id; const originalText = String(source.resume || '').trim();
     if (!id || !originalText) { failed.push({ id, reason: '没有已保存的简历文本' }); continue; }
     try {
-      const text = normalizeResumeText(originalText); const basics = parseResumeBasics(text);
+      const text = normalizeResumeText(originalText); const basics = parseResumeBasics(text); basics.candidateName = basics.candidateName || extractNameFromFileName(source.resumeMeta?.fileName || '');
       const job = jobs.find(item => item.id === source.jobId) || jobs.find(item => item.name === source.roleName) || jobs[0];
       const currentMatch = source.matching || {};
       const matching = job ? { ...currentMatch, ...generateDemoMatch({ resume: text, jobs: [job] }), jobId: job.id } : currentMatch;
@@ -250,7 +250,7 @@ async function parseResumeFile(fileName, buffer) {
   const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
   const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
-  const candidateName = extractCandidateName(text.split('\n').map(line => line.trim()).filter(Boolean));
+  const candidateName = extractCandidateName(text.split('\n').map(line => line.trim()).filter(Boolean)) || extractNameFromFileName(fileName);
   return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, phone, email, age, experienceYears, education } };
 }
 
@@ -265,6 +265,13 @@ function extractCandidateName(lines = []) {
     const english = line.match(/\b[A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){1,3}\b/)?.[0]; if (english && !excluded.test(english)) return clean(english);
   }
   return '';
+}
+
+function extractNameFromFileName(fileName = '') {
+  const value = path.basename(fileName, path.extname(fileName)).replace(/【[^】]*】|\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/[_-]+/g, ' ').replace(/\b(?:CV|Resume|for|cn|en)\b/gi, ' ').replace(/(?:的)?简历|工作\s*\d+\s*年|\d+\s*年(?:经验)?|\d{2,4}K|Golang|Java|开发工程师|产品经理|风控专员|服务端开发/g, ' ').replace(/\s+/g, ' ').trim();
+  const chinese = [...value.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(item => item[0]).filter(item => !/券商|后端|招聘|导出|原文|详情|开发|工程师/.test(item));
+  if (chinese.length) return chinese[chinese.length - 1];
+  return value.match(/\b[A-Z][A-Za-z']{1,20}(?:\s+[A-Z][A-Za-z']{1,20}){1,3}\b/)?.[0] || '';
 }
 
 function validatePayload(payload) {
