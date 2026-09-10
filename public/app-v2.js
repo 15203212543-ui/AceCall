@@ -184,7 +184,7 @@ function inferTalentProfile(item) {
   return { competitor, major, school };
 }
 
-function renderInbox() {
+function renderInboxLegacy() {
   const pending = app.cases.filter(item => item.ingestStatus === '解析中').length;
   const needsAssignment = app.cases.filter(item => item.matching?.status === '待分配').length;
   const policy = getPlatformPolicy();
@@ -196,6 +196,40 @@ function renderInbox() {
   $('#watchFolderButton').addEventListener('click', startFolderWatch);
   bindCommonActions($('#inboxView'));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
+}
+
+function renderInbox() {
+  const pending = app.cases.filter(item => item.ingestStatus === '解析中').length;
+  const needsAssignment = app.cases.filter(item => !item.jobId || item.matching?.status === '待分配').length;
+  const failed = app.cases.filter(item => String(item.ingestStatus || '').startsWith('解析失败')).length;
+  const duplicate = app.cases.filter(item => item.ingestStatus === '重复待确认').length;
+  const batches = [...new Set(app.cases.map(item => item.ingestBatchId).filter(Boolean))].slice(0, 5);
+  const policy = getPlatformPolicy();
+  const watchStatus = folderWatchTimer ? '监听中' : '未启动';
+  const watchLabel = policy.defaultMode === 'downloads' ? '选择 Downloads 并开始监听' : '选择文件夹并开始监听';
+  const queue = [...app.cases].sort(byUpdated).slice(0, 30);
+  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></div><div class="metric"><b>${pending}</b><span>解析中</span><small>正在处理</small></div><div class="metric"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></div><div class="metric"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></div><div class="metric"><b>${failed}</b><span>解析异常</span><small>支持重试</small></div></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">这里处理文件，不在此管理电话和审核流程</p></div><span>${queue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">还没有进入处理队列的简历</div></td></tr>'}</tbody></table></div></section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">支持 Mac Downloads 和 Windows 授权文件夹，新增文件会进入同一处理队列。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.zip" download>下载 Mac 助手</a><a class="secondary" href="downloads/AceCall-Sync-Windows.zip" download>下载 Windows 助手</a></div></div></section></aside></div></div>`;
+  $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files, { source: 'manual' }));
+  $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files, { source: 'folder' }));
+  $('#watchFolderButton').addEventListener('click', startFolderWatch);
+  bindCommonActions($('#inboxView'));
+  $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
+}
+
+function resumeQueueRow(item) {
+  const meta = item.resumeMeta || {};
+  const quality = resumeQuality(item);
+  const duplicateLabel = item.ingestStatus === '重复待确认' ? '<span class="status warn">疑似重复</span>' : '<span class="status">未发现</span>';
+  const action = item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? `<button class="link-action" data-retry-import="${item.id}">重试</button>` : `<button class="link-action" data-open-candidate="${item.id}">查看 →</button>`;
+  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${escapeHtml(item.roleName || '待分配')} ${item.matching?.status === '待分配' ? '<span class="status warn">需确认</span>' : ''}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(item.ingestSource === 'folder-watch' ? '文件夹监听' : item.ingestSource === 'folder' ? '文件夹导入' : '手动导入')}</td><td>${action}</td></tr>`;
+}
+
+function resumeQuality(item) {
+  const meta = item.resumeMeta || {};
+  const missing = [['姓名', item.candidateName || meta.candidateName], ['手机', meta.phone], ['邮箱', meta.email], ['工作经历', meta.experienceYears || item.resume]].filter(([, value]) => !value).map(([label]) => label);
+  if (String(item.ingestStatus || '').startsWith('解析失败')) return { level: 'error', label: '需人工处理', missing: '文本解析失败' };
+  if (missing.length >= 2) return { level: 'warn', label: '部分完整', missing: missing.join('、') };
+  return { level: 'good', label: '完整', missing: '' };
 }
 
 async function startFolderWatch() {
@@ -232,16 +266,40 @@ async function retryImport(id) {
   try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
 }
 
-function renderCandidates() {
+function renderCandidatesLegacy() {
   $('#candidatesView').innerHTML = `<div class="page"><div class="page-title"><div><h1>候选人</h1><p>按下一步动作管理简历、电话初筛和推荐结果。</p></div><button class="primary" data-add-candidate>＋ 添加候选人</button></div><div class="toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部状态</option>${['待分析','待电话','待确认','推荐面试','补充沟通','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select></div><div id="candidateTableSlot">${candidateTable(app.cases, '全部候选人')}</div></div>`;
   bindCommonActions($('#candidatesView'));
   ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter'].forEach(id => $(`#${id}`).addEventListener('input', filterCandidates));
 }
 
+function renderCandidates() {
+  const counts = ['全部', '待分析', '待电话', '待确认', '推荐面试', '补充沟通', '已完成', '暂不推进'].map(status => ({ status, count: status === '全部' ? app.cases.length : app.cases.filter(item => displayStatus(item) === status).length }));
+  $('#candidatesView').innerHTML = `<div class="page candidates-page"><div class="page-title"><div><span class="eyebrow">TALENT PIPELINE</span><h1>候选人</h1><p>管理已进入招聘流程的人才，不再处理原始文件导入。</p></div><button class="primary" data-add-candidate>＋ 手动添加候选人</button></div><div class="candidate-stages">${counts.map(item => `<button class="candidate-stage ${item.status === '全部' ? 'active' : ''}" data-stage-filter="${item.status}"><b>${item.count}</b><span>${item.status}</span></button>`).join('')}</div><div class="toolbar candidate-toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司、学校或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部阶段</option>${['待分析','待电话','待确认','推荐面试','补充沟通','已完成','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select><select id="candidateTagFilter"><option value="">全部标签</option><option value="competitor">直接竞品</option><option value="major">行业前 5</option><option value="school">985/211/双一流</option><option value="quality">资料待补全</option><option value="moka">Moka待配置</option></select></div><div class="candidate-summary-line"><span>当前显示 <b id="candidateResultCount">${app.cases.length}</b> 人</span><span>统计包含已淘汰候选人 · 标签依据可在详情查看</span></div><div id="candidateTableSlot">${candidatePoolTable(app.cases)}</div></div>`;
+  bindCommonActions($('#candidatesView'));
+  ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter', 'candidateTagFilter'].forEach(id => $(`#${id}`).addEventListener('input', filterCandidates));
+  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(); }));
+}
+
+function candidatePoolTable(items) {
+  return `<div class="surface"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${items.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div>`;
+}
+
+function candidateTags(item) {
+  const profile = inferTalentProfile(item); const tags = [];
+  if (profile.competitor === true) tags.push({ label: '竞品', tone: 'tag-positive' });
+  if (profile.major === true) tags.push({ label: '行业前5', tone: 'tag-accent' });
+  if (profile.school === true) tags.push({ label: '985/211/双一流', tone: 'tag-neutral' });
+  if (item.talentProfile?.function) tags.push({ label: item.talentProfile.function, tone: 'tag-neutral' });
+  return tags.slice(0, 3);
+}
+
+function mokaStatusLabel(item) { return item.mokaSync?.status ? `Moka：${item.mokaSync.status}` : 'Moka：接口待配置'; }
+
 function filterCandidates() {
   const search = $('#candidateSearch').value.trim().toLowerCase();
   const jobId = $('#candidateJobFilter').value;
   const status = $('#candidateStatusFilter').value;
+  const tag = $('#candidateTagFilter')?.value || '';
   const dashboardMatch = item => {
     if (app.dashboardFilter === 'high') return scoreValue(item) >= 80;
     if (app.dashboardFilter === 'competitor') return inferTalentProfile(item).competitor === true;
@@ -249,8 +307,10 @@ function filterCandidates() {
     if (app.dashboardFilter === 'school') return inferTalentProfile(item).school === true;
     return true;
   };
-  const filtered = app.cases.filter(item => dashboardMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
-  $('#candidateTableSlot').innerHTML = candidateTable(filtered, `候选人 ${filtered.length}`);
+  const tagMatch = item => { const profile = inferTalentProfile(item); if (tag === 'competitor') return profile.competitor === true; if (tag === 'major') return profile.major === true; if (tag === 'school') return profile.school === true; if (tag === 'quality') return resumeQuality(item).level !== 'good'; if (tag === 'moka') return !item.mokaSync?.status || item.mokaSync.status !== '已同步'; return true; };
+  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
+  $('#candidateResultCount').textContent = filtered.length;
+  $('#candidateTableSlot').innerHTML = candidatePoolTable(filtered);
   bindCommonActions($('#candidateTableSlot'));
 }
 
@@ -290,11 +350,20 @@ function renderCandidateDetail() {
 
 function renderDetailTab(item) {
   const body = $('#detailBody');
-  if (app.detailTab === 'overview') body.innerHTML = overviewTab(item);
+  if (app.detailTab === 'overview') body.innerHTML = talentProfilePanel(item) + overviewTab(item);
   if (app.detailTab === 'call') body.innerHTML = callTab(item);
   if (app.detailTab === 'resume') body.innerHTML = resumeTab(item);
   if (app.detailTab === 'history') body.innerHTML = historyTab(item);
   bindDetailActions(body);
+}
+
+function talentProfilePanel(item) {
+  const profile = inferTalentProfile(item); const quality = resumeQuality(item); const text = item.resume || '';
+  const evidence = [];
+  if (profile.competitor === true) evidence.push('从最近经历识别到证券同业公司，结合岗位行业判断为直接竞品');
+  if (profile.major === true) evidence.push('从简历经历识别到行业头部公司名称');
+  if (profile.school === true) evidence.push('从教育经历识别到 985/211/双一流学校');
+  return `<section class="surface talent-profile-panel"><div class="surface-head"><div><h2>人才画像</h2><p class="surface-subtitle">优先归类最近 1-2 段经历，标签可追溯</p></div><span>AI识别 · 允许人工修正</span></div><div class="surface-body"><div class="profile-grid"><div class="profile-fact"><span>公司层级</span><div>${profile.competitor === true ? '<b class="profile-chip positive">直接竞品</b>' : '<b class="profile-chip muted">待确认</b>'}${profile.major === true ? '<b class="profile-chip accent">行业前 5</b>' : ''}</div></div><div class="profile-fact"><span>学校层级</span><div>${profile.school === true ? '<b class="profile-chip neutral">985/211/双一流</b>' : '<b class="profile-chip muted">待确认</b>'}</div></div><div class="profile-fact"><span>资料质量</span><div><b class="quality quality-${quality.level}">${quality.label}</b>${quality.missing ? `<small>缺少：${escapeHtml(quality.missing)}</small>` : ''}</div></div><div class="profile-fact"><span>Moka状态</span><div><b class="profile-chip muted">${escapeHtml(mokaStatusLabel(item))}</b></div></div></div><div class="profile-evidence"><strong>识别依据</strong><span>${escapeHtml(evidence.join('；') || '暂未识别到可确认的公司或学校标签，未知信息不会强行归类。')}</span></div></div></section>`;
 }
 
 function overviewTab(item) {
@@ -358,19 +427,21 @@ async function importResumeBatch(files, options = {}) {
   const selected = [...(files || [])].filter(file => isSupportedResumeFile(file));
   if (!selected.length) return;
   if (!app.jobs.length) return toast('请先创建至少一个岗位');
+  const batchId = options.batchId || crypto.randomUUID();
   let queued = 0;
   for (const file of selected) {
     const fileKey = fileKeyFor(file);
     if (importedFileKeys.has(fileKey)) continue;
     importedFileKeys.add(fileKey); importFileCache.set(fileKey, file); queued += 1;
-    const candidate = { id: crypto.randomUUID(), candidateName: '', roleName: '', jobId: '', jd: '', rules: '', keywords: [], resume: '', resumeMeta: null, ingestStatus: '解析中', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const candidate = { id: crypto.randomUUID(), candidateName: '', roleName: '', jobId: '', jd: '', rules: '', keywords: [], resume: '', resumeMeta: null, ingestStatus: '解析中', ingestBatchId: batchId, ingestSource: options.source || 'manual', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     app.cases.unshift(candidate); renderCurrent();
     try {
       const result = await parseResumeFileForImport(file);
       if (!looksLikeResume(result.text)) throw new Error('文件内容不像简历，已跳过，请确认文件后重试');
       candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
+      const sameContact = app.cases.find(item => item.id !== candidate.id && ((result.metadata.phone && item.resumeMeta?.phone === result.metadata.phone) || (result.metadata.email && item.resumeMeta?.email && item.resumeMeta.email.toLowerCase() === result.metadata.email.toLowerCase())));
       const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
-      applyJobMatch(candidate, match); candidate.ingestStatus = '已入库'; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
+      applyJobMatch(candidate, match); candidate.ingestStatus = sameContact ? '重复待确认' : '已入库'; candidate.duplicateOf = sameContact?.id || ''; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
     } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; candidate.ingestFileKey = fileKey; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); }
     renderCurrent();
   }

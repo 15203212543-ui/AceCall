@@ -149,7 +149,7 @@ async function saveJob(id, input) {
 async function saveCandidate(id, input) {
   const db = getDatabase();
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt']);
+  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync']);
   candidate.id = id;
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
