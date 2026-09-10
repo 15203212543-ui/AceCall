@@ -11,6 +11,7 @@ const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null };
+app.dashboardFilter = '';
 let cloudbaseAuth = null;
 const importFileCache = new Map();
 const importedFileKeys = new Set(readStore('acecall-import-files-v1'));
@@ -109,13 +110,78 @@ function renderCurrent() {
 }
 
 function renderDashboard() {
+  const activeJobs = app.jobs.filter(job => job.status !== 'closed');
+  const total = app.cases.length;
   const pendingCall = app.cases.filter(item => statusOf(item) === '待电话').length;
   const pendingReview = app.cases.filter(item => statusOf(item) === '待确认').length;
-  const followUp = app.cases.filter(item => finalAction(item) === '补充电话沟通').length;
   const recommended = app.cases.filter(item => finalAction(item) === '推荐业务面试').length;
-  const rows = [...app.cases].sort(byUpdated).slice(0, 6);
-  $('#dashboardView').innerHTML = `<div class="page"><div class="page-title"><div><h1>招聘工作台</h1><p>集中处理待初筛候选人和待确认结果。</p></div><button class="primary" data-add-candidate>＋ 添加候选人</button></div><div class="metrics"><div class="metric"><b>${pendingCall}</b><span>待电话初筛</span><a>开始处理 →</a></div><div class="metric"><b>${pendingReview}</b><span>待确认结果</span><a>查看 →</a></div><div class="metric"><b>${followUp}</b><span>需要补充沟通</span></div><div class="metric"><b>${recommended}</b><span>已推荐业务面试</span></div></div>${candidateTable(rows, '今日待处理')}</div>`;
+  const highMatch = app.cases.filter(item => scoreValue(item) >= 80).length;
+  const structures = talentStructure(app.cases);
+  const actionRows = [...app.cases].filter(item => ['待分析', '待电话', '待确认'].includes(statusOf(item)) || scoreValue(item) >= 80).sort((a,b) => scoreValue(b) - scoreValue(a) || byUpdated(a,b)).slice(0, 8);
+  $('#dashboardView').innerHTML = `<div class="page dashboard-page">
+    <div class="page-title dashboard-title"><div><span class="eyebrow">RECRUITING CONTROL ROOM</span><h1>招聘工作台</h1><p>从岗位推进到人才结构，集中查看今天最值得处理的招聘动作。</p></div><div class="dashboard-actions"><select id="dashboardJobFilter"><option value="">全部活跃岗位</option>${activeJobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><button class="primary" data-add-candidate>＋ 添加候选人</button></div></div>
+    <div class="dashboard-strip"><div class="dashboard-strip-label"><span>当前招聘面</span><b>${activeJobs.length} 个岗位</b></div><div class="dashboard-strip-note">统计范围：全部候选人，包含已淘汰与待处理人选 · 标签来源：简历事实 / AI识别 / 人工确认</div><button class="link-action" data-dashboard-refresh>刷新视图 ↻</button></div>
+    <div class="metrics dashboard-metrics"><button class="metric metric-action" data-dashboard-filter="all"><b>${total}</b><span>候选人总数</span><small>全量人才池</small></button><button class="metric metric-action" data-dashboard-filter="high"><b>${highMatch}</b><span>高匹配候选人</span><small>匹配度 80 分以上</small></button><button class="metric metric-action" data-dashboard-filter="call"><b>${pendingCall}</b><span>待电话沟通</span><small>需要推进</small></button><button class="metric metric-action" data-dashboard-filter="review"><b>${pendingReview}</b><span>待审核结果</span><small>需要确认</small></button><div class="metric"><b>${recommended}</b><span>已推荐业务面试</span><small>已完成动作</small></div></div>
+    <div class="dashboard-layout"><div class="dashboard-main"><section class="surface progress-surface"><div class="surface-head"><div><h2>岗位推进</h2><p class="surface-subtitle">按岗位查看候选人在哪个环节停留</p></div><span>${activeJobs.length} 个活跃岗位</span></div><div class="surface-body job-progress-list">${activeJobs.length ? activeJobs.map(jobProgressRow).join('') : '<div class="empty">还没有活跃岗位，请先建立岗位标准。</div>'}</div></section><section class="surface action-surface"><div class="surface-head"><div><h2>优先处理</h2><p class="surface-subtitle">高匹配、待沟通和待审核候选人</p></div><button class="link-action" data-dashboard-filter="all">查看全部 →</button></div>${candidateTable(actionRows, '')}</section></div><aside class="dashboard-aside"><section class="surface structure-surface"><div class="surface-head"><div><h2>人才池结构</h2><p class="surface-subtitle">基于全部候选人统计</p></div><span>AI识别</span></div><div class="surface-body"><div class="structure-block"><div class="structure-heading"><strong>直接竞品经历</strong><span>${structures.competitor.known}/${total || 0} 人</span></div>${structureBar(structures.competitor, '竞品公司') }<p class="structure-note">按岗位 JD 与候选人最近 1-2 段经历识别</p></div><div class="structure-block"><div class="structure-heading"><strong>大厂经历</strong><span>${structures.major.known}/${total || 0} 人</span></div>${structureBar(structures.major, '行业前 5') }<p class="structure-note">同业务行业内按规模、业务体量和市场排名识别</p></div><div class="structure-block"><div class="structure-heading"><strong>学校层次</strong><span>${structures.school.known}/${total || 0} 人</span></div>${structureBar(structures.school, '985/211/双一流') }<p class="structure-note">优先读取简历教育经历，无法确认则保留未知</p></div><button class="structure-link" data-dashboard-filter="competitor">查看结构命中候选人 →</button></div></section><section class="surface funnel-surface"><div class="surface-head"><div><h2>招聘漏斗</h2><p class="surface-subtitle">全部岗位累计</p></div></div><div class="surface-body"><div class="funnel-row"><span>简历已导入</span><b>${total}</b></div><div class="funnel-row"><span>已完成解析</span><b>${app.cases.filter(item => item.resume).length}</b></div><div class="funnel-row"><span>已完成沟通</span><b>${app.cases.filter(item => item.communicationSummary || item.report).length}</b></div><div class="funnel-row"><span>已推荐面试</span><b>${recommended}</b></div></div></section></aside></div></div>`;
   bindCommonActions($('#dashboardView'));
+  $('#dashboardJobFilter').addEventListener('change', filterDashboardJob);
+  $$('#dashboardView [data-dashboard-filter-job]').forEach(button => button.addEventListener('click', () => { app.dashboardFilter = 'job'; navigate('candidates'); requestAnimationFrame(() => { $('#candidateJobFilter').value = button.dataset.dashboardFilterJob; filterCandidates(); }); }));
+  $$('#dashboardView [data-dashboard-filter]').forEach(button => button.addEventListener('click', () => openDashboardFilter(button.dataset.dashboardFilter)));
+  $('#dashboardView [data-dashboard-refresh]').addEventListener('click', () => { renderDashboard(); toast('工作台数据已刷新'); });
+}
+
+function filterDashboardJob(event) {
+  const jobId = event.target.value;
+  $$('#dashboardView .job-progress-row').forEach(row => { row.hidden = Boolean(jobId && row.dataset.jobId !== jobId); });
+}
+
+function openDashboardFilter(filter) {
+  app.dashboardFilter = filter;
+  navigate('candidates');
+  requestAnimationFrame(() => {
+    const input = $('#candidateSearch'); const status = $('#candidateStatusFilter'); const job = $('#candidateJobFilter');
+    if (filter === 'call') status.value = '待电话';
+    else if (filter === 'review') status.value = '待确认';
+    else if (filter === 'high') input.value = '高匹配度';
+    else if (filter === 'competitor') input.value = '竞品经历';
+    filterCandidates();
+    if (filter === 'all') { input.value = ''; status.value = ''; job.value = ''; filterCandidates(); }
+  });
+}
+
+function jobProgressRow(job) {
+  const items = app.cases.filter(item => item.jobId === job.id);
+  const stages = [['新增', items.length], ['已解析', items.filter(item => item.resume).length], ['待沟通', items.filter(item => ['待电话', '待分析'].includes(statusOf(item))).length], ['已沟通', items.filter(item => item.communicationSummary || item.report).length], ['已推荐', items.filter(item => finalAction(item) === '推荐业务面试').length]];
+  const topScore = items.length ? Math.max(...items.map(scoreValue)) : 0;
+  return `<div class="job-progress-row" data-job-id="${job.id}"><div class="job-progress-head"><div><strong>${escapeHtml(job.name)}</strong><span>${escapeHtml(job.industry || '其他')} · ${items.length} 位候选人</span></div><div class="job-progress-meta"><b>${topScore}分</b><small>最高匹配</small></div></div><div class="stage-track">${stages.map((stage,index) => `<div class="stage-item ${index === 0 ? 'active' : ''}"><b>${stage[1]}</b><span>${stage[0]}</span></div>`).join('')}</div><div class="job-progress-foot"><span>高匹配 ${items.filter(item => scoreValue(item) >= 80).length} 人</span><span>待审核 ${items.filter(item => statusOf(item) === '待确认').length} 人</span><button class="link-action" data-dashboard-filter-job="${job.id}">查看岗位候选人 →</button></div></div>`;
+}
+
+function talentStructure(items) {
+  const total = items.length;
+  const profile = items.map(item => inferTalentProfile(item));
+  const tally = values => ({ known: values.filter(Boolean).length, hit: values.filter(value => value === true).length, unknown: values.filter(value => value === null).length, total });
+  return { competitor: tally(profile.map(item => item.competitor)), major: tally(profile.map(item => item.major)), school: tally(profile.map(item => item.school)) };
+}
+
+function structureBar(value, label) {
+  const known = value.known ? Math.round(value.hit / value.known * 100) : 0;
+  const unknown = value.total ? Math.round(value.unknown / value.total * 100) : 0;
+  const filter = label === '竞品公司' ? 'competitor' : label === '行业前 5' ? 'major' : 'school';
+  return `<div class="structure-bar"><button class="bar-hit" style="width:${known}%" data-dashboard-filter="${filter}" title="${label} ${value.hit} 人">${known}%</button><button class="bar-unknown" style="width:${unknown}%" data-dashboard-filter="all" title="未知 ${value.unknown} 人">${unknown ? `${unknown}%` : ''}</button></div><div class="structure-legend"><span><i class="legend-hit"></i>已识别 ${value.hit} 人</span><span><i class="legend-unknown"></i>未知 ${value.unknown} 人</span></div>`;
+}
+
+function inferTalentProfile(item) {
+  const stored = item.talentProfile || item.resumeMeta?.talentProfile || {};
+  const text = `${item.resume || ''} ${item.roleName || ''}`;
+  const job = app.jobs.find(candidateJob => candidateJob.id === item.jobId) || {};
+  const financeCompanyHit = /(中信证券|华泰证券|国泰君安|海通证券|招商证券|中金公司|广发证券|申万宏源|银河证券)/i.test(text);
+  const majorCompanyHit = /(腾讯|阿里巴巴|字节跳动|百度|美团|京东|蚂蚁集团|拼多多)/i.test(text);
+  const schoolHit = /(清华大学|北京大学|复旦大学|上海交通大学|浙江大学|中国人民大学|南京大学|武汉大学|华中科技大学|西安交通大学|中山大学|哈尔滨工业大学|北京航空航天大学|同济大学|四川大学|南开大学|天津大学|厦门大学|东南大学)/.test(text);
+  const sameFinanceIndustry = /金融|证券|券商|衍生品|交易/.test(`${job.industry || ''} ${job.name || item.roleName || ''}`);
+  const competitor = typeof stored.competitor === 'boolean' ? stored.competitor : (stored.companyTags?.includes?.('direct_competitor') ? true : (financeCompanyHit && sameFinanceIndustry ? true : null));
+  const major = typeof stored.major === 'boolean' ? stored.major : (stored.companyTags?.includes?.('internet_major') ? true : (majorCompanyHit ? true : null));
+  const school = typeof stored.school === 'boolean' ? stored.school : (stored.schoolTags?.some?.(tag => ['985', '211', 'double_first_class', 'target_school'].includes(tag)) ? true : (schoolHit ? true : null));
+  return { competitor, major, school };
 }
 
 function renderInbox() {
@@ -176,7 +242,14 @@ function filterCandidates() {
   const search = $('#candidateSearch').value.trim().toLowerCase();
   const jobId = $('#candidateJobFilter').value;
   const status = $('#candidateStatusFilter').value;
-  const filtered = app.cases.filter(item => (!search || `${item.candidateName} ${item.roleName} ${item.resume}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
+  const dashboardMatch = item => {
+    if (app.dashboardFilter === 'high') return scoreValue(item) >= 80;
+    if (app.dashboardFilter === 'competitor') return inferTalentProfile(item).competitor === true;
+    if (app.dashboardFilter === 'major') return inferTalentProfile(item).major === true;
+    if (app.dashboardFilter === 'school') return inferTalentProfile(item).school === true;
+    return true;
+  };
+  const filtered = app.cases.filter(item => dashboardMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
   $('#candidateTableSlot').innerHTML = candidateTable(filtered, `候选人 ${filtered.length}`);
   bindCommonActions($('#candidateTableSlot'));
 }
