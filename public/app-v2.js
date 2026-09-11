@@ -10,9 +10,10 @@ const FORCE_MIGRATION = new URLSearchParams(location.search).has('migrate');
 const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null };
+const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, workspace: null };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
+let cloudbaseClient = null;
 const importFileCache = new Map();
 const importedFileKeys = new Set(readStore('acecall-import-files-v1'));
 let teamRules = readStore(RULES_KEY);
@@ -25,10 +26,12 @@ let folderWatchSeenKeys = new Set();
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
 let pendingTeamRule = '';
+let recordingDraft = { candidateId: null, file: null, url: '', source: '' };
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
   bindShell();
+  await hydrateWorkspace();
   await hydrateState();
   seedJobs();
   await checkService();
@@ -53,8 +56,8 @@ async function initializeAuth() {
     showLoginMessage('CloudBase登录配置不完整');
     return false;
   }
-  const cloudbaseApp = cloudbase.init({ env: CLOUD_CONFIG.env, region: CLOUD_CONFIG.region, accessKey: CLOUD_CONFIG.publishableKey });
-  cloudbaseAuth = cloudbaseApp.auth({ persistence: 'local' });
+  cloudbaseClient = cloudbase.init({ env: CLOUD_CONFIG.env, region: CLOUD_CONFIG.region, accessKey: CLOUD_CONFIG.publishableKey });
+  cloudbaseAuth = cloudbaseClient.auth({ persistence: 'local' });
   const { data, error } = await cloudbaseAuth.getSession();
   if (error) showLoginMessage(error.message || '登录状态读取失败');
   if (!data?.session) return false;
@@ -377,7 +380,9 @@ function overviewTab(item) {
 function callTab(item) {
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或按原意记录候选人回答…">${escapeHtml(item.transcript || '')}</textarea></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
+  const recordingLabel = draft?.file ? `${draft.file.name} · ${formatBytes(draft.file.size)}` : item.callRecording?.fileName || '尚未添加录音';
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording">开始录音</button><button class="secondary" type="button" id="stopRecording" disabled>停止录音</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingLabel)}。录音前请先向候选人告知并取得同意。</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或按原意记录候选人回答…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">当前版本支持录音归档和人工粘贴转写；接入语音识别服务后可自动填充此处。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {
@@ -389,7 +394,23 @@ function resumeTab(item) { const meta=item.resumeMeta||{};return `<div class="su
 function historyTab(item) { const events = [['建立候选人档案',item.createdAt],item.preparation&&['AI完成电话准备',item.createdAt],item.communicationSummary&&['生成沟通总结',item.updatedAt],item.report&&['生成综合初筛结果',item.updatedAt],item.report?.reviewConfirmed&&['招聘人员确认结果',item.updatedAt]].filter(Boolean); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact"><span>${formatDate(event[1])}</span><b>${event[0]}</b></div>`).join('')}</div></div>`; }
 
 function renderSettings() {
-  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>设置</h1><p>模型密钥和候选人数据均由服务端管理。</p></div></div><div class="settings-grid"><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>模型配置</span><b>DEEPSEEK_MODEL</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">API Key仅保存在服务端环境变量中。CloudBase远端接口启用后，本地历史数据会自动迁移，不会把密钥写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
+  const workspace = app.workspace || {}; const current = workspace.currentMember || {}; const members = workspace.members || [];
+  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><span class="eyebrow">WORKSPACE ADMIN</span><h1>设置</h1><p>公司工作区、团队成员和服务配置。</p></div></div><div class="settings-grid"><div class="surface"><div class="surface-head"><h2>当前公司工作区</h2><span>${escapeHtml(current.role || '成员')}</span></div><div class="surface-body"><div class="setting-row"><span>公司名称</span><b>${escapeHtml(workspace.workspace?.name || '未设置')}</b></div><div class="setting-row"><span>工作区 ID</span><b>${escapeHtml(workspace.workspace?.id || workspace.workspace?.tenantId || '—')}</b></div><div class="setting-row"><span>当前账号</span><b>${escapeHtml(current.displayName || current.username || current.uid || '—')}</b></div><div class="setting-row"><span>成员数量</span><b>${members.length} 人</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">同一公司主体下的岗位、候选人、规则和工作台统计共享；不同公司使用独立租户数据空间，互不可见。</p></div></div><div class="surface"><div class="surface-head"><h2>团队成员</h2><span>共享工作区</span></div><div class="surface-body">${members.length ? members.map(member => `<div class="setting-row"><span><b>${escapeHtml(member.displayName || member.username || '未命名')}</b><small style="display:block;color:var(--muted)">${escapeHtml(member.uid || '')}</small></span><b>${escapeHtml(member.role || 'recruiter')}</b></div>`).join('') : '<div class="empty">暂无成员信息</div>'}<p style="font-size:10px;color:var(--muted);line-height:1.6">成员邀请和角色管理将在管理后台开放；当前阶段先展示工作区共享状态。</p></div></div><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">API Key仅保存在服务端环境变量中，不会写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
+  if (['owner', 'admin'].includes(current.role)) {
+    $('#settingsView .settings-grid').insertAdjacentHTML('beforeend', '<div class="surface"><div class="surface-head"><h2>邀请团队成员</h2><span>管理员操作</span></div><div class="surface-body"><div class="toolbar"><input id="inviteMemberUid" placeholder="员工 UID"><select id="inviteMemberRole"><option value="recruiter">招聘人员</option><option value="admin">管理员</option><option value="viewer">只读成员</option></select><button class="primary" id="inviteMemberButton" type="button">邀请</button></div><small style="color:var(--muted)">员工首次登录后会自动加入当前公司工作区。</small></div></div>');
+    $('#inviteMemberButton').addEventListener('click', inviteMember);
+  }
+}
+
+async function inviteMember() {
+  const uid = $('#inviteMemberUid').value.trim();
+  if (!uid) return toast('请输入员工 UID');
+  try {
+    const response = await authenticatedFetch(apiUrl('/api/members/invite'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid, role: $('#inviteMemberRole').value }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '邀请失败');
+    await hydrateWorkspace(); renderSettings(); toast('成员邀请已创建');
+  } catch (error) { toast(error.message || '邀请失败'); }
 }
 
 function bindCommonActions(root) {
@@ -406,6 +427,9 @@ function bindDetailActions(root) {
   root.querySelector('[data-generate-prep]')?.addEventListener('click', () => generatePreparation(currentCandidate()));
   root.querySelector('[data-complete-call]')?.addEventListener('click', completeCall);
   root.querySelector('[data-confirm-result]')?.addEventListener('click', confirmResult);
+  root.querySelector('#callAudioInput')?.addEventListener('change', event => setRecordingFile(event.target.files?.[0]));
+  root.querySelector('#startRecording')?.addEventListener('click', startBrowserRecording);
+  root.querySelector('#stopRecording')?.addEventListener('click', stopBrowserRecording);
 }
 
 function openCandidateDialog() {
@@ -510,11 +534,60 @@ async function completeCall() {
   const button = $('[data-complete-call]'); button.disabled = true; button.textContent = '正在生成结果';
   try {
     candidate.transcript = transcript; candidate.consentConfirmed = true;
+    if (recordingDraft.candidateId === candidate.id && recordingDraft.file) candidate.callRecording = await uploadCallRecording(candidate, recordingDraft.file);
     candidate.communicationSummary = await generate({ action:'summarize', roleName:candidate.roleName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, preparation:candidate.preparation, transcript });
     candidate.report = await generate({ action:'synthesize', roleName:candidate.roleName, jd:candidate.jd, rules:candidate.rules, keywords:candidate.keywords, preparation:candidate.preparation, communicationSummary:candidate.communicationSummary });
     candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已生成，请人工确认');
   } catch (error) { toast(error.message); button.disabled = false; button.textContent = '完成电话并生成结果'; }
 }
+
+let activeRecorder = null;
+let activeRecorderChunks = [];
+
+function setRecordingFile(file) {
+  if (!file) return;
+  if (file.size > 50_000_000) return toast('录音文件不能超过 50MB');
+  if (!file.type.startsWith('audio/')) return toast('请选择音频文件');
+  if (recordingDraft.url) URL.revokeObjectURL(recordingDraft.url);
+  recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload' };
+  renderCandidateDetail();
+  toast('录音已添加，完成电话后会归档到候选人记录');
+}
+
+async function startBrowserRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('当前浏览器不支持录音，请上传录音文件');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    activeRecorderChunks = [];
+    activeRecorder = new MediaRecorder(stream);
+    activeRecorder.ondataavailable = event => { if (event.data.size) activeRecorderChunks.push(event.data); };
+    activeRecorder.onstop = () => {
+      stream.getTracks().forEach(track => track.stop());
+      const blob = new Blob(activeRecorderChunks, { type: activeRecorder.mimeType || 'audio/webm' });
+      const extension = blob.type.includes('mp4') || blob.type.includes('m4a') ? 'm4a' : 'webm';
+      setRecordingFile(new File([blob], `call-${Date.now()}.${extension}`, { type: blob.type }));
+    };
+    activeRecorder.start();
+    $('#startRecording').disabled = true; $('#stopRecording').disabled = false; $('#recordingStatus').textContent = '正在录音，请在通话结束后停止录音。';
+  } catch (error) { toast(error.name === 'NotAllowedError' ? '浏览器未获得麦克风权限' : '无法开始录音'); }
+}
+
+function stopBrowserRecording() {
+  if (!activeRecorder || activeRecorder.state === 'inactive') return;
+  activeRecorder.stop(); activeRecorder = null;
+  $('#startRecording').disabled = false; $('#stopRecording').disabled = true;
+}
+
+async function uploadCallRecording(candidate, file) {
+  const metadata = { fileName: file.name, mimeType: file.type || 'audio/webm', size: file.size, source: recordingDraft.source || 'upload', recordedAt: new Date().toISOString(), status: 'local' };
+  if (!REMOTE_BACKEND) return metadata;
+  if (!cloudbaseClient?.uploadFile) throw new Error('CloudBase存储未初始化，当前只能保存转写文本');
+  const cloudPath = `acecall/call-recordings/${candidate.id}/${Date.now()}-${file.name.replace(/[^A-Za-z0-9._-]/g, '_')}`;
+  const result = await cloudbaseClient.uploadFile({ cloudPath, filePath: file });
+  return { ...metadata, status: 'uploaded', fileId: result.fileID || result.fileId || '' };
+}
+
+function formatBytes(value) { if (value < 1024) return `${value} B`; if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`; return `${(value / 1024 / 1024).toFixed(1)} MB`; }
 
 function confirmResult() {
   const candidate = currentCandidate(); if (!$('#reviewConfirmed').checked) return toast('请先确认已核对材料');
@@ -593,3 +666,4 @@ async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getI
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json();if(!response.ok)throw new Error(data.error||'服务离线');$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
 async function authenticatedFetch(url, options = {}) { const { data, error } = await cloudbaseAuth.getSession(); const token = data?.session?.access_token; if (error || !token) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); } const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
+async function hydrateWorkspace(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#loginUsername')?.value||''})});}if(!response.ok)throw new Error('工作区初始化失败');app.workspace=await response.json();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}

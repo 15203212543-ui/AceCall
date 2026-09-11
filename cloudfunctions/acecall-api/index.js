@@ -4,6 +4,8 @@ const tcb = require('@cloudbase/node-sdk');
 
 const PORT = 9000;
 const COLLECTIONS = {
+  tenants: 'acecall_tenants',
+  members: 'acecall_members',
   jobs: 'acecall_jobs',
   candidates: 'acecall_candidates',
   screenings: 'acecall_screenings',
@@ -21,6 +23,11 @@ function getDatabase() {
     });
   }
   return cloudbaseApp.database();
+}
+
+function getCloudbaseApp() {
+  getDatabase();
+  return cloudbaseApp;
 }
 
 const server = http.createServer(async (request, response) => {
@@ -44,34 +51,47 @@ const server = http.createServer(async (request, response) => {
         model: process.env.DEEPSEEK_MODEL || 'deepseek-chat'
       });
     }
-    if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState());
+    if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request)));
+    if (request.method === 'GET' && url.pathname === '/api/workspace') return sendJson(response, 200, await workspaceSummary(await getRequestContext()));
+    if (request.method === 'GET' && url.pathname === '/api/members') return sendJson(response, 200, await listMembers(await getRequestContext()));
+    if (request.method === 'POST' && url.pathname === '/api/members/invite') return sendJson(response, 200, await inviteMember(await getRequestContext(), await readJson(request)));
+    if (request.method === 'PUT' && url.pathname.startsWith('/api/members/')) {
+      const id = validateId(url.pathname.slice('/api/members/'.length));
+      return sendJson(response, 200, await updateMember(await getRequestContext(), id, await readJson(request)));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext()));
     if (request.method === 'PUT' && url.pathname.startsWith('/api/jobs/')) {
       const id = validateId(url.pathname.slice('/api/jobs/'.length));
       const job = await readJson(request);
-      await saveJob(id, job);
+      await saveJob(await getRequestContext(), id, job);
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/candidates/')) {
       const id = validateId(url.pathname.slice('/api/candidates/'.length));
       const candidate = await readJson(request);
-      await saveCandidate(id, candidate);
+      await saveCandidate(await getRequestContext(), id, candidate);
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'POST' && url.pathname === '/api/migrate-resumes') {
-      return sendJson(response, 200, await migrateStoredResumes());
+      return sendJson(response, 200, await migrateStoredResumes(await getRequestContext()));
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/rules/')) {
+      const context = await getRequestContext();
       const id = validateId(url.pathname.slice('/api/rules/'.length)); const rule = await readJson(request); const now = new Date().toISOString();
-      await getDatabase().collection(COLLECTIONS.rules).doc(id).set({ id, content: String(rule.content || '').slice(0, 1000), version: Number(rule.version || 1), status: 'active', updatedAt: now, createdAt: rule.createdAt || now });
+      await assertWritableRecord(COLLECTIONS.rules, id, context.tenantId);
+      await getDatabase().collection(COLLECTIONS.rules).doc(id).set({ id, tenantId: context.tenantId, createdBy: context.uid, updatedBy: context.uid, content: String(rule.content || '').slice(0, 1000), version: Number(rule.version || 1), status: 'active', updatedAt: now, createdAt: rule.createdAt || now });
+      await audit(context, 'rule.upsert', id, { contentLength: String(rule.content || '').length });
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
+      await getRequestContext();
       const payload = await readJson(request);
       validatePayload(payload);
       const result = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
       return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
+      await getRequestContext();
       const fileName = url.searchParams.get('name') || 'resume';
       const buffer = await readBuffer(request, 10_000_000);
       return sendJson(response, 200, await parseResumeFile(fileName, buffer));
@@ -117,45 +137,148 @@ function parseResumeBasics(text = '') {
   return { candidateName: extractCandidateName(lines), phone, email, age, experienceYears, education };
 }
 
-async function loadState() {
+async function getRequestContext() {
+  const user = getCloudbaseApp().auth().getUserInfo();
+  const uid = user.uid || user.customUserId;
+  if (!uid || user.isAnonymous) throw serviceError('请先登录后使用业务功能', 401);
+  const result = await getDatabase().collection(COLLECTIONS.members).where({ uid, status: 'active' }).limit(1).get();
+  const member = result.data?.[0];
+  if (!member?.tenantId) throw serviceError('当前账号尚未加入公司工作区，请联系管理员邀请', 403);
+  return { uid, tenantId: member.tenantId, role: member.role || 'recruiter', member };
+}
+
+async function bootstrapWorkspace(input = {}) {
+  const user = getCloudbaseApp().auth().getUserInfo();
+  const uid = user.uid || user.customUserId;
+  if (!uid || user.isAnonymous) throw serviceError('请先登录后初始化工作区', 401);
+  const db = getDatabase();
+  const existing = await db.collection(COLLECTIONS.members).where({ uid }).limit(5).get();
+  const existingMember = existing.data?.[0];
+  if (existingMember?.tenantId) {
+    if (existingMember.status === 'disabled') throw serviceError('当前账号已被禁用', 403);
+    const member = existingMember.status === 'invited' ? { ...existingMember, status: 'active', updatedAt: new Date().toISOString() } : existingMember;
+    if (member.status !== existingMember.status) await db.collection(COLLECTIONS.members).doc(existingMember._id || existingMember.id).set(member);
+    return workspaceSummary({ uid, tenantId: member.tenantId, role: member.role || 'recruiter', member });
+  }
+  const tenantId = `tenant_${uid}`.slice(0, 80);
+  const now = new Date().toISOString();
+  const tenantName = String(input.companyName || '').trim().slice(0, 120) || '我的公司工作区';
+  await db.collection(COLLECTIONS.tenants).doc(tenantId).set({ id: tenantId, name: tenantName, status: 'active', createdBy: uid, createdAt: now, updatedAt: now });
+  await db.collection(COLLECTIONS.members).doc(`${tenantId}_${uid}`.slice(0, 80)).set({ id: `${tenantId}_${uid}`.slice(0, 80), tenantId, uid, username: String(input.username || '').slice(0, 120), displayName: String(input.displayName || input.username || '').slice(0, 80), role: 'owner', status: 'active', createdAt: now, updatedAt: now });
+  await migrateLegacyTenantData({ tenantId, uid });
+  return workspaceSummary({ uid, tenantId, role: 'owner' });
+}
+
+async function migrateLegacyTenantData(context) {
+  const db = getDatabase();
+  for (const collection of [COLLECTIONS.jobs, COLLECTIONS.candidates, COLLECTIONS.screenings, COLLECTIONS.rules]) {
+    const result = await db.collection(collection).limit(500).get().catch(() => ({ data: [] }));
+    for (const item of (result.data || []).filter(record => !record.tenantId)) {
+      const id = item.id || item._id;
+      if (!id) continue;
+      const { _id, _openid, ...stored } = item;
+      await db.collection(collection).doc(id).set({ ...stored, tenantId: context.tenantId, updatedBy: context.uid, createdBy: stored.createdBy || context.uid });
+    }
+  }
+}
+
+async function workspaceSummary(context) {
+  const db = getDatabase();
+  const [tenantResult, memberResult] = await Promise.all([
+    db.collection(COLLECTIONS.tenants).doc(context.tenantId).get(),
+    db.collection(COLLECTIONS.members).where({ tenantId: context.tenantId, status: 'active' }).limit(200).get()
+  ]);
+  return { workspace: cleanDocument(tenantResult.data || { id: context.tenantId, name: '公司工作区', status: 'active' }), currentMember: cleanDocument(context.member || { uid: context.uid, tenantId: context.tenantId, role: context.role }), members: (memberResult.data || []).map(cleanDocument) };
+}
+
+async function listMembers(context) {
+  requireRole(context, ['owner', 'admin']);
+  const result = await getDatabase().collection(COLLECTIONS.members).where({ tenantId: context.tenantId }).limit(200).get();
+  return { members: (result.data || []).map(cleanDocument) };
+}
+
+async function inviteMember(context, input = {}) {
+  requireRole(context, ['owner', 'admin']);
+  const uid = String(input.uid || '').trim();
+  if (!uid || uid.length < 4 || uid.length > 80) throw serviceError('请输入有效的员工 UID', 400);
+  const db = getDatabase();
+  const existing = await db.collection(COLLECTIONS.members).where({ tenantId: context.tenantId, uid }).limit(1).get();
+  if (existing.data?.[0]) throw serviceError('该员工已经在当前工作区', 409);
+  const id = `${context.tenantId}_${uid}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
+  const now = new Date().toISOString();
+  await db.collection(COLLECTIONS.members).doc(id).set({ id, tenantId: context.tenantId, uid, username: String(input.username || '').slice(0, 120), displayName: String(input.displayName || input.username || uid).slice(0, 80), role: ['admin', 'recruiter', 'viewer'].includes(input.role) ? input.role : 'recruiter', status: 'invited', createdAt: now, updatedAt: now, createdBy: context.uid, updatedBy: context.uid });
+  await audit(context, 'member.invite', id, { invitedUid: uid });
+  return { ok: true, id };
+}
+
+async function updateMember(context, id, input = {}) {
+  requireRole(context, ['owner', 'admin']);
+  const db = getDatabase();
+  const found = await db.collection(COLLECTIONS.members).where({ tenantId: context.tenantId, id }).limit(1).get();
+  if (!found.data?.[0]) throw serviceError('成员不存在或无权操作', 404);
+  const member = found.data[0];
+  const nextRole = ['owner', 'admin', 'recruiter', 'viewer'].includes(input.role) ? input.role : member.role;
+  const status = ['active', 'invited', 'disabled'].includes(input.status) ? input.status : member.status;
+  await db.collection(COLLECTIONS.members).doc(member._id || id).set({ ...member, role: nextRole, status, displayName: String(input.displayName || member.displayName || '').slice(0, 80), updatedAt: new Date().toISOString(), updatedBy: context.uid });
+  await audit(context, 'member.update', id, { role: nextRole, status });
+  return { ok: true, id };
+}
+
+function requireRole(context, roles) { if (!roles.includes(context.role)) throw serviceError('当前账号没有管理权限', 403); }
+
+async function loadState(context) {
   const db = getDatabase();
   const [jobsResult, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
-    db.collection(COLLECTIONS.jobs).orderBy('updatedAt', 'desc').limit(100).get(),
-    db.collection(COLLECTIONS.candidates).orderBy('updatedAt', 'desc').limit(500).get(),
-    db.collection(COLLECTIONS.screenings).orderBy('updatedAt', 'desc').limit(500).get(),
-    db.collection(COLLECTIONS.rules).orderBy('updatedAt', 'desc').limit(200).get()
+    db.collection(COLLECTIONS.jobs).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(100).get(),
+    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get()
   ]);
   const screenings = new Map();
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
   const cases = (candidatesResult.data || []).map(candidate => {
     const screening = screenings.get(candidate.id || candidate._id) || {};
-    return cleanDocument({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'communicationSummary', 'report']) });
+    return cleanDocument({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) });
   });
-  return { jobs: (jobsResult.data || []).map(cleanDocument), cases, rules: (rulesResult.data || []).map(cleanDocument) };
+  return { jobs: (jobsResult.data || []).map(cleanDocument), cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
 }
 
-async function saveJob(id, input) {
+async function saveJob(context, id, input) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
+  await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
   const job = pick(input, ['industry', 'name', 'jd', 'keywords', 'rules', 'status', 'createdAt', 'updatedAt']);
   job.id = id;
+  job.tenantId = context.tenantId;
+  job.createdBy = context.uid;
+  job.updatedBy = context.uid;
   job.updatedAt = now;
   job.createdAt = job.createdAt || now;
   job.status = job.status || 'active';
   await db.collection(COLLECTIONS.jobs).doc(id).set(job);
-  await audit('job.upsert', id, { name: job.name });
+  await audit(context, 'job.upsert', id, { name: job.name });
 }
 
-async function saveCandidate(id, input) {
+async function saveCandidate(context, id, input) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
+  await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
+  await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();
   const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync']);
   candidate.id = id;
+  candidate.tenantId = context.tenantId;
+  candidate.createdBy = context.uid;
+  candidate.updatedBy = context.uid;
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
   candidate.status = deriveStatus(input);
-  const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'communicationSummary', 'report']);
+  const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
   screening.id = id;
+  screening.tenantId = context.tenantId;
+  screening.createdBy = context.uid;
+  screening.updatedBy = context.uid;
   screening.candidateId = id;
   screening.jobId = input.jobId || '';
   screening.updatedAt = now;
@@ -164,14 +287,21 @@ async function saveCandidate(id, input) {
     db.collection(COLLECTIONS.candidates).doc(id).set(candidate),
     db.collection(COLLECTIONS.screenings).doc(id).set(screening)
   ]);
-  await audit('candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status });
+  await audit(context, 'candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status });
 }
 
-async function migrateStoredResumes() {
+async function assertWritableRecord(collection, id, tenantId) {
+  const result = await getDatabase().collection(collection).doc(id).get().catch(() => ({ data: null }));
+  const existing = result.data;
+  if (existing?.tenantId && existing.tenantId !== tenantId) throw serviceError('无权操作其他公司工作区的数据', 403);
+}
+
+async function migrateStoredResumes(context) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
   const [candidateResult, jobResult] = await Promise.all([
-    db.collection(COLLECTIONS.candidates).limit(500).get(),
-    db.collection(COLLECTIONS.jobs).limit(100).get()
+    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get(),
+    db.collection(COLLECTIONS.jobs).where({ tenantId: context.tenantId }).limit(100).get()
   ]);
   const jobs = jobResult.data || [];
   const migrated = []; const failed = [];
@@ -189,6 +319,8 @@ async function migrateStoredResumes() {
       await db.collection(COLLECTIONS.candidates).doc(id).set({
         ...stored,
         id,
+        tenantId: context.tenantId,
+        updatedBy: context.uid,
         resume: text,
         candidateName: basics.candidateName || source.candidateName || '',
         resumeMeta: { ...(source.resumeMeta || {}), ...basics, textNormalizedAt: now },
@@ -198,13 +330,13 @@ async function migrateStoredResumes() {
       migrated.push(id);
     } catch (error) { failed.push({ id, reason: error.message }); }
   }
-  await audit('candidate.resume.migrate', 'all', { migrated: migrated.length, failed: failed.length });
+  await audit(context, 'candidate.resume.migrate', 'all', { migrated: migrated.length, failed: failed.length });
   return { ok: true, migrated: migrated.length, failed };
 }
 
-async function audit(action, entityId, detail) {
+async function audit(context, action, entityId, detail) {
   const db = getDatabase();
-  await db.collection(COLLECTIONS.audit).add({ action, entityId, detail, actor: 'acecall-api', createdAt: new Date().toISOString() });
+  await db.collection(COLLECTIONS.audit).add({ tenantId: context.tenantId, action, entityId, detail, actorUid: context.uid, actorRole: context.role, createdAt: new Date().toISOString() });
 }
 
 function deriveStatus(item) {
