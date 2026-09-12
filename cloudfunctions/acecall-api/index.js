@@ -104,7 +104,11 @@ const server = http.createServer(async (request, response) => {
     return sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
     console.error(JSON.stringify({ level: 'error', message: error.message, statusCode: error.statusCode || 500 }));
-    return sendJson(response, error.statusCode || 500, { error: error.statusCode && error.statusCode < 500 ? error.message : '服务暂时不可用，请稍后重试。' });
+    const statusCode = error.statusCode || 500;
+    // Service errors are deliberately phrased without credentials; returning them
+    // lets the client distinguish Baidu auth/format failures from CloudBase faults.
+    const expose = Boolean(error.statusCode && error.message);
+    return sendJson(response, statusCode, { error: expose ? error.message : '服务暂时不可用，请稍后重试。' });
   }
 });
 
