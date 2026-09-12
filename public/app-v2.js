@@ -552,6 +552,7 @@ async function completeCall() {
 
 let activeRecorder = null;
 let activeRecorderChunks = [];
+let recorderStopping = false;
 
 function setRecordingFile(file) {
   if (!file) return;
@@ -595,26 +596,56 @@ async function transcribeRecording(file) {
 
 async function startBrowserRecording() {
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('当前浏览器不支持录音，请上传录音文件');
+  if (activeRecorder && activeRecorder.state !== 'inactive') return toast('当前已经在录音中');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     activeRecorderChunks = [];
     activeRecorder = new MediaRecorder(stream);
+    recorderStopping = false;
     activeRecorder.ondataavailable = event => { if (event.data.size) activeRecorderChunks.push(event.data); };
+    activeRecorder.onerror = event => {
+      stream.getTracks().forEach(track => track.stop());
+      activeRecorder = null; recorderStopping = false;
+      const start = $('#startRecording'); const stop = $('#stopRecording');
+      if (start) start.disabled = false; if (stop) stop.disabled = true;
+      if (stop) stop.textContent = '停止录音';
+      if ($('#recordingStatus')) $('#recordingStatus').textContent = '录音异常结束，请重试或上传录音文件。';
+      toast(event.error?.message || '录音发生异常，请重试');
+    };
     activeRecorder.onstop = () => {
       stream.getTracks().forEach(track => track.stop());
       const blob = new Blob(activeRecorderChunks, { type: activeRecorder.mimeType || 'audio/webm' });
       const extension = blob.type.includes('mp4') || blob.type.includes('m4a') ? 'm4a' : 'webm';
-      setRecordingFile(new File([blob], `call-${Date.now()}.${extension}`, { type: blob.type }));
+      activeRecorder = null; recorderStopping = false;
+      const start = $('#startRecording'); const stop = $('#stopRecording');
+      if (start) start.disabled = false; if (stop) stop.disabled = true;
+      if ($('#recordingStatus')) $('#recordingStatus').textContent = '录音已停止，正在准备语音解析…';
+      if (blob.size) setRecordingFile(new File([blob], `call-${Date.now()}.${extension}`, { type: blob.type }));
+      else { if ($('#recordingStatus')) $('#recordingStatus').textContent = '未检测到有效录音内容，请重试。'; toast('未检测到有效录音内容'); }
     };
+    activeRecorder.onstart = () => { if ($('#recordingStatus')) $('#recordingStatus').textContent = '正在录音，请在通话结束后点击停止录音。'; };
     activeRecorder.start();
     $('#startRecording').disabled = true; $('#stopRecording').disabled = false; $('#recordingStatus').textContent = '正在录音，请在通话结束后停止录音。';
-  } catch (error) { toast(error.name === 'NotAllowedError' ? '浏览器未获得麦克风权限' : '无法开始录音'); }
+  } catch (error) { activeRecorder = null; recorderStopping = false; toast(error.name === 'NotAllowedError' ? '浏览器未获得麦克风权限' : `无法开始录音：${error.message || '请重试'}`); }
 }
 
 function stopBrowserRecording() {
-  if (!activeRecorder || activeRecorder.state === 'inactive') return;
-  activeRecorder.stop(); activeRecorder = null;
-  $('#startRecording').disabled = false; $('#stopRecording').disabled = true;
+  if (!activeRecorder || activeRecorder.state === 'inactive') return toast('当前没有正在进行的录音');
+  if (recorderStopping) return;
+  recorderStopping = true;
+  const recorder = activeRecorder;
+  const start = $('#startRecording'); const stop = $('#stopRecording');
+  if (start) start.disabled = true; if (stop) { stop.disabled = true; stop.textContent = '正在停止…'; }
+  if ($('#recordingStatus')) $('#recordingStatus').textContent = '正在停止录音，请稍候…';
+  try {
+    if (recorder.state === 'recording') recorder.requestData?.();
+    recorder.stop();
+  } catch (error) {
+    recorderStopping = false; activeRecorder = null;
+    if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
+    if ($('#recordingStatus')) $('#recordingStatus').textContent = '停止录音失败，请重试。';
+    toast(`停止录音失败：${error.message || '请重试'}`);
+  }
 }
 
 async function uploadCallRecording(candidate, file) {
