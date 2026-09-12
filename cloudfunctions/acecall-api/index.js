@@ -97,7 +97,6 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await parseResumeFile(fileName, buffer));
     }
     if (request.method === 'POST' && url.pathname === '/api/transcribe') {
-      await getRequestContext(request);
       const fileName = url.searchParams.get('name') || 'recording.m4a';
       const buffer = await readBuffer(request, 60_000_000);
       return sendJson(response, 200, await transcribeWithBaidu(fileName, buffer));
