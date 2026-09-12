@@ -571,6 +571,10 @@ async function transcribeRecording(file) {
   if (status) status.textContent = `${file.name} · 正在进行语音解析…`;
   const supported = ['mp3', 'wav', 'pcm', 'amr', 'm4a'];
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
+  if (file.size > 10 * 1024 * 1024) {
+    if (status) status.textContent = `${file.name} · 文件超过百度短语音 10MB 限制`;
+    return toast('录音文件超过 10MB，请压缩或拆分后重试');
+  }
   if (!supported.includes(extension)) {
     if (status) status.textContent = `${file.name} · 录音已添加，百度语音暂不支持 ${extension || '此'} 格式自动转写`;
     return toast('当前录音格式暂不支持自动转写，请上传 MP3、WAV、AMR 或 M4A');

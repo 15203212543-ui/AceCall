@@ -427,6 +427,8 @@ async function transcribeWithBaidu(fileName, buffer) {
   const secretKey = process.env.BAIDU_SECRET_KEY;
   if (!apiKey || !secretKey) throw serviceError('百度语音服务尚未配置，请联系管理员配置 BAIDU_API_KEY 和 BAIDU_SECRET_KEY', 503);
   if (!buffer.length) throw serviceError('录音文件为空', 400);
+  // 百度短语音接口单次请求建议不超过 10 MB；更大的文件应先压缩或拆分。
+  if (buffer.length > 10 * 1024 * 1024) throw serviceError('录音文件超过百度短语音接口的 10MB 限制，请压缩或拆分后重试', 413);
   const token = await getBaiduAccessToken(apiKey, secretKey);
   const extension = path.extname(fileName).toLowerCase().slice(1) || 'm4a';
   const supportedFormats = new Set(['mp3', 'wav', 'pcm', 'amr', 'm4a']);
@@ -439,7 +441,11 @@ async function transcribeWithBaidu(fileName, buffer) {
   });
   if (!response.ok) throw serviceError(`百度语音服务请求失败（${response.status}）`, 502);
   const result = await response.json();
-  if (result.err_no !== 0) throw serviceError(`百度语音识别失败：${result.err_msg || result.err_no}`, 422);
+  if (result.err_no !== 0) {
+    const detail = result.err_msg || `错误码 ${result.err_no}`;
+    const hint = [3300, 3301, 3302, 3303].includes(Number(result.err_no)) ? '；请确认录音不超过 60 秒且为可解码的 MP3、WAV、AMR 或 M4A 文件' : '';
+    throw serviceError(`百度语音识别失败：${detail}${hint}`, 422);
+  }
   const text = Array.isArray(result.result) ? result.result.join(' ').trim() : String(result.result || '').trim();
   if (!text) throw serviceError('百度语音服务未返回有效文字', 422);
   return { text, provider: 'baidu', fileName, characters: text.length };
