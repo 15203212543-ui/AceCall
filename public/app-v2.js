@@ -771,6 +771,24 @@ async function saveRemote(path,payload){try{const response=await authenticatedFe
 async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok)throw new Error('CloudBase数据读取失败');let remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));await migrateStoredResumesOnce();response=await authenticatedFetch(apiUrl('/api/state'));if(response.ok){remote=await response.json();app.jobs=remote.jobs||app.jobs;app.cases=remote.cases||app.cases;localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));}return;}for(const job of app.jobs)await saveRemote(`/api/jobs/${job.id}`,job);for(const candidate of app.cases)await saveRemote(`/api/candidates/${candidate.id}`,candidate);for(const content of teamRules)await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1});}catch(error){console.error(error);toast('CloudBase暂不可用，已使用本机数据');}}
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json();if(!response.ok)throw new Error(data.error||'服务离线');$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
-async function authenticatedFetch(url, options = {}) { const { data, error } = await cloudbaseAuth.getSession(); const token = data?.session?.access_token; if (error || !token) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); } const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); }
+async function authenticatedFetch(url, options = {}) {
+  if (!cloudbaseAuth) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
+  const request = async token => { const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); };
+  let sessionResult = await cloudbaseAuth.getSession();
+  let token = sessionResult.data?.session?.access_token;
+  if (!token) {
+    const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
+    token = refreshed?.data?.session?.access_token;
+  }
+  if (!token) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
+  let response = await request(token);
+  if (response.status === 401) {
+    const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
+    const freshToken = refreshed?.data?.session?.access_token;
+    if (freshToken) response = await request(freshToken);
+    else { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
+  }
+  return response;
+}
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
 async function hydrateWorkspace(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#loginUsername')?.value||''})});}if(!response.ok)throw new Error('工作区初始化失败');app.workspace=await response.json();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
