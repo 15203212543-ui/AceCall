@@ -322,9 +322,9 @@ function candidateTable(items, title) {
 }
 
 function renderJobs() {
-  $('#jobsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>岗位</h1><p>一次维护JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select></div><div class="job-grid" id="jobGrid">${jobCards(app.jobs)}</div></div>`;
+  $('#jobsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>岗位</h1><p>一次维护 JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry).filter(Boolean))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select><select id="jobStatusFilter"><option value="active">在招岗位</option><option value="closed">已关闭岗位</option><option value="">全部岗位</option></select></div><div class="job-grid" id="jobGrid">${jobCards(app.jobs.filter(job => job.status !== 'closed'))}</div></div>`;
   bindCommonActions($('#jobsView'));
-  $('#jobSearch').addEventListener('input', filterJobs); $('#jobIndustryFilter').addEventListener('input', filterJobs);
+  $('#jobSearch').addEventListener('input', filterJobs); $('#jobIndustryFilter').addEventListener('input', filterJobs); $('#jobStatusFilter').addEventListener('change', filterJobs);
   const library = document.createElement('div'); library.className = 'surface rules-library'; library.innerHTML = `<div class="surface-head"><h2>团队规则库</h2><span>共享给团队成员</span></div><div class="surface-body"><div class="rule-add"><input id="teamRuleInput" placeholder="添加常用核验规则"><button class="secondary" id="addTeamRule" type="button">添加规则</button></div><div class="rule-list">${teamRules.map((rule, index) => `<button class="rule-chip" data-use-rule="${index}" type="button">＋ ${escapeHtml(rule)}</button>`).join('') || '<span class="muted-text">还没有共享规则</span>'}</div></div>`; $('#jobsView .page').append(library);
   $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
 }
@@ -334,13 +334,21 @@ function useTeamRule(index) { const value = teamRules[index]; if (!value) return
 
 function jobCards(jobs) {
   if (!jobs.length) return '<div class="surface empty">暂无岗位，请先建立岗位标准。</div>';
-  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; return `<article class="job-item"><header><div><h2>${escapeHtml(job.name)}</h2><p>${escapeHtml(job.industry || '其他')} · 招聘中</p></div><button class="link-action" data-edit-job="${job.id}">编辑</button></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
+  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
 }
 
 function filterJobs() {
-  const query = $('#jobSearch').value.trim().toLowerCase(); const industry = $('#jobIndustryFilter').value;
-  const filtered = app.jobs.filter(job => (!industry || job.industry === industry) && (!query || `${job.name} ${job.industry} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
-  $('#jobGrid').innerHTML = jobCards(filtered); bindCommonActions($('#jobGrid'));
+  const query = $('#jobSearch').value.trim().toLowerCase(); const industry = $('#jobIndustryFilter').value; const status = $('#jobStatusFilter').value;
+  const filtered = app.jobs.filter(job => (!industry || job.industry === industry) && (!status || (job.status === 'closed' ? 'closed' : 'active') === status) && (!query || `${job.name} ${job.industry} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
+  $('#jobGrid').innerHTML = jobCards(filtered); bindCommonActions($('#jobGrid')); bindJobActions($('#jobGrid'));
+}
+
+function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); }
+async function toggleJobStatus(id) {
+  const job = app.jobs.find(item => item.id === id); if (!job) return;
+  const closing = job.status !== 'closed';
+  if (closing && !window.confirm(`关闭“${job.name}”？历史候选人会保留，但新简历不会再自动分配到此岗位。`)) return;
+  job.status = closing ? 'closed' : 'active'; job.updatedAt = new Date().toISOString(); persistJobs(job); renderJobs(); toast(closing ? '岗位已关闭，历史数据已保留' : '岗位已重新开启');
 }
 
 function renderCandidateDetail() {
@@ -418,6 +426,7 @@ function bindCommonActions(root) {
   root.querySelectorAll('[data-open-candidate]').forEach(button => button.addEventListener('click', () => openCandidate(button.dataset.openCandidate)));
   root.querySelectorAll('[data-add-job]').forEach(button => button.addEventListener('click', () => openJobDialog()));
   root.querySelectorAll('[data-edit-job]').forEach(button => button.addEventListener('click', () => openJobDialog(button.dataset.editJob)));
+  bindJobActions(root);
   root.querySelectorAll('[data-back-candidates]').forEach(button => button.addEventListener('click', () => navigate('candidates')));
   root.querySelectorAll('[data-detail-tab]').forEach(button => button.addEventListener('click', () => { app.detailTab = button.dataset.detailTab; renderCandidateDetail(); }));
 }
@@ -433,9 +442,9 @@ function bindDetailActions(root) {
 }
 
 function openCandidateDialog() {
-  if (!app.jobs.length) return toast('请先创建岗位');
+  if (!app.jobs.some(job => job.status !== 'closed')) return toast('请先创建一个在招岗位');
   $('#candidateForm').reset(); app.resumeMeta = null; $('#resumeStatus').className = 'file-status hidden';
-  $('#candidateJobInput').innerHTML = `<option value="">自动匹配岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}`;
+  $('#candidateJobInput').innerHTML = `<option value="">自动匹配岗位</option>${app.jobs.filter(job => job.status !== 'closed').map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}`;
   $('#candidateDialog').showModal();
 }
 
@@ -513,7 +522,7 @@ async function parseResumeFileForImport(file) {
 }
 
 async function matchResumeToJobs(resume, candidateName = '') {
-  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, rules: job.rules })) });
+  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, rules: job.rules })) });
   return response;
 }
 
@@ -547,11 +556,41 @@ let activeRecorderChunks = [];
 function setRecordingFile(file) {
   if (!file) return;
   if (file.size > 50_000_000) return toast('录音文件不能超过 50MB');
-  if (!file.type.startsWith('audio/')) return toast('请选择音频文件');
+  const extension = file.name.split('.').pop()?.toLowerCase() || '';
+  const supportedAudio = ['mp3', 'wav', 'pcm', 'amr', 'm4a', 'webm'];
+  if (file.type && !file.type.startsWith('audio/') && !supportedAudio.includes(extension)) return toast('请选择音频文件');
   if (recordingDraft.url) URL.revokeObjectURL(recordingDraft.url);
   recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload' };
   renderCandidateDetail();
-  toast('录音已添加，完成电话后会归档到候选人记录');
+  transcribeRecording(file);
+}
+
+async function transcribeRecording(file) {
+  const status = $('#recordingStatus');
+  if (status) status.textContent = `${file.name} · 正在进行语音解析…`;
+  const supported = ['mp3', 'wav', 'pcm', 'amr', 'm4a'];
+  const extension = file.name.split('.').pop()?.toLowerCase() || '';
+  if (!supported.includes(extension)) {
+    if (status) status.textContent = `${file.name} · 录音已添加，百度语音暂不支持 ${extension || '此'} 格式自动转写`;
+    return toast('当前录音格式暂不支持自动转写，请上传 MP3、WAV、AMR 或 M4A');
+  }
+  if (!REMOTE_BACKEND) {
+    if (status) status.textContent = `${file.name} · 已添加；在线服务模式下自动转写`;
+    return toast('录音已添加，当前本地演示模式不会调用语音服务');
+  }
+  try {
+    const response = await authenticatedFetch(apiUrl(`/api/transcribe?name=${encodeURIComponent(file.name)}`), { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || '语音解析失败');
+    if (recordingDraft.candidateId !== app.candidateId) return;
+    const transcript = $('#callTranscript');
+    if (transcript && !transcript.value.trim()) transcript.value = result.text;
+    if (status) status.textContent = `${file.name} · 已完成语音解析 ${result.characters || result.text.length} 字`;
+    toast('录音已自动转写到电话记录');
+  } catch (error) {
+    if (status) status.textContent = `${file.name} · 自动转写失败：${error.message}`;
+    toast(error.message || '自动转写失败，可手动粘贴转写内容');
+  }
 }
 
 async function startBrowserRecording() {
@@ -609,7 +648,7 @@ function generateJobProfile(type) {
 }
 
 function saveJob(event) {
-  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
+  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), status:old?.status === 'closed' ? 'closed' : 'active', createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
 }
 
 async function parseResume(file) {

@@ -96,6 +96,12 @@ const server = http.createServer(async (request, response) => {
       const buffer = await readBuffer(request, 10_000_000);
       return sendJson(response, 200, await parseResumeFile(fileName, buffer));
     }
+    if (request.method === 'POST' && url.pathname === '/api/transcribe') {
+      await getRequestContext();
+      const fileName = url.searchParams.get('name') || 'recording.m4a';
+      const buffer = await readBuffer(request, 60_000_000);
+      return sendJson(response, 200, await transcribeWithBaidu(fileName, buffer));
+    }
     return sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
     console.error(JSON.stringify({ level: 'error', message: error.message, statusCode: error.statusCode || 500 }));
@@ -412,6 +418,41 @@ async function parseResumeFile(fileName, buffer) {
   const resumeLines = text.split('\n').map(line => line.trim()).filter(Boolean);
   const candidateName = chooseCandidateName(extractLabeledCandidateName(resumeLines), extractNameFromFileName(fileName), extractCandidateName(resumeLines));
   return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, phone, email, age, experienceYears, education } };
+}
+
+let baiduAccessToken = { value: '', expiresAt: 0 };
+
+async function transcribeWithBaidu(fileName, buffer) {
+  const apiKey = process.env.BAIDU_API_KEY;
+  const secretKey = process.env.BAIDU_SECRET_KEY;
+  if (!apiKey || !secretKey) throw serviceError('百度语音服务尚未配置，请联系管理员配置 BAIDU_API_KEY 和 BAIDU_SECRET_KEY', 503);
+  if (!buffer.length) throw serviceError('录音文件为空', 400);
+  const token = await getBaiduAccessToken(apiKey, secretKey);
+  const extension = path.extname(fileName).toLowerCase().slice(1) || 'm4a';
+  const supportedFormats = new Set(['mp3', 'wav', 'pcm', 'amr', 'm4a']);
+  if (!supportedFormats.has(extension)) throw serviceError('百度短语音仅支持 MP3、WAV、PCM、AMR 和 M4A，请先转换录音格式', 415);
+  const format = extension;
+  const response = await fetch(`https://vop.baidu.com/server_api`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ format, rate: 16000, channel: 1, cuid: 'acecall', token, speech: buffer.toString('base64'), len: buffer.length, dev_pid: 1537 })
+  });
+  if (!response.ok) throw serviceError(`百度语音服务请求失败（${response.status}）`, 502);
+  const result = await response.json();
+  if (result.err_no !== 0) throw serviceError(`百度语音识别失败：${result.err_msg || result.err_no}`, 422);
+  const text = Array.isArray(result.result) ? result.result.join(' ').trim() : String(result.result || '').trim();
+  if (!text) throw serviceError('百度语音服务未返回有效文字', 422);
+  return { text, provider: 'baidu', fileName, characters: text.length };
+}
+
+async function getBaiduAccessToken(apiKey, secretKey) {
+  if (baiduAccessToken.value && baiduAccessToken.expiresAt > Date.now() + 60_000) return baiduAccessToken.value;
+  const response = await fetch(`https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${encodeURIComponent(apiKey)}&client_secret=${encodeURIComponent(secretKey)}`, { method: 'POST' });
+  if (!response.ok) throw serviceError(`百度语音授权失败（${response.status}）`, 502);
+  const result = await response.json();
+  if (!result.access_token) throw serviceError('百度语音授权失败，请检查 API Key 和 Secret Key', 502);
+  baiduAccessToken = { value: result.access_token, expiresAt: Date.now() + Number(result.expires_in || 2592000) * 1000 };
+  return baiduAccessToken.value;
 }
 
 function extractCandidateName(lines = []) {
