@@ -51,32 +51,32 @@ const server = http.createServer(async (request, response) => {
         model: process.env.DEEPSEEK_MODEL || 'deepseek-chat'
       });
     }
-    if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request)));
-    if (request.method === 'GET' && url.pathname === '/api/workspace') return sendJson(response, 200, await workspaceSummary(await getRequestContext()));
-    if (request.method === 'GET' && url.pathname === '/api/members') return sendJson(response, 200, await listMembers(await getRequestContext()));
-    if (request.method === 'POST' && url.pathname === '/api/members/invite') return sendJson(response, 200, await inviteMember(await getRequestContext(), await readJson(request)));
+    if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request), request));
+    if (request.method === 'GET' && url.pathname === '/api/workspace') return sendJson(response, 200, await workspaceSummary(await getRequestContext(request)));
+    if (request.method === 'GET' && url.pathname === '/api/members') return sendJson(response, 200, await listMembers(await getRequestContext(request)));
+    if (request.method === 'POST' && url.pathname === '/api/members/invite') return sendJson(response, 200, await inviteMember(await getRequestContext(request), await readJson(request)));
     if (request.method === 'PUT' && url.pathname.startsWith('/api/members/')) {
       const id = validateId(url.pathname.slice('/api/members/'.length));
-      return sendJson(response, 200, await updateMember(await getRequestContext(), id, await readJson(request)));
+      return sendJson(response, 200, await updateMember(await getRequestContext(request), id, await readJson(request)));
     }
-    if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext()));
+    if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext(request)));
     if (request.method === 'PUT' && url.pathname.startsWith('/api/jobs/')) {
       const id = validateId(url.pathname.slice('/api/jobs/'.length));
       const job = await readJson(request);
-      await saveJob(await getRequestContext(), id, job);
+      await saveJob(await getRequestContext(request), id, job);
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/candidates/')) {
       const id = validateId(url.pathname.slice('/api/candidates/'.length));
       const candidate = await readJson(request);
-      await saveCandidate(await getRequestContext(), id, candidate);
+      await saveCandidate(await getRequestContext(request), id, candidate);
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'POST' && url.pathname === '/api/migrate-resumes') {
-      return sendJson(response, 200, await migrateStoredResumes(await getRequestContext()));
+      return sendJson(response, 200, await migrateStoredResumes(await getRequestContext(request)));
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/rules/')) {
-      const context = await getRequestContext();
+      const context = await getRequestContext(request);
       const id = validateId(url.pathname.slice('/api/rules/'.length)); const rule = await readJson(request); const now = new Date().toISOString();
       await assertWritableRecord(COLLECTIONS.rules, id, context.tenantId);
       await getDatabase().collection(COLLECTIONS.rules).doc(id).set({ id, tenantId: context.tenantId, createdBy: context.uid, updatedBy: context.uid, content: String(rule.content || '').slice(0, 1000), version: Number(rule.version || 1), status: 'active', updatedAt: now, createdAt: rule.createdAt || now });
@@ -84,20 +84,20 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
-      await getRequestContext();
+      await getRequestContext(request);
       const payload = await readJson(request);
       validatePayload(payload);
       const result = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
       return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
-      await getRequestContext();
+      await getRequestContext(request);
       const fileName = url.searchParams.get('name') || 'resume';
       const buffer = await readBuffer(request, 10_000_000);
       return sendJson(response, 200, await parseResumeFile(fileName, buffer));
     }
     if (request.method === 'POST' && url.pathname === '/api/transcribe') {
-      await getRequestContext();
+      await getRequestContext(request);
       const fileName = url.searchParams.get('name') || 'recording.m4a';
       const buffer = await readBuffer(request, 60_000_000);
       return sendJson(response, 200, await transcribeWithBaidu(fileName, buffer));
@@ -143,9 +143,10 @@ function parseResumeBasics(text = '') {
   return { candidateName: extractCandidateName(lines), phone, email, age, experienceYears, education };
 }
 
-async function getRequestContext() {
-  const user = getCloudbaseApp().auth().getUserInfo();
-  const uid = user.uid || user.customUserId;
+async function getRequestContext(request) {
+  const user = getCloudbaseApp().auth().getUserInfo() || {};
+  const gatewayUser = readGatewayUser(request);
+  const uid = gatewayUser.uid || user.uid || user.customUserId;
   if (!uid || user.isAnonymous) throw serviceError('请先登录后使用业务功能', 401);
   const result = await getDatabase().collection(COLLECTIONS.members).where({ uid, status: 'active' }).limit(1).get();
   const member = result.data?.[0];
@@ -153,9 +154,22 @@ async function getRequestContext() {
   return { uid, tenantId: member.tenantId, role: member.role || 'recruiter', member };
 }
 
-async function bootstrapWorkspace(input = {}) {
-  const user = getCloudbaseApp().auth().getUserInfo();
-  const uid = user.uid || user.customUserId;
+function readGatewayUser(request) {
+  const raw = request?.headers?.['x-cloudbase-context'] || request?.headers?.['x-cloudbase-userinfo'];
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(Buffer.from(String(raw), 'base64').toString('utf8'));
+    const info = parsed.userInfo || parsed.user || parsed;
+    return { uid: info.uid || info.customUserId || info.openId || '' };
+  } catch {
+    try { const parsed = JSON.parse(String(raw)); const info = parsed.userInfo || parsed.user || parsed; return { uid: info.uid || info.customUserId || info.openId || '' }; } catch { return {}; }
+  }
+}
+
+async function bootstrapWorkspace(input = {}, request) {
+  const user = getCloudbaseApp().auth().getUserInfo() || {};
+  const gatewayUser = readGatewayUser(request);
+  const uid = gatewayUser.uid || user.uid || user.customUserId;
   if (!uid || user.isAnonymous) throw serviceError('请先登录后初始化工作区', 401);
   const db = getDatabase();
   const existing = await db.collection(COLLECTIONS.members).where({ uid }).limit(5).get();
