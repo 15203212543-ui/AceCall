@@ -473,7 +473,10 @@ async function getBaiduAccessToken(apiKey, secretKey) {
   const response = await fetch(`https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${encodeURIComponent(apiKey)}&client_secret=${encodeURIComponent(secretKey)}`, { method: 'POST' });
   if (!response.ok) throw serviceError(`百度语音授权失败（${response.status}）`, 502);
   const result = await response.json();
-  if (!result.access_token) throw serviceError('百度语音授权失败，请检查 API Key 和 Secret Key', 502);
+  if (!result.access_token) {
+    const reason = result.error_description || result.error || '未返回 access_token';
+    throw serviceError(`百度语音授权失败：${reason}。请在百度智能云控制台确认当前应用的 API Key、Secret Key 仍有效，并已开通语音识别服务`, 502);
+  }
   baiduAccessToken = { value: result.access_token, expiresAt: Date.now() + Number(result.expires_in || 2592000) * 1000 };
   return baiduAccessToken.value;
 }
