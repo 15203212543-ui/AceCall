@@ -571,11 +571,21 @@ async function transcribeRecording(file) {
   if (status) status.textContent = `${file.name} · 正在进行语音解析…`;
   const supported = ['mp3', 'wav', 'pcm', 'amr', 'm4a'];
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
-  if (file.size > 10 * 1024 * 1024) {
+  let sourceFile = file;
+  if (extension === 'webm') {
+    try {
+      if (status) status.textContent = `${file.name} · 正在转换为百度支持的 WAV…`;
+      sourceFile = await convertWebmToWav(file);
+    } catch (error) {
+      if (status) status.textContent = `${file.name} · 格式转换失败：${error.message}`;
+      return toast('WebM 格式转换失败，请上传 MP3、WAV 或 M4A 文件');
+    }
+  }
+  if (sourceFile.size > 10 * 1024 * 1024) {
     if (status) status.textContent = `${file.name} · 文件超过百度短语音 10MB 限制`;
     return toast('录音文件超过 10MB，请压缩或拆分后重试');
   }
-  if (!supported.includes(extension)) {
+  if (extension !== 'webm' && !supported.includes(extension)) {
     if (status) status.textContent = `${file.name} · 录音已添加，百度语音暂不支持 ${extension || '此'} 格式自动转写`;
     return toast('当前录音格式暂不支持自动转写，请上传 MP3、WAV、AMR 或 M4A');
   }
@@ -584,7 +594,8 @@ async function transcribeRecording(file) {
     return toast('录音已添加，当前本地演示模式不会调用语音服务');
   }
   try {
-    const response = await authenticatedFetch(apiUrl(`/api/transcribe?name=${encodeURIComponent(file.name)}`), { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+    const uploadName = sourceFile.name;
+    const response = await authenticatedFetch(apiUrl(`/api/transcribe?name=${encodeURIComponent(uploadName)}`), { method: 'POST', headers: { 'Content-Type': sourceFile.type || 'audio/wav' }, body: sourceFile });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || '语音解析失败');
     if (recordingDraft.candidateId !== app.candidateId) return;
@@ -596,6 +607,28 @@ async function transcribeRecording(file) {
     if (status) status.textContent = `${file.name} · 自动转写失败：${error.message}`;
     toast(error.message || '自动转写失败，可手动粘贴转写内容');
   }
+}
+
+async function convertWebmToWav(file) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) throw new Error('当前浏览器不支持音频解码');
+  const context = new AudioContextClass();
+  try {
+    const decoded = await context.decodeAudioData(await file.arrayBuffer());
+    const targetRate = 16000;
+    const frameCount = Math.max(1, Math.round(decoded.duration * targetRate));
+    const offline = new OfflineAudioContext(1, frameCount, targetRate);
+    const source = offline.createBufferSource(); source.buffer = decoded; source.connect(offline.destination); source.start(0);
+    const rendered = await offline.startRendering();
+    const samples = rendered.getChannelData(0);
+    const wav = new ArrayBuffer(44 + samples.length * 2); const view = new DataView(wav);
+    const write = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+    write(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); write(8, 'WAVE'); write(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, targetRate, true);
+    view.setUint32(28, targetRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, 'data'); view.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) { const sample = Math.max(-1, Math.min(1, samples[i])); view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true); }
+    return new File([wav], `${file.name.replace(/\.webm$/i, '')}.wav`, { type: 'audio/wav' });
+  } finally { await context.close().catch(() => {}); }
 }
 
 async function startBrowserRecording() {
