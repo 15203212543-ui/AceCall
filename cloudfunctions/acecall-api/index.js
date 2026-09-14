@@ -84,14 +84,12 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, { ok: true, id });
     }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
-      await getRequestContext(request);
       const payload = await readJson(request);
       validatePayload(payload);
       const result = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
       return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
-      await getRequestContext(request);
       const fileName = url.searchParams.get('name') || 'resume';
       const buffer = await readBuffer(request, 10_000_000);
       return sendJson(response, 200, await parseResumeFile(fileName, buffer));
