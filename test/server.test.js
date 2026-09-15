@@ -59,6 +59,33 @@ test('cleans repeated PDF watermark noise and extracts labeled identity fields',
   assert.deepEqual(parseResumeBasics(text), { candidateName: '李四', phone: '13800138000', email: 'li@example.com', age: '29', experienceYears: '', education: '' });
 });
 
+test('removes page numbers and repeated alphanumeric watermark fragments without losing resume content', () => {
+  const text = normalizeResumeText([
+    '张三',
+    '1 / 3',
+    'A7F9C2D1',
+    '工作经历',
+    '负责交易系统产品规划。',
+    '页码 2 / 3',
+    'A7F9C2D1',
+    '主导场外期权项目上线。',
+    '3 / 3',
+    'A7F9C2D1',
+    '教育经历',
+    '本科',
+  ].join('\n'));
+  assert.match(text, /负责交易系统产品规划/);
+  assert.match(text, /主导场外期权项目上线/);
+  assert.match(text, /教育经历/);
+  assert.doesNotMatch(text, /A7F9C2D1|1 \/ 3|3 \/ 3/);
+});
+
+test('removes a single explicit watermark line', () => {
+  const text = normalizeResumeText('姓名：王五\n仅供招聘平台使用：CV-2024-A7F9\n工作经历\n负责研发管理');
+  assert.doesNotMatch(text, /仅供招聘平台使用|CV-2024-A7F9/);
+  assert.match(text, /负责研发管理/);
+});
+
 test('extracts names from labeled and mixed header lines without section noise', () => {
   assert.equal(extractCandidateName(['工作经历', '【券商后端开发】代胜辉 6年']), '代胜辉');
   assert.equal(extractCandidateName(['姓名：周文超', '出生日期：1995年']), '周文超');

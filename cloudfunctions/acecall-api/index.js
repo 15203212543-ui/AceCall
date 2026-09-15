@@ -119,19 +119,40 @@ function setCors(response, origin) {
 }
 
 function normalizeResumeText(text = '') {
-  const lines = String(text)
-    .replace(/\r/g, '')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/g, '')
-    .split('\n')
-    .map(line => line.replace(/[ \t]+/g, ' ').trim())
-    .filter(Boolean);
-  const counts = new Map();
-  lines.forEach(line => counts.set(line, (counts.get(line) || 0) + 1));
-  return lines.filter(line => {
-    if ((counts.get(line) || 0) >= 3 && line.length < 80) return false;
+  const source = String(text).normalize('NFKC').replace(/\r/g, '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd\u200b\ufeff]/g, '');
+  const lines = source.split('\n').map(line => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+  const counts = new Map(); const fingerprints = new Map();
+  lines.forEach(line => { counts.set(line, (counts.get(line) || 0) + 1); const fingerprint = line.replace(/[\s|·•,，。；;:：、_\-]+/g, '').toLowerCase(); if (fingerprint.length >= 4) fingerprints.set(fingerprint, (fingerprints.get(fingerprint) || 0) + 1); });
+  const cleaned = lines.filter(line => {
+    if ((counts.get(line) || 0) >= 3 && line.length < 100) return false;
+    const fingerprint = line.replace(/[\s|·•,，。；;:：、_\-]+/g, '').toLowerCase();
+    if ((fingerprints.get(fingerprint) || 0) >= 2 && line.length < 100 && !/[\u4e00-\u9fff]/.test(line)) return false;
+    if (isResumeNoiseLine(line)) return false;
     const visible = line.replace(/[\u4e00-\u9fffA-Za-z0-9@.+#:/()（）\u3001，。；：\-]/g, '');
     return visible.length / Math.max(line.length, 1) < 0.45;
-  }).join('\n').replace(/([A-Za-z])\-\n([A-Za-z])/g, '$1$2').replace(/\n{3,}/g, '\n\n').trim();
+  });
+  return removeRepeatedWatermarkFragments(cleaned).join('\n').replace(/([A-Za-z])\-\n([A-Za-z])/g, '$1$2').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function isResumeNoiseLine(line = '') {
+  const value = String(line).trim();
+  if (!value || value.length > 100) return false;
+  if (/(水印|仅供|内部资料|机密|严禁|勿传|招聘平台|简历编号|候选人编号)[^\n]{0,30}[A-Za-z0-9_-]{2,}/i.test(value)) return true;
+  if (/1[3-9]\d{9}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|[\u4e00-\u9fff]{2,}/.test(value)) return false;
+  if (/^(?:第\s*)?\d{1,3}(?:\s*[|/\\-]\s*\d{1,3})?[.]?$/.test(value)) return true;
+  if (/^[\s\dA-Za-z|·•._:/\\-]{2,60}$/.test(value)) {
+    const compact = value.replace(/[\s|·•._:/\\-]/g, '');
+    if (/^(?:\d+[A-Za-z]+|[A-Za-z]+\d+|[A-F0-9]{6,})$/i.test(compact)) return true;
+    if (/^(?:[A-Za-z0-9]{2,8}[\s_-]?){2,8}$/.test(value) && /\d/.test(value)) return true;
+  }
+  return false;
+}
+
+function removeRepeatedWatermarkFragments(lines = []) {
+  const tokenCounts = new Map();
+  lines.forEach(line => { const tokens = line.match(/(?<![\u4e00-\u9fff])[A-Za-z0-9][A-Za-z0-9._-]{3,}(?![\u4e00-\u9fff])/g) || []; [...new Set(tokens)].forEach(token => tokenCounts.set(token.toLowerCase(), (tokenCounts.get(token.toLowerCase()) || 0) + 1)); });
+  const watermarkTokens = new Set([...tokenCounts.entries()].filter(([token, count]) => count >= 3 && /\d|[A-F]{4,}/i.test(token) && !/@/.test(token)).map(([token]) => token));
+  return lines.map(line => line.replace(/(?<![\u4e00-\u9fff])[A-Za-z0-9][A-Za-z0-9._-]{3,}(?![\u4e00-\u9fff])/g, token => watermarkTokens.has(token.toLowerCase()) ? '' : token).replace(/[ \t]{2,}/g, ' ').trim()).filter(Boolean);
 }
 
 function parseResumeBasics(text = '') {
@@ -421,9 +442,7 @@ async function parseResumeFile(fileName, buffer) {
   else if (extension === '.docx') text = (await require('mammoth').extractRawText({ buffer })).value;
   else if (extension === '.pdf') text = (await require('pdf-parse')(buffer)).text;
   else throw serviceError('仅支持 PDF、DOCX、TXT 和 MD 文件', 415);
-  const lines = String(text).replace(/\r/g, '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/g, '').split('\n').map(line => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
-  const counts = new Map(); lines.forEach(line => counts.set(line, (counts.get(line) || 0) + 1));
-  text = lines.filter(line => { if ((counts.get(line) || 0) >= 3 && line.length < 80) return false; const visible = line.replace(/[\u4e00-\u9fffA-Za-z0-9@.+#:/()（）、，。；：\-]/g, ''); return visible.length / Math.max(line.length, 1) < 0.45; }).join('\n').replace(/([A-Za-z])\-\n([A-Za-z])/g, '$1$2').replace(/\n{3,}/g, '\n\n').trim();
+  text = normalizeResumeText(text);
   if (text.length < 20) throw serviceError('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR', 422);
   const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
   const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
