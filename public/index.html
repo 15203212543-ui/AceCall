@@ -63,7 +63,7 @@
         <label><span>岗位名称</span><input id="jobNameInput" required placeholder="例如：场外期权产品经理"></label>
         <label class="full"><span>岗位JD</span><textarea id="jobJdInput" rows="8" required placeholder="岗位职责、必备条件和加分项"></textarea></label>
         <label class="full"><span>关键词</span><input id="jobKeywordsInput" placeholder="场外期权、RFQ、交易簿记"></label>
-        <label class="full"><span>初筛规则</span><textarea id="jobRulesInput" rows="5" placeholder="必问项、可替代经验和明确不匹配条件"></textarea></label>
+        <label class="full"><span>初筛规则</span><div class="field-inline"><select id="jobRuleLibraryInput"><option value="">选择团队规则</option></select><button type="button" class="secondary" id="applyJobRuleLibrary">添加到岗位</button><button type="button" class="link-action" id="saveJobRuleLibrary">保存为共享规则</button></div><textarea id="jobRulesInput" rows="5" placeholder="必问项、可替代经验和明确不匹配条件"></textarea></label>
       </div>
       <footer><button type="button" class="secondary" data-close="jobDialog">取消</button><button type="submit" class="primary">保存岗位</button></footer>
     </form>
