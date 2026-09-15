@@ -352,7 +352,7 @@ async function migrateStoredResumes(context) {
     if (!id || !originalText) { failed.push({ id, reason: '没有已保存的简历文本' }); continue; }
     try {
       const text = normalizeResumeText(originalText); const lines = text.split('\n').map(line => line.trim()).filter(Boolean); const basics = parseResumeBasics(text);
-      basics.candidateName = chooseCandidateName(extractLabeledCandidateName(lines), extractNameFromFileName(source.resumeMeta?.fileName || ''), basics.candidateName, source.candidateName);
+      basics.candidateName = chooseCandidateName(extractLabeledCandidateName(lines), extractContextualCandidateName(lines), extractNameFromFileName(source.resumeMeta?.fileName || ''), basics.candidateName, source.candidateName);
       const job = jobs.find(item => item.id === source.jobId) || jobs.find(item => item.name === source.roleName) || jobs[0];
       const currentMatch = source.matching || {};
       const matching = job ? { ...currentMatch, ...generateDemoMatch({ resume: text, jobs: [job] }), jobId: job.id } : currentMatch;
@@ -450,7 +450,7 @@ async function parseResumeFile(fileName, buffer) {
   const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
   const resumeLines = text.split('\n').map(line => line.trim()).filter(Boolean);
-  const candidateName = chooseCandidateName(extractLabeledCandidateName(resumeLines), extractNameFromFileName(fileName), extractCandidateName(resumeLines));
+  const candidateName = chooseCandidateName(extractLabeledCandidateName(resumeLines), extractContextualCandidateName(resumeLines), extractNameFromFileName(fileName), extractCandidateName(resumeLines));
   return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, phone, email, age, experienceYears, education } };
 }
 
@@ -507,6 +507,12 @@ function extractCandidateName(lines = []) {
     const english = line.match(/\b[A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20}){1,3}\b/)?.[0]; if (isPlausibleCandidateName(english)) return normalizeCandidateName(english);
   }
   return '';
+}
+
+function extractContextualCandidateName(lines = []) {
+  const limit = Math.min(lines.length, 40); const contactPattern = /性别|男|女|手机|电话|邮箱|email|联系方式|联系地址|出生|年龄|1[3-9]\d{9}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i; const candidates = [];
+  for (let index = 0; index < limit; index += 1) { const start = Math.max(0, index - 1); const end = Math.min(limit, index + 2); const context = lines.slice(start, end).join(' '); if (!contactPattern.test(context)) continue; const source = lines[index]; const chinese = [...source.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(match => match[0]); chinese.forEach(candidate => { if (isPlausibleCandidateName(candidate)) candidates.push({ candidate, score: contactPattern.test(source) ? 2 : 1 }); }); }
+  candidates.sort((left, right) => right.score - left.score); return candidates[0]?.candidate ? normalizeCandidateName(candidates[0].candidate) : '';
 }
 
 function extractLabeledCandidateName(lines = []) {

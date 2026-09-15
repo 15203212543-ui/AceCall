@@ -111,7 +111,7 @@ async function parseResumeFile(fileName, buffer) {
   if (text.length < 20) throw Object.assign(new Error('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR'), { statusCode: 422 });
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
   const basics = parseResumeBasics(text);
-  basics.candidateName = chooseCandidateName(extractLabeledCandidateName(lines), extractNameFromFileName(fileName), basics.candidateName);
+  basics.candidateName = chooseCandidateName(extractLabeledCandidateName(lines), extractContextualCandidateName(lines), extractNameFromFileName(fileName), basics.candidateName);
   return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, ...basics } };
 }
 
@@ -174,6 +174,22 @@ function extractCandidateName(lines = []) {
     if (isPlausibleCandidateName(english)) return normalizeCandidateName(english);
   }
   return '';
+}
+
+function extractContextualCandidateName(lines = []) {
+  const limit = Math.min(lines.length, 40);
+  const contactPattern = /性别|男|女|手机|电话|邮箱|email|联系方式|联系地址|出生|年龄|1[3-9]\d{9}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i;
+  const candidates = [];
+  for (let index = 0; index < limit; index += 1) {
+    const start = Math.max(0, index - 1); const end = Math.min(limit, index + 2);
+    const context = lines.slice(start, end).join(' ');
+    if (!contactPattern.test(context)) continue;
+    const source = lines[index];
+    const chinese = [...source.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(match => match[0]);
+    chinese.forEach(candidate => { if (isPlausibleCandidateName(candidate)) candidates.push({ candidate, score: contactPattern.test(source) ? 2 : 1 }); });
+  }
+  candidates.sort((left, right) => right.score - left.score);
+  return candidates[0]?.candidate ? normalizeCandidateName(candidates[0].candidate) : '';
 }
 
 function extractLabeledCandidateName(lines = []) {
@@ -396,4 +412,4 @@ function sendJson(response, status, body) {
 
 if (require.main === module) server.listen(port, host, () => console.log(`AceCall running at http://${host}:${port}`));
 
-module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractLabeledCandidateName, extractNameFromFileName, isPlausibleCandidateName, chooseCandidateName, getModelProvider, server };
+module.exports = { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractLabeledCandidateName, extractContextualCandidateName, extractNameFromFileName, isPlausibleCandidateName, chooseCandidateName, getModelProvider, server };

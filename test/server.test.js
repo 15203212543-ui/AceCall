@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractLabeledCandidateName, extractNameFromFileName, isPlausibleCandidateName, chooseCandidateName } = require('../server');
+const { generateDemo, validatePayload, findSharedTerms, normalizeResumeText, parseResumeBasics, extractCandidateName, extractLabeledCandidateName, extractContextualCandidateName, extractNameFromFileName, isPlausibleCandidateName, chooseCandidateName } = require('../server');
 
 test('finds shared financial recruiting terms', () => {
   assert.deepEqual(findSharedTerms('证券场外期权产品', '负责证券场外期权产品系统'), ['证券', '场外期权', '产品']);
@@ -91,6 +91,11 @@ test('extracts names from labeled and mixed header lines without section noise',
   assert.equal(extractCandidateName(['姓名：周文超', '出生日期：1995年']), '周文超');
   assert.equal(extractCandidateName(['Education', 'John Smith', 'john@example.com']), 'John Smith');
   assert.equal(extractCandidateName(['教育背景', '7年经验', '联系方式']), '');
+});
+
+test('uses contact and gender context to identify a nearby name', () => {
+  assert.equal(extractContextualCandidateName(['个人信息', '李明', '男 | 13800138000 | liming@example.com', '上海']), '李明');
+  assert.equal(extractContextualCandidateName(['个人信息', '女 | 13900139000', '王芳']), '王芳');
 });
 
 test('falls back to candidate names embedded in resume file names', () => {
