@@ -10,7 +10,7 @@ const FORCE_MIGRATION = new URLSearchParams(location.search).has('migrate');
 const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, workspace: null };
+const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
 let cloudbaseClient = null;
@@ -119,6 +119,7 @@ function renderDashboard() {
   const total = app.cases.length;
   const pendingCall = app.cases.filter(item => statusOf(item) === '待电话').length;
   const pendingReview = app.cases.filter(item => statusOf(item) === '待确认').length;
+  const assignmentReview = app.cases.filter(needsAssignmentReview).length;
   const recommended = app.cases.filter(item => finalAction(item) === '推荐业务面试').length;
   const highMatch = app.cases.filter(item => scoreValue(item) >= 80).length;
   const structures = talentStructure(app.cases);
@@ -126,7 +127,7 @@ function renderDashboard() {
   $('#dashboardView').innerHTML = `<div class="page dashboard-page">
     <div class="page-title dashboard-title"><div><span class="eyebrow">RECRUITING CONTROL ROOM</span><h1>招聘工作台</h1><p>从岗位推进到人才结构，集中查看今天最值得处理的招聘动作。</p></div><div class="dashboard-actions"><select id="dashboardJobFilter"><option value="">全部活跃岗位</option>${activeJobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><button class="primary" data-add-candidate>＋ 添加候选人</button></div></div>
     <div class="dashboard-strip"><div class="dashboard-strip-label"><span>当前招聘面</span><b>${activeJobs.length} 个岗位</b></div><div class="dashboard-strip-note">统计范围：全部候选人，包含已淘汰与待处理人选 · 标签来源：简历事实 / AI识别 / 人工确认</div><button class="link-action" data-dashboard-refresh>刷新视图 ↻</button></div>
-    <div class="metrics dashboard-metrics"><button class="metric metric-action" data-dashboard-filter="all"><b>${total}</b><span>候选人总数</span><small>全量人才池</small></button><button class="metric metric-action" data-dashboard-filter="high"><b>${highMatch}</b><span>高匹配候选人</span><small>匹配度 80 分以上</small></button><button class="metric metric-action" data-dashboard-filter="call"><b>${pendingCall}</b><span>待电话沟通</span><small>需要推进</small></button><button class="metric metric-action" data-dashboard-filter="review"><b>${pendingReview}</b><span>待审核结果</span><small>需要确认</small></button><div class="metric"><b>${recommended}</b><span>已推荐业务面试</span><small>已完成动作</small></div></div>
+    <div class="metrics dashboard-metrics"><button class="metric metric-action" data-dashboard-filter="all"><b>${total}</b><span>候选人总数</span><small>全量人才池</small></button><button class="metric metric-action" data-dashboard-filter="high"><b>${highMatch}</b><span>高匹配候选人</span><small>匹配度 80 分以上</small></button><button class="metric metric-action" data-dashboard-filter="call"><b>${pendingCall}</b><span>待电话沟通</span><small>需要推进</small></button><button class="metric metric-action" data-dashboard-filter="assignment-review"><b>${assignmentReview}</b><span>待确认简历</span><small>岗位分配需人工确认</small></button><button class="metric metric-action" data-dashboard-filter="review"><b>${pendingReview}</b><span>待审核结果</span><small>需要确认</small></button><div class="metric"><b>${recommended}</b><span>已推荐业务面试</span><small>已完成动作</small></div></div>
     <div class="dashboard-layout"><div class="dashboard-main"><section class="surface progress-surface"><div class="surface-head"><div><h2>岗位推进</h2><p class="surface-subtitle">按岗位查看候选人在哪个环节停留</p></div><span>${activeJobs.length} 个活跃岗位</span></div><div class="surface-body job-progress-list">${activeJobs.length ? activeJobs.map(jobProgressRow).join('') : '<div class="empty">还没有活跃岗位，请先建立岗位标准。</div>'}</div></section><section class="surface action-surface"><div class="surface-head"><div><h2>优先处理</h2><p class="surface-subtitle">高匹配、待沟通和待审核候选人</p></div><button class="link-action" data-dashboard-filter="all">查看全部 →</button></div>${candidateTable(actionRows, '')}</section></div><aside class="dashboard-aside"><section class="surface structure-surface"><div class="surface-head"><div><h2>人才池结构</h2><p class="surface-subtitle">基于全部候选人统计</p></div><span>AI识别</span></div><div class="surface-body"><div class="structure-block"><div class="structure-heading"><strong>直接竞品经历</strong><span>${structures.competitor.known}/${total || 0} 人</span></div>${structureBar(structures.competitor, '竞品公司') }<p class="structure-note">按岗位 JD 与候选人最近 1-2 段经历识别</p></div><div class="structure-block"><div class="structure-heading"><strong>大厂经历</strong><span>${structures.major.known}/${total || 0} 人</span></div>${structureBar(structures.major, '行业前 5') }<p class="structure-note">同业务行业内按规模、业务体量和市场排名识别</p></div><div class="structure-block"><div class="structure-heading"><strong>学校层次</strong><span>${structures.school.known}/${total || 0} 人</span></div>${structureBar(structures.school, '985/211/双一流') }<p class="structure-note">优先读取简历教育经历，无法确认则保留未知</p></div><button class="structure-link" data-dashboard-filter="competitor">查看结构命中候选人 →</button></div></section><section class="surface funnel-surface"><div class="surface-head"><div><h2>招聘漏斗</h2><p class="surface-subtitle">全部岗位累计</p></div></div><div class="surface-body"><div class="funnel-row"><span>简历已导入</span><b>${total}</b></div><div class="funnel-row"><span>已完成解析</span><b>${app.cases.filter(item => item.resume).length}</b></div><div class="funnel-row"><span>已完成沟通</span><b>${app.cases.filter(item => item.communicationSummary || item.report).length}</b></div><div class="funnel-row"><span>已推荐面试</span><b>${recommended}</b></div></div></section></aside></div></div>`;
   bindCommonActions($('#dashboardView'));
   $('#dashboardJobFilter').addEventListener('change', filterDashboardJob);
@@ -147,6 +148,7 @@ function openDashboardFilter(filter) {
     const input = $('#candidateSearch'); const status = $('#candidateStatusFilter'); const job = $('#candidateJobFilter');
     if (filter === 'call') status.value = '待电话';
     else if (filter === 'review') status.value = '待确认';
+    else if (filter === 'assignment-review') input.value = '待确认岗位';
     else if (filter === 'high') input.value = '高匹配度';
     else if (filter === 'competitor') input.value = '竞品经历';
     filterCandidates();
@@ -179,14 +181,15 @@ function inferTalentProfile(item) {
   const stored = item.talentProfile || item.resumeMeta?.talentProfile || {};
   const text = `${item.resume || ''} ${item.roleName || ''}`;
   const job = app.jobs.find(candidateJob => candidateJob.id === item.jobId) || {};
-  const financeCompanyHit = /(中信证券|华泰证券|国泰君安|海通证券|招商证券|中金公司|广发证券|申万宏源|银河证券)/i.test(text);
+  const competitorCompanies = [...new Set([...(stored.competitorCompanies || []), ...text.match(/中信证券|华泰证券|国泰君安|海通证券|招商证券|中金公司|广发证券|申万宏源|银河证券/g) || []])];
+  const financeCompanyHit = competitorCompanies.length > 0;
   const majorCompanyHit = /(腾讯|阿里巴巴|字节跳动|百度|美团|京东|蚂蚁集团|拼多多)/i.test(text);
   const schoolHit = /(清华大学|北京大学|复旦大学|上海交通大学|浙江大学|中国人民大学|南京大学|武汉大学|华中科技大学|西安交通大学|中山大学|哈尔滨工业大学|北京航空航天大学|同济大学|四川大学|南开大学|天津大学|厦门大学|东南大学)/.test(text);
   const sameFinanceIndustry = /金融|证券|券商|衍生品|交易/.test(`${job.industry || ''} ${job.name || item.roleName || ''}`);
   const competitor = typeof stored.competitor === 'boolean' ? stored.competitor : (stored.companyTags?.includes?.('direct_competitor') ? true : (financeCompanyHit && sameFinanceIndustry ? true : null));
   const major = typeof stored.major === 'boolean' ? stored.major : (stored.companyTags?.includes?.('internet_major') ? true : (majorCompanyHit ? true : null));
   const school = typeof stored.school === 'boolean' ? stored.school : (stored.schoolTags?.some?.(tag => ['985', '211', 'double_first_class', 'target_school'].includes(tag)) ? true : (schoolHit ? true : null));
-  return { competitor, major, school };
+  return { competitor, competitorCompanies, major, school };
 }
 
 function renderInboxLegacy() {
@@ -291,7 +294,7 @@ function candidatePoolTable(items) {
 
 function candidateTags(item) {
   const profile = inferTalentProfile(item); const tags = [];
-  if (profile.competitor === true) tags.push({ label: '竞品', tone: 'tag-positive' });
+  if (profile.competitor === true) tags.push({ label: profile.competitorCompanies?.length ? `竞品·${profile.competitorCompanies[0]}` : '竞品', tone: 'tag-positive' });
   if (profile.major === true) tags.push({ label: '行业前5', tone: 'tag-accent' });
   if (profile.school === true) tags.push({ label: '985/211/双一流', tone: 'tag-neutral' });
   if (item.talentProfile?.function) tags.push({ label: item.talentProfile.function, tone: 'tag-neutral' });
@@ -307,13 +310,14 @@ function filterCandidates() {
   const tag = $('#candidateTagFilter')?.value || '';
   const dashboardMatch = item => {
     if (app.dashboardFilter === 'high') return scoreValue(item) >= 80;
+    if (app.dashboardFilter === 'assignment-review') return needsAssignmentReview(item);
     if (app.dashboardFilter === 'competitor') return inferTalentProfile(item).competitor === true;
     if (app.dashboardFilter === 'major') return inferTalentProfile(item).major === true;
     if (app.dashboardFilter === 'school') return inferTalentProfile(item).school === true;
     return true;
   };
   const tagMatch = item => { const profile = inferTalentProfile(item); if (tag === 'competitor') return profile.competitor === true; if (tag === 'major') return profile.major === true; if (tag === 'school') return profile.school === true; if (tag === 'quality') return resumeQuality(item).level !== 'good'; if (tag === 'moka') return !item.mokaSync?.status || item.mokaSync.status !== '已同步'; return true; };
-  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
+  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''} ${(inferTalentProfile(item).competitorCompanies || []).join(' ') } ${needsAssignmentReview(item) ? '待确认岗位' : ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
   $('#candidateResultCount').textContent = filtered.length;
   $('#candidateTableSlot').innerHTML = candidatePoolTable(filtered);
   bindCommonActions($('#candidateTableSlot'));
@@ -397,10 +401,10 @@ function callTab(item) {
 
 function resultTab(item) {
   const report = item.report || {}; const info = report.basicInfo || {};
-  return `<div class="decision"><span class="tag">待人工确认</span><small>AI综合建议</small><h2>${escapeHtml(report.conclusion || '信息不足')}</h2><p>${escapeHtml(report.conclusionReason || '')}</p></div><div class="grid-2" style="margin-top:13px"><div class="surface"><div class="surface-head"><h2>结论依据</h2><span>${(report.capabilities || []).length} 项</span></div><div class="surface-body">${(report.capabilities || []).map(point => `<div class="evidence"><span class="tag">${escapeHtml(point.assessment || '待确认')}</span><strong>${escapeHtml(point.item || point)}</strong><p>${escapeHtml(point.evidence || '')}</p></div>`).join('') || '<div class="empty">暂无能力判断</div>'}${(report.risks || []).map(risk => `<div class="point risk"><strong>${escapeHtml(risk)}</strong></div>`).join('')}</div></div><div><div class="surface"><div class="surface-head"><h2>基础条件</h2></div><div class="surface-body">${Object.entries(info).map(([key,value]) => `<div class="fact"><span>${escapeHtml(infoLabel(key))}</span><b>${escapeHtml(value)}</b></div>`).join('') || '<div class="empty">待确认</div>'}</div></div><div class="review"><label>最终动作<select id="finalDecision">${['推荐业务面试','补充电话沟通','转入其他岗位','暂不推进','纳入人才库长期维护'].map(value => `<option ${value === (report.finalDecision || report.nextStep) ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label style="margin-top:10px">审核备注<textarea id="reviewNotes" placeholder="补充事实或后续安排">${escapeHtml(report.reviewNotes || '')}</textarea></label><label class="review-check"><input type="checkbox" id="reviewConfirmed" ${report.reviewConfirmed ? 'checked' : ''}> 我已核对材料并确认最终动作</label><button class="primary" style="width:100%" data-confirm-result>确认完成</button></div></div></div>`;
+  return `<div class="decision"><span class="tag">待人工确认</span><small>AI综合建议</small><h2>${escapeHtml(report.conclusion || '信息不足')}</h2><p>${escapeHtml(report.conclusionReason || '')}</p></div><div class="grid-2" style="margin-top:13px"><div class="surface"><div class="surface-head"><h2>结论依据</h2><span>${(report.capabilities || []).length} 项</span></div><div class="surface-body">${(report.capabilities || []).map(point => `<div class="evidence"><span class="tag">${escapeHtml(point.assessment || '待确认')}</span><strong>${escapeHtml(point.item || point)}</strong><p>${escapeHtml(point.evidence || '')}</p></div>`).join('') || '<div class="empty">暂无能力判断</div>'}${(report.risks || []).map(risk => `<div class="point risk"><strong>${escapeHtml(risk)}</strong></div>`).join('')}</div></div><div><div class="surface"><div class="surface-head"><h2>基础条件</h2></div><div class="surface-body">${Object.entries(info).map(([key,value]) => `<div class="fact"><span>${escapeHtml(infoLabel(key))}</span><b>${escapeHtml(value)}</b></div>`).join('') || '<div class="empty">待确认</div>'}</div></div><div class="review"><label>最终动作<select id="finalDecision">${['推荐业务面试','补充电话沟通','转入其他岗位','暂不推进','纳入人才库长期维护'].map(value => `<option ${value === (report.finalDecision || report.nextStep) ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label style="margin-top:10px">推荐理由<textarea id="recommendationReason" placeholder="AI根据简历与沟通事实生成，可人工修订">${escapeHtml(report.recommendationReason || '')}</textarea></label><label style="margin-top:10px">审核备注<textarea id="reviewNotes" placeholder="补充事实或后续安排">${escapeHtml(report.reviewNotes || '')}</textarea></label><label class="review-check"><input type="checkbox" id="reviewConfirmed" ${report.reviewConfirmed ? 'checked' : ''}> 我已核对材料并确认最终动作</label><button class="primary" style="width:100%" data-confirm-result>确认完成</button></div></div></div>`;
 }
 
-function resumeTab(item) { const meta=item.resumeMeta||{};return `<div class="surface"><div class="surface-head"><h2>候选人简历</h2><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'待确认')}</b></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'待确认')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'待确认')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'待确认')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'待确认')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'待确认')}</b></div></div><pre style="white-space:pre-wrap;font:11px/1.7 inherit;margin:16px 0 0">${escapeHtml(item.resume || '暂无简历内容')}</pre></div></div>`; }
+function resumeTab(item) { const meta=item.resumeMeta||{}; const original = meta.originalFileId; const preview = meta.originalTempUrl; const originalView = original ? (meta.originalMimeType === 'application/pdf' && preview ? `<div class="resume-original"><iframe title="原始PDF简历" src="${escapeHtml(preview)}"></iframe></div>` : `<div class="resume-original resume-original-file"><p>Word 原文件已保存，可按原格式打开查看。</p><button class="secondary" data-resume-download type="button">打开 / 下载原简历</button></div>`) : ''; return `<div class="surface"><div class="surface-head"><div><h2>候选人简历</h2><p class="surface-subtitle">${original ? '原始文件优先，解析文本用于搜索和AI分析' : '文本录入'}</p></div><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'待确认')}</b></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'待确认')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'待确认')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'待确认')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'待确认')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'待确认')}</b></div></div>${originalView}<details class="resume-text-fallback" ${original ? '' : 'open'}><summary>查看解析文本</summary><pre>${escapeHtml(item.resume || '暂无简历内容')}</pre></details></div></div>`; }
 function historyTab(item) { const events = [['建立候选人档案',item.createdAt],item.preparation&&['AI完成电话准备',item.createdAt],item.communicationSummary&&['生成沟通总结',item.updatedAt],item.report&&['生成综合初筛结果',item.updatedAt],item.report?.reviewConfirmed&&['招聘人员确认结果',item.updatedAt]].filter(Boolean); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact"><span>${formatDate(event[1])}</span><b>${event[0]}</b></div>`).join('')}</div></div>`; }
 
 function renderSettings() {
@@ -441,11 +445,13 @@ function bindDetailActions(root) {
   root.querySelector('#callAudioInput')?.addEventListener('change', event => setRecordingFile(event.target.files?.[0]));
   root.querySelector('#startRecording')?.addEventListener('click', startBrowserRecording);
   root.querySelector('#stopRecording')?.addEventListener('click', stopBrowserRecording);
+  root.querySelector('[data-resume-download]')?.addEventListener('click', async () => { const item = currentCandidate(); const url = item?.resumeMeta?.originalTempUrl || await resolveResumePreview(item); if (url) window.open(url, '_blank', 'noopener'); else toast('原始简历链接暂不可用'); });
+  if (app.detailTab === 'resume' && currentCandidate()?.resumeMeta?.originalFileId && !currentCandidate()?.resumeMeta?.originalTempUrl) resolveResumePreview(currentCandidate()).then(url => { if (url) { currentCandidate().resumeMeta.originalTempUrl = url; renderCandidateDetail(); } }).catch(error => console.warn('resume preview unavailable', error));
 }
 
 function openCandidateDialog() {
   if (!app.jobs.some(job => job.status !== 'closed')) return toast('请先创建一个在招岗位');
-  $('#candidateForm').reset(); app.resumeMeta = null; $('#resumeStatus').className = 'file-status hidden';
+  $('#candidateForm').reset(); app.resumeMeta = null; app.resumeFile = null; $('#resumeStatus').className = 'file-status hidden';
   $('#candidateJobInput').innerHTML = `<option value="">自动匹配岗位</option>${app.jobs.filter(job => job.status !== 'closed').map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}`;
   $('#candidateDialog').showModal();
 }
@@ -454,6 +460,7 @@ async function createCandidate(event) {
   event.preventDefault(); const selectedJob = app.jobs.find(item => item.id === $('#candidateJobInput').value); const candidate = { id: crypto.randomUUID(), jobId: selectedJob?.id || '', candidateName: $('#candidateNameInput').value.trim(), roleName: selectedJob?.name || '', jd: selectedJob?.jd || '', rules: selectedJob?.rules || '', keywords: selectedJob?.keywords || [], resume: $('#candidateResumeInput').value.trim(), resumeMeta: app.resumeMeta, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   if (!candidate.candidateName || !candidate.resume) return toast('请填写候选人姓名和简历');
   if (!selectedJob) { const match = await matchResumeToJobs(candidate.resume, candidate.candidateName); applyJobMatch(candidate, match); }
+  if (app.resumeFile) candidate.resumeMeta = await persistOriginalResume(candidate.id, app.resumeFile, candidate.resumeMeta || {});
   app.cases.unshift(candidate); persistCases(candidate); $('#candidateDialog').close(); app.candidateId = candidate.id; app.detailTab = 'overview'; navigate('candidate');
   await generatePreparation(candidate);
 }
@@ -473,7 +480,7 @@ async function importResumeBatch(files, options = {}) {
     try {
       const result = await parseResumeFileForImport(file);
       if (!looksLikeResume(result.text)) throw new Error('文件内容不像简历，已跳过，请确认文件后重试');
-      candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
+      candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, file, result.metadata); candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
       const sameContact = app.cases.find(item => item.id !== candidate.id && ((result.metadata.phone && item.resumeMeta?.phone === result.metadata.phone) || (result.metadata.email && item.resumeMeta?.email && item.resumeMeta.email.toLowerCase() === result.metadata.email.toLowerCase())));
       const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
       applyJobMatch(candidate, match); candidate.ingestStatus = sameContact ? '重复待确认' : '已入库'; candidate.duplicateOf = sameContact?.id || ''; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
@@ -520,7 +527,7 @@ async function parseResumeFileForImport(file) {
   const extension = file.name.split('.').pop().toLowerCase();
   if (STATIC_DEMO && ['txt', 'md'].includes(extension)) return { text: await file.text(), metadata: { fileName: file.name, extension: extension.toUpperCase(), characters: file.size } };
   const response = await authenticatedFetch(apiUrl(`/api/parse-resume?name=${encodeURIComponent(file.name)}`), { method: 'POST', body: file });
-  const data = await response.json(); if (!response.ok) throw new Error(data.error || '简历解析失败'); return data;
+  const data = await response.json(); if (!response.ok) throw new Error(data.error || '简历解析失败'); data.metadata = { ...(data.metadata || {}), originalFile: file }; return data;
 }
 
 async function matchResumeToJobs(resume, candidateName = '') {
@@ -529,10 +536,16 @@ async function matchResumeToJobs(resume, candidateName = '') {
 }
 
 function applyJobMatch(candidate, match) {
-  const primary = app.jobs.find(job => job.id === match?.jobId) || app.jobs[0];
-  if (!primary) return;
-  candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
-  candidate.matching = { ...match, jobId: primary.id, score: normalizedMatchScore(match, candidate.resume, primary), status: match?.status || '已分配' };
+  const primary = app.jobs.find(job => job.id === match?.jobId);
+  const score = normalizedMatchScore(match, candidate.resume, primary || {});
+  const secondScore = Number(match?.alternativeJobs?.[0]?.score || 0);
+  const ambiguous = !primary || match?.status === '待分配' || score < 60 || (secondScore > 0 && score - secondScore < 8) || match?.confidence === '低';
+  if (primary && !ambiguous) {
+    candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
+  } else {
+    candidate.jobId = ''; candidate.roleName = ''; candidate.jd = ''; candidate.rules = ''; candidate.keywords = [];
+  }
+  candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId: primary?.id || match?.jobId || '', score, status: ambiguous ? '待分配' : '已分配', assignmentReview: ambiguous, assignmentReviewReason: ambiguous ? (!primary ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '匹配置信度较低') : '' };
 }
 
 async function generatePreparation(candidate) {
@@ -700,7 +713,7 @@ function formatBytes(value) { if (value < 1024) return `${value} B`; if (value <
 
 function confirmResult() {
   const candidate = currentCandidate(); if (!$('#reviewConfirmed').checked) return toast('请先确认已核对材料');
-  candidate.report.finalDecision = $('#finalDecision').value; candidate.report.reviewNotes = $('#reviewNotes').value.trim(); candidate.report.reviewConfirmed = true; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已确认');
+  candidate.report.finalDecision = $('#finalDecision').value; candidate.report.recommendationReason = $('#recommendationReason').value.trim(); candidate.report.reviewNotes = $('#reviewNotes').value.trim(); candidate.report.reviewConfirmed = true; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已确认');
 }
 
 function openCandidate(id) { app.candidateId = id; app.detailTab = statusOf(app.cases.find(item => item.id === id)) === '待确认' ? 'call' : 'overview'; navigate('candidate'); }
@@ -738,7 +751,7 @@ function saveJob(event) {
 
 async function parseResume(file) {
   if (!file) return; if (file.size > 10_000_000) return toast('文件不能超过10MB'); const extension = file.name.split('.').pop().toLowerCase(); $('#resumeStatus').className = 'file-status'; $('#resumeStatus').textContent = `正在解析 ${file.name}…`;
-  try { let result; if (STATIC_DEMO && ['txt','md'].includes(extension)) { const text = await file.text(); result = { text, metadata:{ fileName:file.name, extension:extension.toUpperCase(), characters:text.length } }; } else if (STATIC_DEMO) throw new Error('在线演示版PDF/DOCX解析需要后端服务'); else { const response = await authenticatedFetch(apiUrl(`/api/parse-resume?name=${encodeURIComponent(file.name)}`), { method:'POST', body:file }); result = await response.json(); if (!response.ok) throw new Error(result.error || '解析失败'); } $('#candidateResumeInput').value = result.text; app.resumeMeta = result.metadata; if (!$('#candidateNameInput').value && result.metadata.candidateName) $('#candidateNameInput').value = result.metadata.candidateName; $('#resumeStatus').textContent = `${file.name} · 已提取 ${result.metadata.characters || result.text.length} 字`; } catch (error) { $('#resumeStatus').textContent = error.message; toast(error.message); }
+  try { let result; if (STATIC_DEMO && ['txt','md'].includes(extension)) { const text = await file.text(); result = { text, metadata:{ fileName:file.name, extension:extension.toUpperCase(), characters:text.length } }; } else if (STATIC_DEMO) throw new Error('在线演示版PDF/DOCX解析需要后端服务'); else { const response = await authenticatedFetch(apiUrl(`/api/parse-resume?name=${encodeURIComponent(file.name)}`), { method:'POST', body:file }); result = await response.json(); if (!response.ok) throw new Error(result.error || '解析失败'); } $('#candidateResumeInput').value = result.text; app.resumeMeta = result.metadata; app.resumeFile = file; if (!$('#candidateNameInput').value && result.metadata.candidateName) $('#candidateNameInput').value = result.metadata.candidateName; $('#resumeStatus').textContent = `${file.name} · 已提取 ${result.metadata.characters || result.text.length} 字`; } catch (error) { $('#resumeStatus').textContent = error.message; toast(error.message); }
 }
 
 async function generate(payload) {
@@ -746,11 +759,26 @@ async function generate(payload) {
   const response = await authenticatedFetch(apiUrl('/api/generate'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI服务调用失败'); return data.result;
 }
 
+async function persistOriginalResume(candidateId, file, metadata = {}) {
+  const clean = { ...metadata }; delete clean.originalFile;
+  if (!file || !cloudbaseClient || !REMOTE_BACKEND) return { ...clean, originalFileName: file?.name || clean.fileName, originalMimeType: file?.type || '', originalFileSize: file?.size || 0 };
+  const safeName = file.name.replace(/[^\w.-]+/g, '_');
+  const result = await cloudbaseClient.uploadFile({ cloudPath: `acecall/resumes/${candidateId}/${Date.now()}-${safeName}`, filePath: file });
+  return { ...clean, originalFileId: result.fileID, originalFileName: file.name, originalMimeType: file.type || '', originalFileSize: file.size || 0 };
+}
+
+async function resolveResumePreview(item) {
+  const fileId = item.resumeMeta?.originalFileId;
+  if (!fileId || !cloudbaseClient) return '';
+  const result = await cloudbaseClient.getTempFileURL({ fileList: [{ fileID: fileId, maxAge: 1800 }] });
+  return result.fileList?.[0]?.tempFileURL || result.fileList?.[0]?.download_url || '';
+}
+
 function localGenerate(payload) {
   if (payload.action === 'match') return localMatch(payload);
   if (payload.action === 'prepare') { const terms = [...new Set([...(payload.keywords || []),'证券','交易','产品','研发','风险','管理'])].filter(term => payload.resume.includes(term)); return { summary:{ headline:`${payload.candidateName}具备与${payload.roleName}相关的经历，核心职责和项目结果需要电话核实。`,experience:'简历信息已完成结构化，具体年限以原始简历为准。',relevantBackground:terms.length ? `相关关键词：${terms.join('、')}` : '相关经验需要电话补充。' }, matches:(terms.length?terms:['相关经验']).map(term=>({requirement:term,evidence:`简历提及“${term}”`,confidence:'中'})), risks:[{risk:'个人职责边界待确认',evidence:'简历描述无法区分参与和主导'},{risk:'项目结果待量化',evidence:'缺少上线效果或业务指标'}], questions:defaultQuestions() }; }
   if (payload.action === 'summarize') { const lines=payload.transcript.split(/[。！？\n]/).map(v=>v.trim()).filter(v=>v.length>8); return { overview:`已识别${lines.length}条候选人陈述。`,confirmed:lines.slice(0,4).map(v=>({item:'候选人陈述',evidence:v})),missing:[{item:'量化业务结果',evidence:'未识别到明确数据'}],contradicted:[],keyFacts:{location:readField(payload.transcript,'地点'),expectedSalary:readField(payload.transcript,'期望薪资'),availability:readField(payload.transcript,'到岗'),nonCompete:readField(payload.transcript,'竞业')},followUps:['补充项目结果和个人职责边界'] }; }
-  return { basicInfo:payload.communicationSummary.keyFacts || {}, capabilities:(payload.preparation.matches || []).map(point=>({item:point.requirement,evidence:point.evidence,assessment:'部分匹配'})), risks:(payload.communicationSummary.missing || []).map(point=>point.item), conclusion:'部分匹配', conclusionReason:'候选人具备相关经历，但项目结果与职责边界仍需业务面试进一步验证。', nextStep:'推荐业务面试', followUps:payload.communicationSummary.followUps || [] };
+  return { basicInfo:payload.communicationSummary.keyFacts || {}, capabilities:(payload.preparation.matches || []).map(point=>({item:point.requirement,evidence:point.evidence,assessment:'部分匹配'})), risks:(payload.communicationSummary.missing || []).map(point=>point.item), conclusion:'部分匹配', conclusionReason:'候选人具备相关经历，但项目结果与职责边界仍需业务面试进一步验证。', recommendationReason:'候选人具备岗位相关经历，且沟通中体现出一定匹配基础；但项目结果和职责边界仍需业务面试进一步确认。', nextStep:'推荐业务面试', followUps:payload.communicationSummary.followUps || [] };
 }
 
 function localMatch(payload) {
@@ -762,6 +790,7 @@ function localMatch(payload) {
 
 function defaultQuestions(){return [['基本条件','请确认目前地点、期望工作地点、薪资和到岗时间。','确认基础可行性','必问'],['求职动机','为什么在这个时间点考虑新的机会？','判断动机与岗位内容是否一致','必问'],['核心项目','请选择最相关的项目，说明背景、职责和结果。','核实经历真实性','必问'],['职责边界','哪些决策由你直接负责？哪些工作是参与完成？','区分参与和主导','必问'],['项目结果','项目是否上线，有哪些可量化结果？','验证交付质量','必问'],['专业能力','你负责过哪些业务模块，如何与业务和研发协作？','验证岗位专业能力','建议问'],['风险核验','过去几次工作变动的主要原因分别是什么？','识别稳定性风险','风险追问'],['合规','是否存在竞业限制或其他入职约束？','识别入职风险','必问']].map(([category,question,reason,priority])=>({category,question,reason,priority,source:'初筛准备'}));}
 
+function needsAssignmentReview(item) { return Boolean(item.matching?.assignmentReview || !item.jobId || item.matching?.status === '待分配'); }
 function statusOf(item) { if (item.report?.reviewConfirmed) return '已完成'; if (item.report || item.communicationSummary) return '待确认'; if (item.preparation) return '待电话'; return '待分析'; }
 function displayStatus(item) { if (item.report?.reviewConfirmed) return ({'推荐业务面试':'推荐面试','补充电话沟通':'补充沟通','暂不推进':'暂不推进'}[item.report.finalDecision] || item.report.finalDecision || '已完成'); return statusOf(item); }
 function finalAction(item) { return item.report?.finalDecision || item.report?.nextStep || ''; }
@@ -805,6 +834,7 @@ async function authenticatedFetch(url, options = {}) {
     if (freshToken) response = await request(freshToken);
     else { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
   }
+  if (response.status === 401) { const body = await response.clone().json().catch(() => ({})); if (!body.error || /请先登录|登录已过期/.test(body.error)) $('#loginScreen').classList.remove('hidden'); }
   return response;
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}

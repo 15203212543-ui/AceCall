@@ -308,7 +308,7 @@ function summarySchema() {
 }
 
 function synthesisSchema() {
-  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。综合初筛方案和沟通总结，明确哪些风险已关闭、哪些仍存在。';
+  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。综合初筛方案和沟通总结，明确哪些风险已关闭、哪些仍存在。';
 }
 
 function generateDemo(payload) {
@@ -369,7 +369,7 @@ function generateDemoSynthesis(payload) {
     evidence: (payload.communicationSummary?.confirmed || []).map(item => item.evidence).slice(0, 5),
     conflicts: payload.communicationSummary?.contradicted || [],
     risks: [...(payload.communicationSummary?.missing || []).map(item => item.item), '演示模式不进行最终事实推断'],
-    conclusion: '信息不足', conclusionReason: '初筛方案和沟通总结已经合并，但关键项目结果仍缺少充分证据。', nextStep: '补充电话沟通',
+    conclusion: '信息不足', conclusionReason: '初筛方案和沟通总结已经合并，但关键项目结果仍缺少充分证据。', recommendationReason: '候选人具备部分岗位相关经历，但关键项目结果和职责边界仍缺少电话证据，建议先补充沟通。', nextStep: '补充电话沟通',
     followUps: payload.communicationSummary?.followUps || []
   };
 }

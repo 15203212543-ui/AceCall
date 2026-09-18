@@ -168,8 +168,9 @@ function parseResumeBasics(text = '') {
 async function getRequestContext(request) {
   const user = getCloudbaseApp().auth().getUserInfo() || {};
   const gatewayUser = readGatewayUser(request);
-  const uid = gatewayUser.uid || user.uid || user.customUserId;
-  if (!uid || user.isAnonymous) throw serviceError('请先登录后使用业务功能', 401);
+  const identity = gatewayUser.uid ? gatewayUser : { uid: user.uid || user.customUserId, isAnonymous: Boolean(user.isAnonymous) };
+  const uid = identity.uid;
+  if (!uid || identity.isAnonymous) throw serviceError('请先登录后使用业务功能', 401);
   const result = await getDatabase().collection(COLLECTIONS.members).where({ uid, status: 'active' }).limit(1).get();
   const member = result.data?.[0];
   if (!member?.tenantId) throw serviceError('当前账号尚未加入公司工作区，请联系管理员邀请', 403);
@@ -182,17 +183,18 @@ function readGatewayUser(request) {
   try {
     const parsed = JSON.parse(Buffer.from(String(raw), 'base64').toString('utf8'));
     const info = parsed.userInfo || parsed.user || parsed;
-    return { uid: info.uid || info.customUserId || info.openId || '' };
+    return { uid: info.uid || info.customUserId || info.openId || '', isAnonymous: Boolean(info.isAnonymous || info.anonymous) };
   } catch {
-    try { const parsed = JSON.parse(String(raw)); const info = parsed.userInfo || parsed.user || parsed; return { uid: info.uid || info.customUserId || info.openId || '' }; } catch { return {}; }
+    try { const parsed = JSON.parse(String(raw)); const info = parsed.userInfo || parsed.user || parsed; return { uid: info.uid || info.customUserId || info.openId || '', isAnonymous: Boolean(info.isAnonymous || info.anonymous) }; } catch { return {}; }
   }
 }
 
 async function bootstrapWorkspace(input = {}, request) {
   const user = getCloudbaseApp().auth().getUserInfo() || {};
   const gatewayUser = readGatewayUser(request);
-  const uid = gatewayUser.uid || user.uid || user.customUserId;
-  if (!uid || user.isAnonymous) throw serviceError('请先登录后初始化工作区', 401);
+  const identity = gatewayUser.uid ? gatewayUser : { uid: user.uid || user.customUserId, isAnonymous: Boolean(user.isAnonymous) };
+  const uid = identity.uid;
+  if (!uid || identity.isAnonymous) throw serviceError('请先登录后初始化工作区', 401);
   const db = getDatabase();
   const existing = await db.collection(COLLECTIONS.members).where({ uid }).limit(5).get();
   const existingMember = existing.data?.[0];
@@ -587,14 +589,14 @@ function summarySchema() {
   return '沟通总结字段：overview 字符串；confirmed、contradicted、missing 数组，每项含 item、evidence；questionCoverage 对象含 covered、total、unanswered 数组；keyFacts 对象含 currentCompanyRole、location、currentSalary、expectedSalary、availability、motivation、nonCompete；candidateSignals 字符串数组；followUps 字符串数组。只总结电话内容，不给推荐结论。';
 }
 function synthesisSchema() {
-  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。';
+  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。';
 }
 
 function generateDemo(payload) {
   if (payload.action === 'match') return generateDemoMatch(payload);
   if (payload.action === 'prepare') return { summary: { headline: `${payload.candidateName || '候选人'}正在评估${payload.roleName || '目标岗位'}`, experience: '演示模式不进行事实推断', relevantBackground: '请配置DeepSeek密钥启用语义分析', openFacts: '职责、项目结果和基本条件待确认' }, matches: [], risks: [{ risk: '当前为演示模式', evidence: '未配置DeepSeek密钥', impact: '结果不能用于招聘判断' }], verification: [], questions: defaultQuestions() };
   if (payload.action === 'summarize') return { overview: '演示模式仅保存电话文本。', confirmed: [], contradicted: [], missing: [], questionCoverage: { covered: 0, total: payload.preparation?.questions?.length || 0, unanswered: [] }, keyFacts: {}, candidateSignals: [], followUps: [] };
-  return { basicInfo: {}, capabilities: [], evidence: [], conflicts: [], risks: ['当前为演示模式'], conclusion: '信息不足', conclusionReason: '未启用AI服务。', nextStep: '补充电话沟通', followUps: [] };
+  return { basicInfo: {}, capabilities: [], evidence: [], conflicts: [], risks: ['当前为演示模式'], conclusion: '信息不足', conclusionReason: '未启用AI服务。', recommendationReason: '请启用AI服务后，根据已核实的简历与沟通事实补充推荐理由。', nextStep: '补充电话沟通', followUps: [] };
 }
 function generateDemoMatch(payload) {
   const ranked = payload.jobs.map(job => { const terms = findSharedTerms(`${job.name} ${job.jd}`, payload.resume, job.keywords); const score = Math.min(99, Math.round((terms.length / Math.max((job.keywords || []).length, 4)) * 70 + (payload.resume.includes(job.industry || '') ? 15 : 0) + (terms.length ? 10 : 0))); return { job, score, terms }; }).sort((a, b) => b.score - a.score);
