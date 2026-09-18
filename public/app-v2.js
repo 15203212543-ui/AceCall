@@ -61,7 +61,11 @@ async function initializeAuth() {
   cloudbaseClient = cloudbase.init({ env: CLOUD_CONFIG.env, region: CLOUD_CONFIG.region, accessKey: CLOUD_CONFIG.publishableKey });
   cloudbaseAuth = cloudbaseClient.auth({ persistence: 'local' });
   const { data, error } = await cloudbaseAuth.getSession();
-  if (error) showLoginMessage(error.message || '登录状态读取失败');
+  if (error) {
+    await cloudbaseAuth.signOut().catch(() => {});
+    showLoginMessage('登录状态已重置，请重新输入账号密码', false);
+    return false;
+  }
   if (!data?.session) return false;
   $('#loginScreen').classList.add('hidden');
   return true;
@@ -72,9 +76,19 @@ async function signIn(event) {
   const button = $('#loginButton');
   button.disabled = true; button.textContent = '正在登录'; showLoginMessage('正在验证账号', false);
   try {
-    const { data, error } = await cloudbaseAuth.signInWithPassword({ username: $('#loginUsername').value.trim(), password: $('#loginPassword').value });
+    let result = await cloudbaseAuth.signInWithPassword({ username: $('#loginUsername').value.trim(), password: $('#loginPassword').value });
+    if (result.error && /refresh token/i.test(result.error.message || '')) {
+      await cloudbaseAuth.signOut().catch(() => {});
+      result = await cloudbaseAuth.signInWithPassword({ username: $('#loginUsername').value.trim(), password: $('#loginPassword').value });
+    }
+    const { data, error } = result;
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
-    location.reload();
+    $('#loginScreen').classList.add('hidden');
+    await hydrateWorkspace();
+    await hydrateState();
+    seedJobs();
+    await checkService();
+    navigate(location.hash.replace('#', '') || 'dashboard');
   } catch (error) {
     showLoginMessage(error.message || '登录失败');
     button.disabled = false; button.textContent = '登录';
