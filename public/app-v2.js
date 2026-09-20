@@ -785,7 +785,24 @@ async function resolveResumePreview(item) {
   const fileId = item.resumeMeta?.originalFileId;
   if (!fileId || !cloudbaseClient) return '';
   const result = await cloudbaseClient.getTempFileURL({ fileList: [{ fileID: fileId, maxAge: 1800 }] });
-  return result.fileList?.[0]?.tempFileURL || result.fileList?.[0]?.download_url || '';
+  const tempUrl = result.fileList?.[0]?.tempFileURL || result.fileList?.[0]?.download_url || '';
+  if (!tempUrl) return '';
+  // CloudBase/COS may mark a stored PDF as an attachment. Loading that URL
+  // directly in an iframe makes Chrome download it instead of displaying it.
+  // Reading the signed URL into a Blob gives the browser an inline PDF URL and
+  // preserves the original document layout without creating another download.
+  if (item.resumeMeta?.originalMimeType === 'application/pdf') {
+    try {
+      const response = await fetch(tempUrl, { credentials: 'omit' });
+      if (response.ok) {
+        const blob = await response.blob();
+        return URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+      }
+    } catch (error) {
+      console.warn('PDF inline preview unavailable, using original URL', error);
+    }
+  }
+  return tempUrl;
 }
 
 function localGenerate(payload) {
