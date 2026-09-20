@@ -832,7 +832,10 @@ async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await a
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json();if(!response.ok)throw new Error(data.error||'服务离线');$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
 async function authenticatedFetch(url, options = {}) {
-  if (!cloudbaseAuth) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
+  // The login screen is controlled by initializeAuth/signIn only. A rejected
+  // business request (for example a missing workspace membership) must not
+  // flash the login screen after a successful sign-in.
+  if (!cloudbaseAuth) throw new Error('登录已过期，请重新登录');
   const request = async token => { const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); };
   let sessionResult = await cloudbaseAuth.getSession();
   let token = sessionResult.data?.session?.access_token;
@@ -840,15 +843,14 @@ async function authenticatedFetch(url, options = {}) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     token = refreshed?.data?.session?.access_token;
   }
-  if (!token) { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
+  if (!token) throw new Error('登录已过期，请重新登录');
   let response = await request(token);
   if (response.status === 401) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
     if (freshToken) response = await request(freshToken);
-    else { $('#loginScreen').classList.remove('hidden'); throw new Error('登录已过期，请重新登录'); }
+    else throw new Error('登录已过期，请重新登录');
   }
-  if (response.status === 401) { const body = await response.clone().json().catch(() => ({})); if (!body.error || /请先登录|登录已过期/.test(body.error)) $('#loginScreen').classList.remove('hidden'); }
   return response;
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
