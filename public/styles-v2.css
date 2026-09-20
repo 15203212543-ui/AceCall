@@ -27,3 +27,6 @@ body{background:#f5f4f0}
  .field-inline{display:flex;align-items:center;gap:7px;margin:7px 0 8px}.field-inline select{flex:1;min-width:0}.field-inline .secondary{min-height:32px;padding:0 9px;font-size:10px}.field-inline .link-action{white-space:nowrap}
 .resume-original{margin-top:16px;border:1px solid var(--line);background:#f6f8f6;min-height:520px}.resume-original iframe{display:block;width:100%;height:720px;border:0;background:#fff}.resume-original-file{min-height:0;padding:24px}.resume-original-file p{margin:0 0 14px;color:var(--muted);font-size:11px}.resume-text-fallback{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}.resume-text-fallback summary{cursor:pointer;color:var(--green);font-size:10px;font-weight:650}.resume-text-fallback pre{white-space:pre-wrap;font:11px/1.7 inherit;margin:12px 0 0}
 .dashboard-metrics{grid-template-columns:repeat(6,1fr)}
+/* Clickable resume-center stage metrics */
+.ingest-kpis .metric-action{cursor:pointer;text-align:left;color:var(--ink)}
+.ingest-kpis .metric-action.active{border-color:var(--green);background:#f2f7f4;box-shadow:inset 0 2px 0 var(--green)}
