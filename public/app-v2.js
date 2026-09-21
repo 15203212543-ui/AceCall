@@ -860,16 +860,27 @@ function infoLabel(key){return({currentCompanyRole:'当前公司及职位',locat
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
 function apiUrl(path){return `${API_BASE}${path}`;}
-async function saveRemote(path,payload){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok){const detail=result.error||({401:'登录已过期，请重新登录',403:'当前账号没有当前工作区的写入权限',404:'CloudBase接口不存在',500:'CloudBase服务内部错误'}[response.status]||`请求失败（${response.status}）`);throw new Error(detail);}return result;}catch(error){console.error(error);toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok)throw new Error('CloudBase数据读取失败');let remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length||(remote.rules||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));await migrateStoredResumesOnce();response=await authenticatedFetch(apiUrl('/api/state'));if(response.ok){remote=await response.json();app.jobs=remote.jobs||app.jobs;app.cases=remote.cases||app.cases;teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}return;}for(const job of app.jobs)await saveRemote(`/api/jobs/${job.id}`,job);for(const candidate of app.cases)await saveRemote(`/api/candidates/${candidate.id}`,candidate);for(const content of teamRules)await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1});}catch(error){console.error(error);toast('CloudBase暂不可用，已使用本机数据');}}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function cloudError(status, body = {}) {
+  if (body.error) return body.error;
+  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
+}
+async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}let remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length||(remote.rules||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));await migrateStoredResumesOnce();return;}let failed=0;for(const job of app.jobs){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of app.cases){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}for(const content of teamRules){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}if(failed)toast(`云端同步暂未完成，${failed} 条数据保留在本机，可稍后重试`);}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
-async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json();if(!response.ok)throw new Error(data.error||'服务离线');$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch{$('#serviceStatus').textContent='服务离线';}}
+async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);$('#serviceStatus').textContent=error.message||'服务状态未知';}}
 async function authenticatedFetch(url, options = {}) {
   // The login screen is controlled by initializeAuth/signIn only. A rejected
   // business request (for example a missing workspace membership) must not
   // flash the login screen after a successful sign-in.
   if (!cloudbaseAuth) throw new Error('登录已过期，请重新登录');
-  const request = async token => { const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); return fetch(url, { ...options, headers }); };
+  const request = async token => {
+    const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`);
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs || 20000);
+    try { return await fetch(url, { ...options, headers, signal: controller.signal }); }
+    catch (error) { if (error.name === 'AbortError') throw new Error('CloudBase请求超时，请检查网络后重试'); throw new Error('CloudBase网络连接失败，请检查网络或跨域配置'); }
+    finally { clearTimeout(timer); }
+  };
   let sessionResult = await cloudbaseAuth.getSession();
   let token = sessionResult.data?.session?.access_token;
   if (!token) {
@@ -877,7 +888,12 @@ async function authenticatedFetch(url, options = {}) {
     token = refreshed?.data?.session?.access_token;
   }
   if (!token) throw new Error('登录已过期，请重新登录');
-  let response = await request(token);
+  let response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { response = await request(token); } catch (error) { if (attempt === 2) throw error; await sleep(400 * 2 ** attempt); continue; }
+    if (![429,502,503,504].includes(response.status) || attempt === 2) break;
+    await sleep(500 * 2 ** attempt);
+  }
   if (response.status === 401) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
