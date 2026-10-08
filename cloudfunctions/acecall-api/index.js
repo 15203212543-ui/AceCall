@@ -1,5 +1,6 @@
 const http = require('node:http');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
 
 const PORT = 9000;
@@ -10,7 +11,8 @@ const COLLECTIONS = {
   candidates: 'acecall_candidates',
   screenings: 'acecall_screenings',
   audit: 'acecall_audit_logs',
-  rules: 'acecall_team_rules'
+  rules: 'acecall_team_rules',
+  transcriptionTasks: 'acecall_transcription_tasks'
 };
 let cloudbaseApp;
 
@@ -98,6 +100,24 @@ const server = http.createServer(async (request, response) => {
       const fileName = url.searchParams.get('name') || 'recording.m4a';
       const buffer = await readBuffer(request, 60_000_000);
       return sendJson(response, 200, await transcribeWithBaidu(fileName, buffer));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/recordings/init') {
+      return sendJson(response, 200, await initRecording(await getRequestContext(request), await readJson(request)));
+    }
+    if (request.method === 'POST' && url.pathname.match(/^\/api\/recordings\/[^/]+\/parts\/complete$/)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await completeRecordingPart(await getRequestContext(request), id, await readJson(request)));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/transcription-tasks') {
+      return sendJson(response, 200, await createTranscriptionTask(await getRequestContext(request), await readJson(request)));
+    }
+    if (request.method === 'GET' && url.pathname.match(/^\/api\/transcription-tasks\/[^/]+$/)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await getTranscriptionTask(await getRequestContext(request), id));
+    }
+    if (request.method === 'POST' && url.pathname.match(/^\/api\/transcription-tasks\/[^/]+\/analyze$/)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await analyzeTranscriptionTask(await getRequestContext(request), id, await readJson(request)));
     }
     return sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
@@ -381,6 +401,85 @@ async function migrateStoredResumes(context) {
 async function audit(context, action, entityId, detail) {
   const db = getDatabase();
   await db.collection(COLLECTIONS.audit).add({ tenantId: context.tenantId, action, entityId, detail, actorUid: context.uid, actorRole: context.role, createdAt: new Date().toISOString() });
+}
+
+function taskId() {
+  return `tr_${crypto.randomUUID()}`;
+}
+
+function taskDocument(context, input = {}, id, status = 'uploading') {
+  const now = new Date().toISOString();
+  const size = Math.max(0, Number(input.size || input.fileSize || 0));
+  if (size > 500 * 1024 * 1024) throw serviceError('单次录音不能超过 500MB', 413);
+  if (!String(input.fileName || '').trim()) throw serviceError('缺少录音文件名', 400);
+  return {
+    id,
+    tenantId: context.tenantId,
+    candidateId: String(input.candidateId || '').slice(0, 100),
+    fileName: String(input.fileName).slice(0, 180),
+    mimeType: String(input.mimeType || 'audio/webm').slice(0, 100),
+    size,
+    durationSeconds: Math.max(0, Number(input.durationSeconds || 0)),
+    storagePrefix: `acecall/recordings/${context.tenantId}/${String(input.candidateId || 'unassigned')}/${id}`,
+    engine: process.env.TRANSCRIPTION_ENGINE || 'external-whisper',
+    status,
+    parts: [],
+    result: null,
+    error: '',
+    createdBy: context.uid,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+async function initRecording(context, input = {}) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const id = taskId();
+  const task = taskDocument(context, input, id, 'uploading');
+  if (!task.candidateId) throw serviceError('缺少候选人信息', 400);
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set(task);
+  await audit(context, 'recording.init', id, { candidateId: task.candidateId, size: task.size });
+  return { ok: true, recordingId: id, taskId: id, storagePrefix: task.storagePrefix, chunkSize: 8 * 1024 * 1024, maxBytes: 500 * 1024 * 1024, status: task.status };
+}
+
+async function completeRecordingPart(context, id, input = {}) {
+  const task = await findTask(context, id);
+  const part = { index: Math.max(0, Number(input.index || 0)), path: String(input.path || '').slice(0, 300), size: Math.max(0, Number(input.size || 0)), uploadedAt: new Date().toISOString() };
+  if (!part.path || part.path.indexOf(`${task.storagePrefix}/`) !== 0) throw serviceError('录音分片路径无效', 400);
+  const parts = [...(task.parts || []).filter(item => item.index !== part.index), part].sort((a, b) => a.index - b.index);
+  const patch = { parts, status: input.final ? 'uploaded' : 'uploading', updatedAt: new Date().toISOString() };
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set({ ...task, ...patch });
+  return { ok: true, taskId: id, status: patch.status, partCount: parts.length };
+}
+
+async function createTranscriptionTask(context, input = {}) {
+  const task = await findTask(context, String(input.recordingId || input.taskId || ''));
+  const status = task.parts?.length ? 'queued' : task.status;
+  const updated = { ...task, status, queuedAt: status === 'queued' ? new Date().toISOString() : task.queuedAt, updatedAt: new Date().toISOString() };
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(task.id).set(updated);
+  await audit(context, 'transcription.queue', task.id, { engine: updated.engine, partCount: updated.parts.length });
+  return { ok: true, task: cleanDocument(updated), message: status === 'queued' ? '录音已进入异步转写队列，等待 Whisper/FunASR 服务处理' : '录音尚未完成上传' };
+}
+
+async function getTranscriptionTask(context, id) {
+  return { ok: true, task: cleanDocument(await findTask(context, id)) };
+}
+
+async function analyzeTranscriptionTask(context, id, input = {}) {
+  const task = await findTask(context, id);
+  const text = String(input.text || task.result?.text || '').trim();
+  if (!text) throw serviceError('转写结果为空，暂时不能分析', 422);
+  const result = { text, characters: text.length, completedAt: new Date().toISOString(), format: 'text' };
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set({ ...task, status: 'completed', result, updatedAt: new Date().toISOString(), error: '' });
+  return { ok: true, taskId: id, status: 'completed', result };
+}
+
+async function findTask(context, id) {
+  if (!id || !/^[A-Za-z0-9_-]{3,100}$/.test(id)) throw serviceError('录音任务不存在', 404);
+  const result = await getDatabase().collection(COLLECTIONS.transcriptionTasks).where({ id, tenantId: context.tenantId }).limit(1).get();
+  const task = result.data?.[0];
+  if (!task) throw serviceError('录音任务不存在或无权访问', 404);
+  return task;
 }
 
 function deriveStatus(item) {
