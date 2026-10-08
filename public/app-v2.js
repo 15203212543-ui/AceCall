@@ -27,7 +27,7 @@ let inboxQueueFilter = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
 let pendingTeamRule = '';
-let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '' };
+let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
 
@@ -590,7 +590,11 @@ async function completeCall() {
   const button = $('[data-complete-call]'); button.disabled = true; button.textContent = '正在生成结果';
   try {
     candidate.transcript = transcript; candidate.consentConfirmed = true;
-    if (recordingDraft.candidateId === candidate.id && recordingDraft.file) candidate.callRecording = await uploadCallRecording(candidate, recordingDraft.file);
+    if (recordingDraft.candidateId === candidate.id && recordingDraft.file) {
+      candidate.callRecording = recordingDraft.uploaded && recordingDraft.taskId
+        ? { fileName: recordingDraft.file.name, mimeType: recordingDraft.file.type || 'audio/webm', size: recordingDraft.file.size, source: recordingDraft.source || 'upload', recordedAt: new Date().toISOString(), status: 'queued', transcriptionTaskId: recordingDraft.taskId }
+        : await uploadCallRecording(candidate, recordingDraft.file);
+    }
     candidate.communicationSummary = await generate({ action:'summarize', roleName:candidate.roleName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, preparation:candidate.preparation, transcript });
     candidate.report = await generate({ action:'synthesize', roleName:candidate.roleName, jd:candidate.jd, rules:candidate.rules, keywords:candidate.keywords, preparation:candidate.preparation, communicationSummary:candidate.communicationSummary });
     candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已生成，请人工确认');
@@ -608,7 +612,7 @@ function setRecordingFile(file) {
   const supportedAudio = ['mp3', 'wav', 'pcm', 'amr', 'm4a', 'webm'];
   if (file.type && !file.type.startsWith('audio/') && !supportedAudio.includes(extension)) return toast('请选择音频文件');
   if (recordingDraft.url) URL.revokeObjectURL(recordingDraft.url);
-  recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload', taskId: '', recordingId: '' };
+  recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload', taskId: '', recordingId: '', uploaded: false };
   renderCandidateDetail();
   transcribeRecording(file);
 }
@@ -643,6 +647,7 @@ async function transcribeRecording(file) {
     const queueData = await queueResponse.json().catch(() => ({}));
     if (!queueResponse.ok) throw new Error(queueData.error || '录音转写排队失败');
     if (status) status.textContent = `${file.name} · 已上传，等待异步转写服务处理`;
+    recordingDraft.uploaded = true;
     toast('录音已上传，已进入异步转写队列');
     pollTranscriptionTask(taskId, file.name);
   } catch (error) {
