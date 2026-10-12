@@ -79,6 +79,21 @@ th{background:#f4f7fc;color:#6f7c91}
 .file-status{background:#e8f0ff;color:#2459d6}
 .upload-zone{border-color:#a9bde7;background:#f1f5ff;color:#2f6bff}
 .toast{background:#102447}
+
+/* Keep gold as a restrained brand accent; functional text stays blue/ink. */
+.intro-brand .login-mark,.login-panel-head .login-mark,.brand>span{background:#c9a15c;color:#17253d}
+.intro-copy h1 em,.intro-capabilities b{color:#d7ad6a}
+.auth-switch,.question small,.metric a,.link-action,.structure-link,.tab.active,.batch-row b,.moka-placeholder{color:#2f6bff}
+.metric b,.job-progress-meta b,.score,.score-large{color:#2459d6}
+.dashboard-strip{border-left-color:#2f6bff}
+.stage-item.active{border-top-color:#2f6bff;background:#edf3ff}
+.candidate-stage.active,.candidate-stage:hover{border-bottom-color:#2f6bff;color:#2f6bff;background:#edf3ff}
+.status.warn,.quality-warn,.tag-accent,.profile-chip.accent{background:#edf3ff;color:#2f6bff}
+.keywords span{background:#edf3ff;color:#536889}
+.profile-chip.muted{background:#eef2f8;color:#6f7c91}
+.eyebrow,.modal header small{color:#2f6bff}
+.service-status i{background:#2f6bff}
+.avatar{background:#e8f0ff;color:#2459d6}
  .field-inline{display:flex;align-items:center;gap:7px;margin:7px 0 8px}.field-inline select{flex:1;min-width:0}.field-inline .secondary{min-height:32px;padding:0 9px;font-size:10px}.field-inline .link-action{white-space:nowrap}
 .resume-original{margin-top:16px;border:1px solid var(--line);background:#f6f8f6;min-height:520px}.resume-original iframe{display:block;width:100%;height:720px;border:0;background:#fff}.resume-original-file{min-height:0;padding:24px}.resume-original-file p{margin:0 0 14px;color:var(--muted);font-size:11px}.resume-text-fallback{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}.resume-text-fallback summary{cursor:pointer;color:var(--green);font-size:10px;font-weight:650}.resume-text-fallback pre{white-space:pre-wrap;font:11px/1.7 inherit;margin:12px 0 0}
 .dashboard-metrics{grid-template-columns:repeat(6,1fr)}
