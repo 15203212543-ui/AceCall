@@ -53,7 +53,9 @@ function bindShell() {
 }
 
 async function initializeAuth() {
-  $('#loginForm').addEventListener('submit', signIn);
+  $('#loginForm').addEventListener('submit', handleAuthSubmit);
+  $('#authSwitch').addEventListener('click', toggleAuthMode);
+  $('#forgotPasswordSwitch').addEventListener('click', startPasswordReset);
   if (!REMOTE_BACKEND) { $('#loginScreen').classList.add('hidden'); return true; }
   if (!CLOUD_CONFIG.env || !CLOUD_CONFIG.publishableKey) {
     showLoginMessage('CloudBase登录配置不完整');
@@ -72,28 +74,208 @@ async function initializeAuth() {
   return true;
 }
 
+let authMode = 'login';
+let registerVerification = null;
+let loginVerification = null;
+let resetVerification = null;
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const registering = authMode === 'register';
+  const resetting = authMode === 'reset';
+  $('#authTitle').textContent = registering ? '欢迎回来' : resetting ? '重设登录密码' : '欢迎回来';
+  $('#authSubtitle').textContent = registering ? '' : resetting ? '通过邮箱验证后设置新的登录密码' : '登录后继续管理岗位、候选人与面试进展';
+  $('#authSubtitle').classList.toggle('hidden', registering);
+  $('#loginButton').textContent = registering ? '创建并继续' : resetting ? '发送验证码' : '登录工作台';
+  $('#authSwitch').textContent = registering || resetting ? '已有账号？返回登录' : '没有账号？注册个人账号';
+  $('#forgotPasswordSwitch').classList.toggle('hidden', registering || resetting);
+  $('#passwordField').classList.toggle('hidden', resetting && !resetVerification);
+  $('#passwordLabel').textContent = resetting ? '新密码' : '密码';
+  $('#confirmPasswordField').classList.toggle('hidden', !registering);
+  $('#verificationCodeField').classList.add('hidden');
+  $('#verificationCode').required = false;
+  registerVerification = null;
+  loginVerification = null;
+  resetVerification = null;
+  $('#loginPassword').required = registering;
+  $('#confirmPassword').required = registering;
+  showLoginMessage(registering ? '设置密码后获取验证码，验证成功即可创建个人账号' : resetting ? '输入注册邮箱，接收验证码后设置新密码' : '账号数据仅属于当前账号', false);
+}
+
+function toggleAuthMode() {
+  setAuthMode(authMode === 'login' ? 'register' : 'login');
+}
+
+function startPasswordReset() {
+  setAuthMode('reset');
+}
+
+function authErrorMessage(value, fallback) {
+  const source = value?.error ?? value;
+  if (typeof source === 'string') return source;
+  const message = source?.message || source?.error_description || source?.msg || value?.message;
+  const code = source?.code || value?.code;
+  if (message && code && !String(message).includes(String(code))) return `${code}: ${message}`;
+  return message || code || fallback;
+}
+
+async function handleAuthSubmit(event) {
+  if (authMode === 'register') return register(event);
+  if (authMode === 'reset') return resetPassword(event);
+  return signIn(event);
+}
+
+async function register(event) {
+  event.preventDefault();
+  const username = $('#loginUsername').value.trim();
+  const password = $('#loginPassword').value;
+  const button = $('#loginButton');
+  if (registerVerification) {
+    const code = $('#verificationCode').value.trim();
+    if (!code) return showLoginMessage('请输入邮箱收到的验证码');
+    button.disabled = true; button.textContent = '正在验证'; showLoginMessage('正在验证邮箱', false);
+    try {
+      const result = await registerVerification({ token: code });
+      if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
+      registerVerification = null;
+      await enterWorkspace(username);
+    } catch (error) {
+      showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
+    button.disabled = false; button.textContent = '验证并进入';
+    }
+    return;
+  }
+  if (!username || !/^\S+@\S+\.\S+$/.test(username)) return showLoginMessage('请输入有效的邮箱地址');
+  if (password.length < 8) return showLoginMessage('密码至少需要 8 位');
+  if (password !== $('#confirmPassword').value) return showLoginMessage('两次输入的密码不一致');
+  button.disabled = true; button.textContent = '正在注册'; showLoginMessage('正在创建个人账号', false);
+  try {
+    const result = await cloudbaseAuth.signUp({
+      email: username,
+      password
+    });
+    if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
+    if (result?.data?.session) {
+      await enterWorkspace(username);
+      return;
+    }
+    if (!result?.data?.verifyOtp) throw new Error('验证码接口返回异常，请检查 CloudBase 邮箱登录配置');
+    registerVerification = result.data.verifyOtp;
+    $('#verificationCodeField').classList.remove('hidden');
+    $('#verificationCode').required = true;
+    $('#loginButton').textContent = '验证并进入';
+    showLoginMessage('验证码已发送到你的邮箱，请查收后输入；验证成功后自动创建账号', false);
+    button.disabled = false;
+  } catch (error) {
+    showLoginMessage(authErrorMessage(error, '注册失败'));
+    button.disabled = false; button.textContent = '注册并进入';
+  }
+}
+
+async function resetPassword(event) {
+  event.preventDefault();
+  const username = $('#loginUsername').value.trim();
+  const password = $('#loginPassword').value;
+  const button = $('#loginButton');
+  if (resetVerification) {
+    const code = $('#verificationCode').value.trim();
+    if (!code) return showLoginMessage('请输入邮箱收到的验证码');
+    if (password.length < 8) return showLoginMessage('新密码至少需要 8 位');
+    if (password !== $('#confirmPassword').value) return showLoginMessage('两次输入的新密码不一致');
+    button.disabled = true; button.textContent = '正在保存'; showLoginMessage('正在重设密码', false);
+    try {
+      const result = await resetVerification({ nonce: code, password });
+      if (result?.error) throw new Error(authErrorMessage(result, '密码重设失败'));
+      setAuthMode('login');
+      $('#loginUsername').value = username;
+      $('#loginPassword').value = '';
+      $('#confirmPassword').value = '';
+      $('#verificationCode').value = '';
+      showLoginMessage('密码已重设，请使用新密码登录', false);
+    } catch (error) {
+      showLoginMessage(authErrorMessage(error, '密码重设失败'));
+      button.disabled = false; button.textContent = '保存新密码';
+    }
+    return;
+  }
+  if (!username || !/^\S+@\S+\.\S+$/.test(username)) return showLoginMessage('请输入有效的邮箱地址');
+  button.disabled = true; button.textContent = '正在发送'; showLoginMessage('正在发送重设密码验证码', false);
+  try {
+    const result = await cloudbaseAuth.resetPasswordForEmail(username);
+    if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
+    if (!result?.data?.updateUser) throw new Error('重设密码接口返回异常，请检查 CloudBase 邮箱配置');
+    resetVerification = result.data.updateUser;
+    $('#passwordField').classList.remove('hidden');
+    $('#confirmPasswordField').classList.remove('hidden');
+    $('#verificationCodeField').classList.remove('hidden');
+    $('#verificationCode').required = true;
+    $('#loginPassword').required = true;
+    $('#confirmPassword').required = true;
+    $('#loginButton').textContent = '保存新密码';
+    showLoginMessage('验证码已发送到你的邮箱，请输入验证码和新密码', false);
+    button.disabled = false;
+  } catch (error) {
+    showLoginMessage(authErrorMessage(error, '验证码发送失败'));
+    button.disabled = false; button.textContent = '发送验证码';
+  }
+}
+
 async function signIn(event) {
   event.preventDefault();
   const button = $('#loginButton');
+  const username = $('#loginUsername').value.trim();
+  if (loginVerification) {
+    const code = $('#verificationCode').value.trim();
+    if (!code) return showLoginMessage('请输入邮箱收到的验证码');
+    button.disabled = true; button.textContent = '正在验证'; showLoginMessage('正在验证邮箱', false);
+    try {
+      const result = await loginVerification({ token: code });
+      if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
+      loginVerification = null;
+      await enterWorkspace(username);
+    } catch (error) {
+      showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
+      button.disabled = false; button.textContent = '验证并进入';
+    }
+    return;
+  }
   button.disabled = true; button.textContent = '正在登录'; showLoginMessage('正在验证账号', false);
   try {
-    let result = await cloudbaseAuth.signInWithPassword({ username: $('#loginUsername').value.trim(), password: $('#loginPassword').value });
+    let result = await cloudbaseAuth.signInWithPassword({ username, password: $('#loginPassword').value });
     if (result.error && /refresh token/i.test(result.error.message || '')) {
       await cloudbaseAuth.signOut().catch(() => {});
       result = await cloudbaseAuth.signInWithPassword({ username: $('#loginUsername').value.trim(), password: $('#loginPassword').value });
     }
     const { data, error } = result;
+    if (error && (error.code === 'password_not_set' || /password.?not.?set/i.test(error.message || ''))) {
+      const otpResult = await cloudbaseAuth.signInWithOtp({
+        email: username,
+        options: { shouldCreateUser: false }
+      });
+      if (otpResult?.error) throw new Error(authErrorMessage(otpResult, '验证码发送失败'));
+      if (!otpResult?.data?.verifyOtp) throw new Error('验证码接口返回异常，请检查 CloudBase 邮箱登录配置');
+      loginVerification = otpResult.data.verifyOtp;
+      $('#verificationCodeField').classList.remove('hidden');
+      $('#verificationCode').required = true;
+      button.disabled = false; button.textContent = '验证并进入';
+      showLoginMessage('该账号未设置密码，验证码已发送到邮箱', false);
+      return;
+    }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
-    $('#loginScreen').classList.add('hidden');
-    await hydrateWorkspace();
-    await hydrateState();
-    seedJobs();
-    await checkService();
-    navigate(location.hash.replace('#', '') || 'dashboard');
+    await enterWorkspace($('#loginUsername').value.trim());
   } catch (error) {
-    showLoginMessage(error.message || '登录失败');
-    button.disabled = false; button.textContent = '登录';
+    showLoginMessage(authErrorMessage(error, '登录失败'));
+    button.disabled = false; button.textContent = '登录工作台';
   }
+}
+
+async function enterWorkspace(username = '') {
+  $('#loginScreen').classList.add('hidden');
+  await hydrateWorkspace(username);
+  await hydrateState();
+  seedJobs();
+  await checkService();
+  navigate(location.hash.replace('#', '') || 'dashboard');
 }
 
 async function signOut() {
@@ -140,8 +322,9 @@ function renderDashboard() {
   const structures = talentStructure(app.cases);
   const actionRows = [...app.cases].filter(item => ['待分析', '待电话', '待确认'].includes(statusOf(item)) || scoreValue(item) >= 80).sort((a,b) => scoreValue(b) - scoreValue(a) || byUpdated(a,b)).slice(0, 8);
   $('#dashboardView').innerHTML = `<div class="page dashboard-page">
-    <div class="page-title dashboard-title"><div><span class="eyebrow">RECRUITING CONTROL ROOM</span><h1>招聘工作台</h1><p>从岗位推进到人才结构，集中查看今天最值得处理的招聘动作。</p></div><div class="dashboard-actions"><select id="dashboardJobFilter"><option value="">全部活跃岗位</option>${activeJobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><button class="primary" data-add-candidate>＋ 添加候选人</button></div></div>
-    <div class="dashboard-strip"><div class="dashboard-strip-label"><span>当前招聘面</span><b>${activeJobs.length} 个岗位</b></div><div class="dashboard-strip-note">统计范围：全部候选人，包含已淘汰与待处理人选 · 标签来源：简历事实 / AI识别 / 人工确认</div><button class="link-action" data-dashboard-refresh>刷新视图 ↻</button></div>
+    <div class="page-title dashboard-title"><div><span class="eyebrow">RECRUITING CONTROL ROOM</span><h1>今日招聘概览</h1><p>把岗位进度、候选人匹配和待办动作集中在一个工作面中。</p></div><div class="dashboard-actions"><select id="dashboardJobFilter"><option value="">全部活跃岗位</option>${activeJobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><button class="primary" data-add-candidate>＋ 添加候选人</button></div></div>
+    <div class="dashboard-strip"><div class="dashboard-strip-label"><span>当前招聘面</span><b>${activeJobs.length} 个活跃岗位</b></div><div class="dashboard-strip-note">统计范围：全部候选人 · AI 仅提供辅助判断，岗位分配与录用结论由团队确认</div><button class="link-action" data-dashboard-refresh>刷新视图 ↻</button></div>
+    <section class="dashboard-insight"><div class="insight-mark">✦</div><div><strong>AI 招聘助手</strong><p>${pendingCall + pendingReview ? `当前有 ${pendingCall + pendingReview} 项招聘动作值得优先处理，建议先完成待沟通和待确认候选人。` : '当前没有积压的招聘动作，可以继续导入候选人或完善岗位标准。'}</p></div><button class="link-action" data-dashboard-filter="${pendingCall ? 'call' : 'all'}">${pendingCall ? '查看待沟通' : '查看人才池'} →</button></section>
     <div class="metrics dashboard-metrics"><button class="metric metric-action" data-dashboard-filter="all"><b>${total}</b><span>候选人总数</span><small>全量人才池</small></button><button class="metric metric-action" data-dashboard-filter="high"><b>${highMatch}</b><span>高匹配候选人</span><small>匹配度 80 分以上</small></button><button class="metric metric-action" data-dashboard-filter="call"><b>${pendingCall}</b><span>待电话沟通</span><small>需要推进</small></button><button class="metric metric-action" data-dashboard-filter="assignment-review"><b>${assignmentReview}</b><span>待确认简历</span><small>岗位分配需人工确认</small></button><button class="metric metric-action" data-dashboard-filter="review"><b>${pendingReview}</b><span>待审核结果</span><small>需要确认</small></button><div class="metric"><b>${recommended}</b><span>已推荐业务面试</span><small>已完成动作</small></div></div>
     <div class="dashboard-layout"><div class="dashboard-main"><section class="surface progress-surface"><div class="surface-head"><div><h2>岗位推进</h2><p class="surface-subtitle">按岗位查看候选人在哪个环节停留</p></div><span>${activeJobs.length} 个活跃岗位</span></div><div class="surface-body job-progress-list">${activeJobs.length ? activeJobs.map(jobProgressRow).join('') : '<div class="empty">还没有活跃岗位，请先建立岗位标准。</div>'}</div></section><section class="surface action-surface"><div class="surface-head"><div><h2>优先处理</h2><p class="surface-subtitle">高匹配、待沟通和待审核候选人</p></div><button class="link-action" data-dashboard-filter="all">查看全部 →</button></div>${candidateTable(actionRows, '')}</section></div><aside class="dashboard-aside"><section class="surface structure-surface"><div class="surface-head"><div><h2>人才池结构</h2><p class="surface-subtitle">基于全部候选人统计</p></div><span>AI识别</span></div><div class="surface-body"><div class="structure-block"><div class="structure-heading"><strong>直接竞品经历</strong><span>${structures.competitor.known}/${total || 0} 人</span></div>${structureBar(structures.competitor, '竞品公司') }<p class="structure-note">按岗位 JD 与候选人最近 1-2 段经历识别</p></div><div class="structure-block"><div class="structure-heading"><strong>大厂经历</strong><span>${structures.major.known}/${total || 0} 人</span></div>${structureBar(structures.major, '行业前 5') }<p class="structure-note">同业务行业内按规模、业务体量和市场排名识别</p></div><div class="structure-block"><div class="structure-heading"><strong>学校层次</strong><span>${structures.school.known}/${total || 0} 人</span></div>${structureBar(structures.school, '985/211/双一流') }<p class="structure-note">优先读取简历教育经历，无法确认则保留未知</p></div><button class="structure-link" data-dashboard-filter="competitor">查看结构命中候选人 →</button></div></section><section class="surface funnel-surface"><div class="surface-head"><div><h2>招聘漏斗</h2><p class="surface-subtitle">全部岗位累计</p></div></div><div class="surface-body"><div class="funnel-row"><span>简历已导入</span><b>${total}</b></div><div class="funnel-row"><span>已完成解析</span><b>${app.cases.filter(item => item.resume).length}</b></div><div class="funnel-row"><span>已完成沟通</span><b>${app.cases.filter(item => item.communicationSummary || item.report).length}</b></div><div class="funnel-row"><span>已推荐面试</span><b>${recommended}</b></div></div></section></aside></div></div>`;
   bindCommonActions($('#dashboardView'));
