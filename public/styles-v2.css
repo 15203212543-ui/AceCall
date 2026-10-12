@@ -153,3 +153,13 @@ th{background:#f4f7fc;color:#6f7c91}
 .login-intro{background-color:#071b3f!important;background-image:linear-gradient(rgba(4,18,49,.16),rgba(4,18,49,.16)),url("./assets/login-background.png")!important;background-position:center bottom!important;background-size:cover!important;background-repeat:no-repeat!important}
 .login-intro::after{display:none!important}
 @media(max-width:860px){.login-layout{grid-template-columns:1fr!important}.login-intro{background-position:center bottom!important}}
+
+/* AC mark: match the supplied blue-to-violet app icon reference. */
+.login-intro .login-mark,
+.login-panel-head .login-mark,
+.brand>span{
+  background:linear-gradient(135deg,#45baf3 0%,#3477f5 34%,#4b42f4 62%,#b24df0 100%)!important;
+  color:#fff!important;
+  border-radius:24%!important;
+  box-shadow:0 10px 22px rgba(64,85,238,.24)!important;
+}
