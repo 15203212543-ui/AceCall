@@ -30,6 +30,8 @@ let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
+const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
+let desktopAgentAvailable = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -894,6 +896,20 @@ async function convertWebmToWav(file) {
 }
 
 async function startBrowserRecording() {
+  try {
+    const response = await fetch(`${DESKTOP_AGENT_URL}/status`, { signal: AbortSignal.timeout(900) });
+    if (response.ok) {
+      desktopAgentAvailable = true;
+      const command = await fetch(`${DESKTOP_AGENT_URL}/recording/start`, { method: 'POST', signal: AbortSignal.timeout(2000) });
+      const result = await command.json().catch(() => ({}));
+      if (!command.ok) throw new Error(result.error || '桌面助手无法开始录音');
+      activeRecorder = 'desktop';
+      recorderStopping = false;
+      $('#startRecording').disabled = true; $('#stopRecording').disabled = false;
+      $('#recordingStatus').textContent = '桌面助手正在后台录音，网页可安全切换或最小化。';
+      return;
+    }
+  } catch { desktopAgentAvailable = false; }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('当前浏览器不支持录音，请上传录音文件');
   if (activeRecorder && activeRecorder.state !== 'inactive') return toast('当前已经在录音中');
   try {
@@ -929,6 +945,7 @@ async function startBrowserRecording() {
 }
 
 function stopBrowserRecording() {
+  if (activeRecorder === 'desktop') return stopDesktopRecording();
   if (!activeRecorder || activeRecorder.state === 'inactive') return toast('当前没有正在进行的录音');
   if (recorderStopping) return;
   recorderStopping = true;
@@ -944,6 +961,29 @@ function stopBrowserRecording() {
     if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
     if ($('#recordingStatus')) $('#recordingStatus').textContent = '停止录音失败，请重试。';
     toast(`停止录音失败：${error.message || '请重试'}`);
+  }
+}
+
+async function stopDesktopRecording() {
+  if (recorderStopping) return;
+  recorderStopping = true;
+  const start = $('#startRecording'); const stop = $('#stopRecording');
+  if (start) start.disabled = true; if (stop) { stop.disabled = true; stop.textContent = '正在停止…'; }
+  try {
+    const response = await fetch(`${DESKTOP_AGENT_URL}/recording/stop`, { method: 'POST', signal: AbortSignal.timeout(12000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || '桌面助手停止录音失败');
+    const fileResponse = await fetch(`${DESKTOP_AGENT_URL}/recording/file`, { signal: AbortSignal.timeout(30000) });
+    if (!fileResponse.ok) throw new Error('桌面助手录音文件读取失败');
+    const blob = await fileResponse.blob();
+    activeRecorder = null; recorderStopping = false;
+    if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
+    setRecordingFile(new File([blob], `call-${Date.now()}.webm`, { type: 'audio/webm' }));
+  } catch (error) {
+    activeRecorder = null; recorderStopping = false;
+    if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
+    $('#recordingStatus').textContent = `桌面助手录音失败：${error.message}`;
+    toast(error.message || '桌面助手录音失败');
   }
 }
 
