@@ -14,7 +14,7 @@
     "appId": "com.acecall.sync",
     "productName": "AceCall Sync",
     "files": ["main.js", "preload.js", "renderer.html", "recorder.html", "recorder-preload.js", "local-sync-agent.js"],
-    "mac": { "category": "public.app-category.productivity", "target": ["dmg"] },
+    "mac": { "category": "public.app-category.productivity", "target": ["dmg"], "extendInfo": { "NSMicrophoneUsageDescription": "AceCall 仅在你点击开始录音并完成告知后采集电话沟通声音。" } },
     "win": { "target": ["nsis"] },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
   },
