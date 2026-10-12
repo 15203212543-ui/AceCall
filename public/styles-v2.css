@@ -94,6 +94,21 @@ th{background:#f4f7fc;color:#6f7c91}
 .eyebrow,.modal header small{color:#2f6bff}
 .service-status i{background:#2f6bff}
 .avatar{background:#e8f0ff;color:#2459d6}
+
+/* Full-bleed login composition based on the supplied blue reference. */
+.login-screen{padding:0;background:#f4f7fc}
+.login-layout{width:100vw;min-height:100vh;height:100vh;max-width:none;border:0;border-radius:0;box-shadow:none;grid-template-columns:minmax(0,1.12fr) minmax(390px,.88fr);background:#fff}
+.login-intro{position:relative;isolation:isolate;overflow:hidden;padding:clamp(38px,6vw,88px);background:#0d2144;background-image:linear-gradient(145deg,#102a59 0%,#0d2144 54%,#091b39 100%)}
+.login-intro::after{content:"";position:absolute;z-index:-1;right:-12%;bottom:-26%;width:88%;height:48%;background:linear-gradient(145deg,transparent 0 28%,rgba(47,107,255,.2) 62%,rgba(47,107,255,.05) 100%);transform:rotate(-9deg);pointer-events:none}
+.login-intro .login-mark,.login-panel-head .login-mark,.brand>span{background:#2f6bff;color:#fff;box-shadow:0 8px 18px rgba(47,107,255,.2)}
+.intro-copy h1 em,.intro-capabilities b{color:#8fb3ff}
+.intro-capabilities{border-color:rgba(174,202,255,.2)}
+.login-panel-wrap{padding:clamp(30px,6vw,96px);background:#fff}
+.login-panel-label{color:#6f7c91}
+.login-panel h2{color:#17253d}
+.auth-switch,.question small,.metric a,.link-action,.structure-link,.tab.active,.batch-row b,.moka-placeholder,.eyebrow,.modal header small{color:#2f6bff}
+@media(max-width:860px){.login-layout{width:100vw;max-width:none;height:auto;min-height:100vh;grid-template-columns:1fr}.login-intro{min-height:48vh}.login-panel-wrap{min-height:52vh}}
+@media(max-width:560px){.login-screen{padding:0}.login-layout{display:block;width:100vw;min-height:100vh}.login-intro{min-height:360px;padding:30px 24px}.login-panel-wrap{min-height:0;padding:34px 24px 42px}}
  .field-inline{display:flex;align-items:center;gap:7px;margin:7px 0 8px}.field-inline select{flex:1;min-width:0}.field-inline .secondary{min-height:32px;padding:0 9px;font-size:10px}.field-inline .link-action{white-space:nowrap}
 .resume-original{margin-top:16px;border:1px solid var(--line);background:#f6f8f6;min-height:520px}.resume-original iframe{display:block;width:100%;height:720px;border:0;background:#fff}.resume-original-file{min-height:0;padding:24px}.resume-original-file p{margin:0 0 14px;color:var(--muted);font-size:11px}.resume-text-fallback{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}.resume-text-fallback summary{cursor:pointer;color:var(--green);font-size:10px;font-weight:650}.resume-text-fallback pre{white-space:pre-wrap;font:11px/1.7 inherit;margin:12px 0 0}
 .dashboard-metrics{grid-template-columns:repeat(6,1fr)}
