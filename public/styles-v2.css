@@ -24,6 +24,61 @@ body{background:#f5f4f0}
 .app-header{height:64px}.primary{background:#3f7268;box-shadow:0 5px 14px rgba(38,68,63,.15)}.primary:hover{background:#2f5b54}.secondary{border-color:#c9cbc7;background:#fefdf9;color:#26323b}.danger{border-color:#ddc9c9;color:#9a5e5e}.metric-action:hover{border-color:#b58a54}.metric b,.job-progress-meta b,.score,.score-large{color:#3f7268}.metric{box-shadow:0 1px 0 rgba(38,50,59,.02)}
 .surface-head{border-color:#e3e2dc}.surface-subtitle,td small,.point small,.fact span,.job-item p,.job-meta,.muted-text{color:#778089}th{background:#f0f0eb;color:#69747b}td{border-color:#e3e2dc}.status,.quality-good,.tag-positive,.profile-chip.positive{background:#e5efeb;color:#35665d}.status.warn,.quality-warn,.tag-accent,.profile-chip.accent{background:#f5eadb;color:#9b7444}.status.neutral,.tag-neutral,.profile-chip.neutral{background:#eceeeb;color:#59656a}.quality-error{background:#f4e6e6;color:#9a5e5e}.link-action,.structure-link{color:#3f7268}.point:before,.bar-hit,.legend-hit{background:#3f7268}.point.risk:before{background:#9a5e5e}.structure-bar{background:#e7e8e3}.bar-unknown,.legend-unknown{background:#b6b8b2}.stage-item{background:#f0f0eb;border-top-color:#c9cbc7}.stage-item.active{border-top-color:#b58a54;background:#f5eadb}.candidate-stage.active,.candidate-stage:hover{border-bottom-color:#b58a54;color:#9b7444;background:#f5eadb}.dashboard-strip{border-left-color:#b58a54;background:#fefdf9}.decision{border-left-color:#3f7268;background:#e7f0ed}.tag{background:#edf0ed;color:#3f7268}.recording-tools{border-color:#d7d8d2;background:#f0f1ed}.file-status{background:#e7f0ed;color:#3f7268}.upload-zone{border-color:#aebbb5;background:#f2f5f1;color:#3f7268}.profile-fact{border-color:#dedfd9;background:#f4f4ef}.toast{background:#18232d}
 @media(max-width:620px){.ingest-kpis{grid-template-columns:1fr 1fr}.candidate-summary-line{align-items:flex-start;flex-direction:column;gap:4px}.candidate-toolbar select{flex:1}.profile-grid{grid-template-columns:1fr}.profile-evidence{align-items:flex-start;flex-direction:column;gap:3px}}
+
+/* Blue-white product palette: preserve layout and behavior while aligning every surface. */
+:root{--green:#2f6bff;--green-dark:#1e4fcc;--ink:#17253d;--muted:#6f7c91;--line:#e1e7f0;--paper:#ffffff;--soft:#f4f7fc;--amber:#2f6bff;--red:#c45a64}
+body{background:#f4f7fc;color:#17253d}
+.login-screen{background:#f3f6fb}
+.login-layout{border-color:#dfe6f1;background:#fff;box-shadow:0 24px 70px rgba(22,49,91,.14)}
+.login-intro{background:#102447;color:#f7faff}
+.intro-kicker{color:#b8cbf2}
+.intro-copy h1 em{color:#8fb3ff}
+.intro-copy p{color:#c1cee5}
+.intro-capabilities{border-color:#27416c}
+.intro-capabilities b{color:#8fb3ff}
+.intro-capabilities small,.intro-footnote{color:#9eafd0}
+.intro-brand .login-mark,.login-panel-head .login-mark,.brand>span{background:#2f6bff;color:#fff}
+.login-panel-wrap{background:#fff}
+.login-panel h2{color:#17253d}
+.auth-subtitle,.login-panel label span{color:#6f7c91!important}
+.login-panel input,.toolbar input,.toolbar select,.form-grid input,.form-grid select,.form-grid textarea,.call-notes{border-color:#d7e0ed;background:#fff;color:#17253d}
+.login-panel input:focus,.toolbar input:focus,.toolbar select:focus,.form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus,.call-notes:focus{border-color:#2f6bff;box-shadow:0 0 0 2px rgba(47,107,255,.14)}
+.app-shell{background:#f4f7fc}
+.app-sidebar{background:#102447;color:#dce7fa}
+.brand{color:#fff}
+.nav-item{color:#aebfdb}
+.nav-item i{background:#234477;color:#dce7fa}
+.nav-item:hover,.nav-item.active{background:#234477;color:#fff}
+.sidebar-bottom p{border-color:#29436d;color:#91a6c8}
+.app-header,.detail-header{background:#fff;border-color:#e1e7f0}
+.app-main{background:#f4f7fc}
+.primary{background:#2f6bff;box-shadow:0 5px 14px rgba(47,107,255,.18)}
+.primary:hover{background:#1e4fcc}
+.secondary{border-color:#d7e0ed;background:#fff;color:#17253d}
+.surface,.metric,.call-footer,.review{background:#fff;border-color:#e1e7f0}
+.surface-head,td{border-color:#e7ecf3}
+th{background:#f4f7fc;color:#6f7c91}
+.dashboard-strip{border-left-color:#2f6bff;background:#fff;border-color:#e1e7f0}
+.dashboard-insight{border-color:#dbe6fb;border-left-color:#2f6bff;background:#f1f5ff}
+.dashboard-insight strong,.link-action,.structure-link{color:#2f6bff}
+.insight-mark{background:#dce8ff;color:#2f6bff}
+.metric-action:hover{border-color:#8eafff}
+.stage-item{background:#f4f7fc;border-top-color:#d7e0ed}
+.stage-item.active{border-top-color:#2f6bff;background:#edf3ff}
+.candidate-stage.active,.candidate-stage:hover{border-bottom-color:#2f6bff;color:#2f6bff;background:#edf3ff}
+.status,.quality-good,.tag-positive,.profile-chip.positive{background:#e8f0ff;color:#2459d6}
+.status.warn,.quality-warn,.tag-accent,.profile-chip.accent{background:#edf3ff;color:#2f6bff}
+.status.neutral,.tag-neutral,.profile-chip.neutral{background:#eef2f8;color:#66758d}
+.quality-error{background:#f9e9ec;color:#b14e5a}
+.structure-bar{background:#e8eef8}
+.bar-hit,.legend-hit,.point:before{background:#2f6bff}
+.bar-unknown,.legend-unknown{background:#b7c3d6}
+.decision{border-left-color:#2f6bff;background:#edf3ff}
+.tag{background:#e8f0ff;color:#2459d6}
+.recording-tools,.profile-fact{border-color:#dce5f1;background:#f4f7fc}
+.file-status{background:#e8f0ff;color:#2459d6}
+.upload-zone{border-color:#a9bde7;background:#f1f5ff;color:#2f6bff}
+.toast{background:#102447}
  .field-inline{display:flex;align-items:center;gap:7px;margin:7px 0 8px}.field-inline select{flex:1;min-width:0}.field-inline .secondary{min-height:32px;padding:0 9px;font-size:10px}.field-inline .link-action{white-space:nowrap}
 .resume-original{margin-top:16px;border:1px solid var(--line);background:#f6f8f6;min-height:520px}.resume-original iframe{display:block;width:100%;height:720px;border:0;background:#fff}.resume-original-file{min-height:0;padding:24px}.resume-original-file p{margin:0 0 14px;color:var(--muted);font-size:11px}.resume-text-fallback{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}.resume-text-fallback summary{cursor:pointer;color:var(--green);font-size:10px;font-weight:650}.resume-text-fallback pre{white-space:pre-wrap;font:11px/1.7 inherit;margin:12px 0 0}
 .dashboard-metrics{grid-template-columns:repeat(6,1fr)}
