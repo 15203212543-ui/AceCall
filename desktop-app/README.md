@@ -28,4 +28,4 @@ npm run dist:mac
 npm run dist:win
 ```
 
-Mac 和 Windows 安装包应在对应系统上构建并签名。首次正式发布前还需要配置 Apple Developer / Windows 代码签名证书、应用图标、自动更新地址以及安全的 CloudBase 登录授权流程。当前应用通过环境变量读取 `ACECALL_API_BASE` 和 `ACECALL_AUTH_TOKEN`，不会保存账号密码或管理密钥。
+Mac 和 Windows 安装包应在对应系统上构建并签名。首次正式发布前还需要配置 Apple Developer / Windows 代码签名证书、应用图标和自动更新地址。AceCall 网页登录成功后会把短期会话令牌交给本机助手，助手只保存在内存中，不保存账号密码、长期密钥或 CloudBase 管理凭证。

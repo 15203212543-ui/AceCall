@@ -13,6 +13,7 @@ let recorderWindow;
 let recording = { status: 'idle', startedAt: null, filePath: '', bytes: 0 };
 let localServer;
 const LOCAL_PORT = Number(process.env.ACECALL_AGENT_PORT || 17890);
+let sessionToken = process.env.ACECALL_AUTH_TOKEN || '';
 
 function sendStatus(status, message = '') { window?.webContents.send('sync-status', { status, message, directory: currentDirectory }); }
 
@@ -75,7 +76,7 @@ function startLocalServer() {
     const url = new URL(request.url || '/', 'http://127.0.0.1');
     if (request.method === 'GET' && url.pathname === '/status') {
       response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return response.end(JSON.stringify({ ok: true, service: 'acecall-desktop-agent', platform: process.platform, recording, sync: { status: agent ? 'running' : 'stopped', directory: currentDirectory } }));
+      return response.end(JSON.stringify({ ok: true, service: 'acecall-desktop-agent', platform: process.platform, authenticated: Boolean(sessionToken), recording, sync: { status: agent ? 'running' : 'stopped', directory: currentDirectory } }));
     }
     if (request.method === 'GET' && url.pathname === '/recording/file' && recording.status === 'stopped' && recording.filePath) {
       try {
@@ -86,7 +87,15 @@ function startLocalServer() {
     }
     try {
       let result;
-      if (request.method === 'POST' && url.pathname === '/recording/start') result = await startRecorder();
+      if (request.method === 'POST' && url.pathname === '/session') {
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        const input = JSON.parse(body || '{}');
+        sessionToken = typeof input.token === 'string' ? input.token.slice(0, 12000) : '';
+        if (agent) agent.options.authToken = sessionToken;
+        result = { authenticated: Boolean(sessionToken) };
+      }
+      else if (request.method === 'POST' && url.pathname === '/recording/start') result = await startRecorder();
       else if (request.method === 'POST' && url.pathname === '/recording/stop') result = await stopRecorder();
       else { response.writeHead(404); return response.end(JSON.stringify({ error: 'Not found' })); }
       response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

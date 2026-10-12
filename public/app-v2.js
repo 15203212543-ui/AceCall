@@ -77,6 +77,7 @@ async function initializeAuth() {
     return false;
   }
   if (!data?.session) return false;
+  await syncDesktopSession(data.session.access_token);
   $('#loginScreen').classList.add('hidden');
   return true;
 }
@@ -269,11 +270,20 @@ async function signIn(event) {
       return;
     }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
+    await syncDesktopSession(data.session.access_token);
     await enterWorkspace($('#loginUsername').value.trim());
   } catch (error) {
     showLoginMessage(authErrorMessage(error, '登录失败'));
     button.disabled = false; button.textContent = '登录工作台';
   }
+}
+
+async function syncDesktopSession(token) {
+  if (!token) return false;
+  try {
+    const response = await fetch(`${DESKTOP_AGENT_URL}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }), signal: AbortSignal.timeout(1500) });
+    return response.ok;
+  } catch { return false; }
 }
 
 async function enterWorkspace(username = '') {
@@ -288,6 +298,7 @@ async function enterWorkspace(username = '') {
 
 async function signOut() {
   await cloudbaseAuth?.signOut();
+  await syncDesktopSession('');
   location.reload();
 }
 
