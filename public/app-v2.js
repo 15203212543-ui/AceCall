@@ -27,7 +27,9 @@ let inboxQueueFilter = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
 let pendingTeamRule = '';
-let recordingDraft = { candidateId: null, file: null, url: '', source: '' };
+let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
+const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
+const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -609,7 +611,7 @@ function callTab(item) {
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
   const recordingLabel = draft?.file ? `${draft.file.name} · ${formatBytes(draft.file.size)}` : item.callRecording?.fileName || '尚未添加录音';
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording">开始录音</button><button class="secondary" type="button" id="stopRecording" disabled>停止录音</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingLabel)}。录音前请先向候选人告知并取得同意。</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或按原意记录候选人回答…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">当前版本支持录音归档和人工粘贴转写；接入语音识别服务后可自动填充此处。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording">开始录音</button><button class="secondary" type="button" id="stopRecording" disabled>停止录音</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingLabel)}。录音前请先向候选人告知并取得同意。</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {
@@ -771,7 +773,11 @@ async function completeCall() {
   const button = $('[data-complete-call]'); button.disabled = true; button.textContent = '正在生成结果';
   try {
     candidate.transcript = transcript; candidate.consentConfirmed = true;
-    if (recordingDraft.candidateId === candidate.id && recordingDraft.file) candidate.callRecording = await uploadCallRecording(candidate, recordingDraft.file);
+    if (recordingDraft.candidateId === candidate.id && recordingDraft.file) {
+      candidate.callRecording = recordingDraft.uploaded && recordingDraft.taskId
+        ? { fileName: recordingDraft.file.name, mimeType: recordingDraft.file.type || 'audio/webm', size: recordingDraft.file.size, source: recordingDraft.source || 'upload', recordedAt: new Date().toISOString(), status: 'queued', transcriptionTaskId: recordingDraft.taskId }
+        : await uploadCallRecording(candidate, recordingDraft.file);
+    }
     candidate.communicationSummary = await generate({ action:'summarize', roleName:candidate.roleName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, preparation:candidate.preparation, transcript });
     candidate.report = await generate({ action:'synthesize', roleName:candidate.roleName, jd:candidate.jd, rules:candidate.rules, keywords:candidate.keywords, preparation:candidate.preparation, communicationSummary:candidate.communicationSummary });
     candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('初筛结果已生成，请人工确认');
@@ -784,56 +790,80 @@ let recorderStopping = false;
 
 function setRecordingFile(file) {
   if (!file) return;
-  if (file.size > 50_000_000) return toast('录音文件不能超过 50MB');
+  if (file.size > RECORDING_MAX_BYTES) return toast('录音文件不能超过 500MB');
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
   const supportedAudio = ['mp3', 'wav', 'pcm', 'amr', 'm4a', 'webm'];
   if (file.type && !file.type.startsWith('audio/') && !supportedAudio.includes(extension)) return toast('请选择音频文件');
   if (recordingDraft.url) URL.revokeObjectURL(recordingDraft.url);
-  recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload' };
+  recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload', taskId: '', recordingId: '', uploaded: false };
   renderCandidateDetail();
   transcribeRecording(file);
 }
 
 async function transcribeRecording(file) {
   const status = $('#recordingStatus');
-  if (status) status.textContent = `${file.name} · 正在进行语音解析…`;
-  const supported = ['mp3', 'wav', 'pcm', 'amr', 'm4a'];
-  const extension = file.name.split('.').pop()?.toLowerCase() || '';
-  let sourceFile = file;
-  if (extension === 'webm') {
-    try {
-      if (status) status.textContent = `${file.name} · 正在转换为百度支持的 WAV…`;
-      sourceFile = await convertWebmToWav(file);
-    } catch (error) {
-      if (status) status.textContent = `${file.name} · 格式转换失败：${error.message}`;
-      return toast('WebM 格式转换失败，请上传 MP3、WAV 或 M4A 文件');
-    }
-  }
-  if (sourceFile.size > 10 * 1024 * 1024) {
-    if (status) status.textContent = `${file.name} · 文件超过百度短语音 10MB 限制`;
-    return toast('录音文件超过 10MB，请压缩或拆分后重试');
-  }
-  if (extension !== 'webm' && !supported.includes(extension)) {
-    if (status) status.textContent = `${file.name} · 录音已添加，百度语音暂不支持 ${extension || '此'} 格式自动转写`;
-    return toast('当前录音格式暂不支持自动转写，请上传 MP3、WAV、AMR 或 M4A');
-  }
   if (!REMOTE_BACKEND) {
-    if (status) status.textContent = `${file.name} · 已添加；在线服务模式下自动转写`;
-    return toast('录音已添加，当前本地演示模式不会调用语音服务');
+    if (status) status.textContent = `${file.name} · 已添加；登录在线版后可进行异步转写`;
+    return toast('请登录在线版后上传录音进行异步转写');
   }
   try {
-    const uploadName = sourceFile.name;
-    const response = await authenticatedFetch(apiUrl(`/api/transcribe?name=${encodeURIComponent(uploadName)}`), { method: 'POST', headers: { 'Content-Type': sourceFile.type || 'audio/wav' }, body: sourceFile });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || '语音解析失败');
-    if (recordingDraft.candidateId !== app.candidateId) return;
-    const transcript = $('#callTranscript');
-    if (transcript && !transcript.value.trim()) transcript.value = result.text;
-    if (status) status.textContent = `${file.name} · 已完成语音解析 ${result.characters || result.text.length} 字`;
-    toast('录音已自动转写到电话记录');
+    if (!cloudbaseClient?.uploadFile) throw new Error('CloudBase存储未初始化，请重新登录后重试');
+    if (file.size > RECORDING_MAX_BYTES) throw new Error('录音文件不能超过 500MB');
+    if (status) status.textContent = `${file.name} · 正在创建录音任务…`;
+    const initResponse = await authenticatedFetch(apiUrl('/api/recordings/init'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId: app.candidateId, fileName: file.name, mimeType: file.type || 'audio/webm', size: file.size }) });
+    const initData = await initResponse.json().catch(() => ({}));
+    if (!initResponse.ok) throw new Error(initData.error || '录音任务创建失败');
+    const { recordingId, taskId, storagePrefix, chunkSize = RECORDING_CHUNK_SIZE } = initData;
+    recordingDraft.taskId = taskId; recordingDraft.recordingId = recordingId;
+    for (let offset = 0, index = 0; offset < file.size; offset += chunkSize, index += 1) {
+      if (recordingDraft.candidateId !== app.candidateId) return;
+      const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size), file.type || 'application/octet-stream');
+      const extension = file.name.split('.').pop()?.toLowerCase() || 'webm';
+      const cloudPath = `${storagePrefix}/part-${String(index).padStart(5, '0')}.${extension}`;
+      if (status) status.textContent = `${file.name} · 正在上传录音 ${Math.round(((offset + chunk.size) / file.size) * 100)}%`;
+      await cloudbaseClient.uploadFile({ cloudPath, filePath: chunk });
+      const partResponse = await authenticatedFetch(apiUrl(`/api/recordings/${recordingId}/parts/complete`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index, path: cloudPath, size: chunk.size, final: offset + chunk.size >= file.size }) });
+      const partData = await partResponse.json().catch(() => ({}));
+      if (!partResponse.ok) throw new Error(partData.error || '录音分片登记失败');
+    }
+    const queueResponse = await authenticatedFetch(apiUrl('/api/transcription-tasks'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, taskId }) });
+    const queueData = await queueResponse.json().catch(() => ({}));
+    if (!queueResponse.ok) throw new Error(queueData.error || '录音转写排队失败');
+    if (status) status.textContent = `${file.name} · 已上传，等待异步转写服务处理`;
+    recordingDraft.uploaded = true;
+    toast('录音已上传，已进入异步转写队列');
+    pollTranscriptionTask(taskId, file.name);
   } catch (error) {
     if (status) status.textContent = `${file.name} · 自动转写失败：${error.message}`;
     toast(error.message || '自动转写失败，可手动粘贴转写内容');
+  }
+}
+
+async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
+  if (!taskId || attempts > 100) return;
+  await sleep(3000);
+  if (recordingDraft.taskId !== taskId || recordingDraft.candidateId !== app.candidateId) return;
+  try {
+    const response = await authenticatedFetch(apiUrl(`/api/transcription-tasks/${taskId}`));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || '转写任务查询失败');
+    const task = data.task || {};
+    const status = $('#recordingStatus');
+    if (['created', 'uploading', 'uploaded', 'queued', 'converting', 'transcribing', 'merging'].includes(task.status)) {
+      if (status) status.textContent = `${fileName} · ${task.status === 'queued' ? '排队等待转写服务' : `转写处理中（${task.status}）`}`;
+      return pollTranscriptionTask(taskId, fileName, attempts + 1);
+    }
+    if (task.status === 'completed' && task.result?.text) {
+      const transcript = $('#callTranscript');
+      if (transcript && !transcript.value.trim()) transcript.value = task.result.text;
+      if (status) status.textContent = `${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`;
+      return toast('录音已自动转写到电话记录');
+    }
+    if (status) status.textContent = `${fileName} · 转写失败：${task.error || '请稍后重试'}`;
+  } catch (error) {
+    if (attempts < 3) return pollTranscriptionTask(taskId, fileName, attempts + 1);
+    const status = $('#recordingStatus');
+    if (status) status.textContent = `${fileName} · 转写状态查询失败：${error.message}`;
   }
 }
 
