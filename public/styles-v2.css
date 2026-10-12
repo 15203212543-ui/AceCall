@@ -147,3 +147,9 @@ th{background:#f4f7fc;color:#6f7c91}
 .primary{background:#2f6bff!important}
 @media(max-width:860px){.login-layout{width:100vw!important;max-width:none!important;height:auto!important;min-height:100vh!important;grid-template-columns:1fr}.login-intro{min-height:48vh!important}.login-panel-wrap{min-height:52vh!important}}
 @media(max-width:560px){.login-layout{display:block;width:100vw!important;min-height:100vh!important}.login-intro{min-height:360px!important;padding:30px 24px!important}.login-panel-wrap{min-height:0;padding:34px 24px 42px!important}}
+
+/* User-supplied login artwork and an exact 50/50 desktop split. */
+.login-layout{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important}
+.login-intro{background-color:#071b3f!important;background-image:linear-gradient(rgba(4,18,49,.16),rgba(4,18,49,.16)),url("./assets/login-background.png")!important;background-position:center bottom!important;background-size:cover!important;background-repeat:no-repeat!important}
+.login-intro::after{display:none!important}
+@media(max-width:860px){.login-layout{grid-template-columns:1fr!important}.login-intro{background-position:center bottom!important}}
