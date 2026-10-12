@@ -41,7 +41,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   navigate(location.hash.replace('#', '') || 'dashboard');
 });
 
+let shellBound = false;
 function bindShell() {
+  if (shellBound) return;
+  shellBound = true;
   $$('.nav-item[data-view]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.view)));
   $$('[data-close]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
   $('#candidateForm').addEventListener('submit', createCandidate);
@@ -272,6 +275,7 @@ async function signIn(event) {
 }
 
 async function enterWorkspace(username = '') {
+  bindShell();
   $('#loginScreen').classList.add('hidden');
   await hydrateWorkspace(username);
   await hydrateState();
