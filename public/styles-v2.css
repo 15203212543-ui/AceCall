@@ -163,3 +163,24 @@ th{background:#f4f7fc;color:#6f7c91}
   border-radius:24%!important;
   box-shadow:0 10px 22px rgba(64,85,238,.24)!important;
 }
+
+/* Login method selector and account actions, based on the supplied form reference. */
+.login-panel{max-width:390px!important}
+.login-panel h2{font-size:36px!important;line-height:1.18!important;font-weight:720!important}
+.auth-subtitle{margin-bottom:24px!important}
+.auth-method-tabs{display:flex;gap:32px;margin:0 0 24px;border-bottom:1px solid #e4eaf3}
+.auth-method-tab{position:relative;padding:0 4px 12px;border:0;background:transparent;color:#7d889b;font-size:13px;font-weight:650}
+.auth-method-tab::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:transparent}
+.auth-method-tab.active{color:#17253d}
+.auth-method-tab.active::after{background:#3568f5}
+.login-panel input{height:46px!important;border-color:#dce3ee!important;border-radius:5px!important;background:#fbfcff!important}
+.login-options{display:flex;align-items:center;justify-content:space-between;margin:-2px 0 18px}
+.remember-account{display:inline-flex!important;align-items:center;gap:7px;margin:0!important;color:#6f7c91!important;font-size:10px!important;font-weight:500!important;cursor:pointer}
+.remember-account input{width:14px!important;height:14px!important;margin:0;accent-color:#3568f5}
+.remember-account span{margin:0!important;color:#6f7c91!important;font-weight:500!important}
+.login-options .auth-switch{margin:0}
+.login-panel .primary{height:46px!important;margin-top:0!important;background:linear-gradient(90deg,#315bf2 0%,#3449e9 100%)!important;box-shadow:0 8px 18px rgba(49,79,235,.18)}
+.auth-footer{display:flex;align-items:center;justify-content:center;gap:5px;margin-top:26px;padding-top:24px;border-top:1px solid #edf0f5;color:#8993a5;font-size:10px}
+.auth-footer .auth-switch{display:inline;margin:0;font-weight:700}
+.service-status{display:none}
+@media(max-width:560px){.login-panel h2{font-size:30px!important}.auth-method-tabs{gap:24px}.auth-footer{margin-top:22px;padding-top:20px}}

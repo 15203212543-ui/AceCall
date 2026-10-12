@@ -3,6 +3,7 @@ import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@latest/+es
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
 const RULES_KEY = 'acecall-team-rules-v1';
+const REMEMBERED_ACCOUNT_KEY = 'acecall-remembered-account-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
 const REMOTE_BACKEND = Boolean(API_BASE);
 const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
@@ -63,6 +64,13 @@ async function initializeAuth() {
   $('#loginForm').addEventListener('submit', handleAuthSubmit);
   $('#authSwitch').addEventListener('click', toggleAuthMode);
   $('#forgotPasswordSwitch').addEventListener('click', startPasswordReset);
+  $('#passwordLoginTab').addEventListener('click', () => setLoginMethod('password'));
+  $('#emailLoginTab').addEventListener('click', () => setLoginMethod('email'));
+  const rememberedAccount = localStorage.getItem(REMEMBERED_ACCOUNT_KEY) || '';
+  if (rememberedAccount) {
+    $('#loginUsername').value = rememberedAccount;
+    $('#rememberAccount').checked = true;
+  }
   if (!REMOTE_BACKEND) { $('#loginScreen').classList.add('hidden'); return true; }
   if (!CLOUD_CONFIG.env || !CLOUD_CONFIG.publishableKey) {
     showLoginMessage('CloudBase登录配置不完整');
@@ -83,6 +91,7 @@ async function initializeAuth() {
 }
 
 let authMode = 'login';
+let loginMethod = 'password';
 let registerVerification = null;
 let loginVerification = null;
 let resetVerification = null;
@@ -95,8 +104,12 @@ function setAuthMode(mode) {
   $('#authSubtitle').textContent = registering ? '' : resetting ? '通过邮箱验证后设置新的登录密码' : '登录后继续管理岗位、候选人与面试进展';
   $('#authSubtitle').classList.toggle('hidden', registering);
   $('#loginButton').textContent = registering ? '创建并继续' : resetting ? '发送验证码' : '登录工作台';
-  $('#authSwitch').textContent = registering || resetting ? '已有账号？返回登录' : '没有账号？注册个人账号';
-  $('#forgotPasswordSwitch').classList.toggle('hidden', registering || resetting);
+  $('#authSwitchPrompt').textContent = registering || resetting ? '已有账号？' : '还没有账号？';
+  $('#authSwitch').textContent = registering || resetting ? '返回登录' : '立即注册';
+  $('#authMethodTabs').classList.toggle('hidden', registering || resetting);
+  $('#loginOptions').classList.toggle('hidden', registering || resetting);
+  $('#usernameLabel').textContent = registering || resetting ? '邮箱' : '邮箱 / 账号';
+  $('#loginUsername').placeholder = registering || resetting ? '请输入邮箱' : '请输入邮箱或账号';
   $('#passwordField').classList.toggle('hidden', resetting && !resetVerification);
   $('#passwordLabel').textContent = resetting ? '新密码' : '密码';
   $('#confirmPasswordField').classList.toggle('hidden', !registering);
@@ -107,7 +120,28 @@ function setAuthMode(mode) {
   resetVerification = null;
   $('#loginPassword').required = registering;
   $('#confirmPassword').required = registering;
+  if (!registering && !resetting) setLoginMethod('password', false);
   showLoginMessage(registering ? '设置密码后获取验证码，验证成功即可创建个人账号' : resetting ? '输入注册邮箱，接收验证码后设置新密码' : '账号数据仅属于当前账号', false);
+}
+
+function setLoginMethod(method, updateMessage = true) {
+  if (authMode !== 'login') return;
+  loginMethod = method === 'email' ? 'email' : 'password';
+  loginVerification = null;
+  const emailLogin = loginMethod === 'email';
+  $('#passwordLoginTab').classList.toggle('active', !emailLogin);
+  $('#emailLoginTab').classList.toggle('active', emailLogin);
+  $('#passwordLoginTab').setAttribute('aria-selected', String(!emailLogin));
+  $('#emailLoginTab').setAttribute('aria-selected', String(emailLogin));
+  $('#usernameLabel').textContent = emailLogin ? '邮箱' : '邮箱 / 账号';
+  $('#loginUsername').placeholder = emailLogin ? '请输入邮箱' : '请输入邮箱或账号';
+  $('#passwordField').classList.toggle('hidden', emailLogin);
+  $('#loginPassword').required = !emailLogin;
+  $('#verificationCodeField').classList.add('hidden');
+  $('#verificationCode').required = false;
+  $('#verificationCode').value = '';
+  $('#loginButton').textContent = emailLogin ? '获取邮箱验证码' : '登录工作台';
+  if (updateMessage) showLoginMessage(emailLogin ? '验证码将发送至你的注册邮箱' : '账号数据仅属于当前账号', false);
 }
 
 function toggleAuthMode() {
@@ -232,6 +266,27 @@ async function signIn(event) {
   event.preventDefault();
   const button = $('#loginButton');
   const username = $('#loginUsername').value.trim();
+  if (loginMethod === 'email' && !loginVerification) {
+    if (!username || !/^\S+@\S+\.\S+$/.test(username)) return showLoginMessage('请输入有效的邮箱地址');
+    button.disabled = true; button.textContent = '正在发送'; showLoginMessage('正在发送邮箱验证码', false);
+    try {
+      const result = await cloudbaseAuth.signInWithOtp({
+        email: username,
+        options: { shouldCreateUser: false }
+      });
+      if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
+      if (!result?.data?.verifyOtp) throw new Error('验证码接口返回异常，请检查 CloudBase 邮箱登录配置');
+      loginVerification = result.data.verifyOtp;
+      $('#verificationCodeField').classList.remove('hidden');
+      $('#verificationCode').required = true;
+      button.disabled = false; button.textContent = '验证并登录';
+      showLoginMessage('验证码已发送到你的邮箱，请查收后输入', false);
+    } catch (error) {
+      showLoginMessage(authErrorMessage(error, '验证码发送失败'));
+      button.disabled = false; button.textContent = '获取邮箱验证码';
+    }
+    return;
+  }
   if (loginVerification) {
     const code = $('#verificationCode').value.trim();
     if (!code) return showLoginMessage('请输入邮箱收到的验证码');
@@ -240,6 +295,7 @@ async function signIn(event) {
       const result = await loginVerification({ token: code });
       if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
       loginVerification = null;
+      persistRememberedAccount(username);
       await enterWorkspace(username);
     } catch (error) {
       showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
@@ -271,6 +327,7 @@ async function signIn(event) {
     }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
     await syncDesktopSession(data.session.access_token);
+    persistRememberedAccount(username);
     await enterWorkspace($('#loginUsername').value.trim());
   } catch (error) {
     showLoginMessage(authErrorMessage(error, '登录失败'));
@@ -284,6 +341,11 @@ async function syncDesktopSession(token) {
     const response = await fetch(`${DESKTOP_AGENT_URL}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }), signal: AbortSignal.timeout(1500) });
     return response.ok;
   } catch { return false; }
+}
+
+function persistRememberedAccount(username) {
+  if ($('#rememberAccount').checked) localStorage.setItem(REMEMBERED_ACCOUNT_KEY, username);
+  else localStorage.removeItem(REMEMBERED_ACCOUNT_KEY);
 }
 
 async function enterWorkspace(username = '') {

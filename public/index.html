@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="AceCall · 面向企业招聘团队的 AI 招聘协作工作台">
   <title>AceCall · AI 招聘协作工作台</title>
-  <link rel="stylesheet" href="./styles-v2.css?v=20261012-blue-v7">
+  <link rel="stylesheet" href="./styles-v2.css?v=20261012-hide-service-v1">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -29,13 +29,21 @@
           <div class="login-panel-head"><span class="login-mark">AC</span><span class="login-panel-label">招聘团队工作台</span></div>
           <h2 id="authTitle">欢迎回来</h2>
           <p class="auth-subtitle" id="authSubtitle">登录后继续管理岗位、候选人与面试进展</p>
-          <label><span>工作邮箱</span><input id="loginUsername" autocomplete="username" required placeholder="name@company.com"></label>
+          <div class="auth-method-tabs" id="authMethodTabs" role="tablist" aria-label="登录方式">
+            <button class="auth-method-tab active" id="passwordLoginTab" type="button" role="tab" aria-selected="true">密码登录</button>
+            <button class="auth-method-tab" id="emailLoginTab" type="button" role="tab" aria-selected="false">邮箱登录</button>
+          </div>
+          <label><span id="usernameLabel">邮箱 / 账号</span><input id="loginUsername" autocomplete="username" required placeholder="请输入邮箱或账号"></label>
           <label id="passwordField"><span id="passwordLabel">密码</span><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="请输入密码"></label>
           <label class="confirm-password-field hidden" id="confirmPasswordField"><span>确认密码</span><input id="confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码"></label>
           <label class="verification-code-field hidden" id="verificationCodeField"><span>邮箱验证码</span><input id="verificationCode" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入邮箱收到的验证码"></label>
+          <div class="login-options" id="loginOptions">
+            <label class="remember-account"><input id="rememberAccount" type="checkbox"><span>记住账号</span></label>
+            <button class="auth-switch" id="forgotPasswordSwitch" type="button">忘记密码？</button>
+          </div>
           <button class="primary" id="loginButton" type="submit">登录工作台</button>
-          <div class="auth-links"><button class="auth-switch" id="authSwitch" type="button">没有账号？注册个人账号</button><button class="auth-switch" id="forgotPasswordSwitch" type="button">忘记密码？</button></div>
           <small id="loginMessage">账号数据仅属于当前账号</small>
+          <div class="auth-footer"><span id="authSwitchPrompt">还没有账号？</span><button class="auth-switch" id="authSwitch" type="button">立即注册</button></div>
           <p class="login-legal">继续即表示你同意 AceCall 的服务条款与隐私政策</p>
         </form>
       </div>
@@ -93,6 +101,6 @@
 
   <div class="toast" id="toast" role="status"></div>
   <script src="./config.js"></script>
-  <script type="module" src="./app-v2.js?v=20261012-enterprise-v1-background-agent"></script>
+  <script type="module" src="./app-v2.js?v=20261012-auth-tabs-background-agent-v1"></script>
 </body>
 </html>
