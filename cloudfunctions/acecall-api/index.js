@@ -55,6 +55,7 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request), request));
     if (request.method === 'GET' && url.pathname === '/api/workspace') return sendJson(response, 200, await workspaceSummary(await getRequestContext(request)));
+    if (request.method === 'PUT' && url.pathname === '/api/workspace') return sendJson(response, 200, await updateWorkspace(await getRequestContext(request), await readJson(request)));
     if (request.method === 'GET' && url.pathname === '/api/members') return sendJson(response, 200, await listMembers(await getRequestContext(request)));
     if (request.method === 'POST' && url.pathname === '/api/members/invite') return sendJson(response, 200, await inviteMember(await getRequestContext(request), await readJson(request)));
     if (request.method === 'PUT' && url.pathname.startsWith('/api/members/')) {
@@ -229,7 +230,6 @@ async function bootstrapWorkspace(input = {}, request) {
   const tenantName = String(input.companyName || '').trim().slice(0, 120) || '我的公司工作区';
   await db.collection(COLLECTIONS.tenants).doc(tenantId).set({ id: tenantId, name: tenantName, status: 'active', createdBy: uid, createdAt: now, updatedAt: now });
   await db.collection(COLLECTIONS.members).doc(`${tenantId}_${uid}`.slice(0, 80)).set({ id: `${tenantId}_${uid}`.slice(0, 80), tenantId, uid, username: String(input.username || '').slice(0, 120), displayName: String(input.displayName || input.username || '').slice(0, 80), role: 'owner', status: 'active', createdAt: now, updatedAt: now });
-  await migrateLegacyTenantData({ tenantId, uid });
   return workspaceSummary({ uid, tenantId, role: 'owner' });
 }
 
@@ -253,6 +253,19 @@ async function workspaceSummary(context) {
     db.collection(COLLECTIONS.members).where({ tenantId: context.tenantId, status: 'active' }).limit(200).get()
   ]);
   return { workspace: cleanDocument(tenantResult.data || { id: context.tenantId, name: '公司工作区', status: 'active' }), currentMember: cleanDocument(context.member || { uid: context.uid, tenantId: context.tenantId, role: context.role }), members: (memberResult.data || []).map(cleanDocument) };
+}
+
+async function updateWorkspace(context, input = {}) {
+  requireRole(context, ['owner', 'admin']);
+  const name = String(input.name || '').trim().slice(0, 120);
+  if (!name) throw serviceError('请输入企业名称', 400);
+  const db = getDatabase();
+  const existing = await db.collection(COLLECTIONS.tenants).doc(context.tenantId).get();
+  const now = new Date().toISOString();
+  const tenant = existing.data || { id: context.tenantId, status: 'active', createdAt: now, createdBy: context.uid };
+  await db.collection(COLLECTIONS.tenants).doc(context.tenantId).set({ ...tenant, id: context.tenantId, name, updatedAt: now, updatedBy: context.uid });
+  await audit(context, 'workspace.update', context.tenantId, { name });
+  return { ok: true, workspace: cleanDocument({ ...tenant, id: context.tenantId, name, updatedAt: now, updatedBy: context.uid }) };
 }
 
 async function listMembers(context) {

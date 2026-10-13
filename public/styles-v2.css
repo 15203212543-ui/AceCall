@@ -184,3 +184,521 @@ th{background:#f4f7fc;color:#6f7c91}
 .auth-footer .auth-switch{display:inline;margin:0;font-weight:700}
 .service-status{display:none}
 @media(max-width:560px){.login-panel h2{font-size:30px!important}.auth-method-tabs{gap:24px}.auth-footer{margin-top:22px;padding-top:20px}}
+
+/* Viewport-safe login composition. Keep both auth methods on the same stable canvas. */
+.login-screen{
+  min-height:100dvh!important;
+  height:100dvh!important;
+  overflow:auto!important;
+}
+.login-layout{
+  height:100dvh!important;
+  min-height:0!important;
+  overflow:hidden!important;
+}
+.login-intro{
+  min-height:0!important;
+  height:100%!important;
+  padding:clamp(24px,4vh,56px) clamp(30px,4vw,64px)!important;
+  justify-content:flex-start!important;
+}
+.intro-brand{flex:0 0 auto}
+.intro-copy{
+  flex:0 0 auto;
+  margin-top:clamp(88px,15vh,148px)!important;
+}
+.intro-copy h1{font-size:clamp(30px,3vw,36px)!important}
+.intro-copy p{margin-top:18px!important;line-height:1.7!important}
+.intro-capabilities{
+  flex:0 0 auto;
+  margin-top:auto!important;
+  padding-top:18px!important;
+  gap:clamp(10px,2vw,20px)!important;
+}
+.intro-capabilities div{gap:4px!important}
+.intro-capabilities small{line-height:1.35!important}
+.intro-footnote{margin-top:12px!important}
+.login-panel-wrap{
+  min-height:0!important;
+  height:100%!important;
+  overflow:auto!important;
+  padding:clamp(24px,4vh,56px) clamp(30px,5vw,76px)!important;
+}
+.login-panel{min-height:0!important}
+.login-panel-head{margin-bottom:clamp(18px,3vh,30px)!important}
+.auth-subtitle{margin-bottom:clamp(18px,3vh,24px)!important}
+.login-panel label{margin-bottom:clamp(12px,2vh,17px)!important}
+.auth-method-tabs{margin-bottom:clamp(16px,2.5vh,24px)!important}
+.login-options{margin-bottom:clamp(14px,2vh,18px)!important}
+.auth-footer{margin-top:clamp(16px,2.5vh,26px)!important;padding-top:clamp(16px,2.5vh,24px)!important}
+
+@media(max-width:860px){
+  .login-screen{height:auto!important;min-height:100dvh!important;overflow:auto!important}
+  .login-layout{height:auto!important;min-height:100dvh!important;overflow:visible!important}
+  .login-intro{height:auto!important;min-height:390px!important;padding:30px 34px 24px!important}
+  .intro-copy{margin-top:64px!important}
+  .intro-capabilities{margin-top:58px!important}
+  .login-panel-wrap{height:auto!important;min-height:0!important;overflow:visible!important;padding:38px 34px 42px!important}
+}
+@media(max-width:560px){
+  .login-intro{min-height:360px!important;padding:26px 22px 24px!important}
+  .intro-copy{margin-top:38px!important}
+  .intro-capabilities{margin-top:30px!important}
+  .login-panel-wrap{padding:32px 22px 38px!important}
+}
+
+/* AceCall brand system: restrained AI gradient with a rounded AC monogram. */
+.login-intro .login-mark,
+.login-panel-head .login-mark,
+.brand>span{
+  border:1px solid rgba(255,255,255,.16)!important;
+  background:linear-gradient(145deg,#45c9f4 0%,#3278f5 38%,#5346f5 69%,#a855e7 100%)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 7px 16px rgba(37,54,153,.22)!important;
+}
+.intro-copy h1 em,
+.intro-capabilities b{
+  color:#3278f5!important;
+  background:linear-gradient(145deg,#45c9f4 0%,#3278f5 38%,#5346f5 69%,#a855e7 100%);
+  background-clip:text;
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+.login-mark>b,
+.brand>span>b{
+  color:#fff;
+  font-family:"Arial Rounded MT Bold","Trebuchet MS","Microsoft YaHei",sans-serif;
+  font-size:inherit;
+  font-weight:900;
+  line-height:1;
+  letter-spacing:0;
+  text-shadow:0 1px 1px rgba(34,45,120,.14);
+  transform:scaleX(1.04);
+}
+.intro-brand{gap:12px!important}
+.intro-brand .login-mark{
+  width:36px!important;
+  height:36px!important;
+  font-size:11px!important;
+}
+.intro-brand .login-mark>b{
+  font-family:inherit;
+  font-weight:800;
+}
+.intro-brand>strong,
+.brand>strong{
+  color:#fff;
+  background:linear-gradient(90deg,#fff 0%,#fff 34%,#c7d2fe 68%,#aa9cf8 86%,#8b5cf6 100%);
+  background-clip:text;
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  letter-spacing:0;
+}
+.intro-brand>strong{
+  font-family:inherit;
+  font-size:18px;
+  font-weight:700;
+  line-height:normal;
+}
+.login-panel-head .login-mark{
+  width:34px!important;
+  height:34px!important;
+  font-size:12px!important;
+}
+.login-panel-label{
+  color:#17253d!important;
+  background:linear-gradient(90deg,#17253d 0%,#34466c 55%,#7657bd 100%);
+  background-clip:text;
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  font-family:"Arial Rounded MT Bold","Trebuchet MS","Microsoft YaHei",sans-serif;
+  font-size:14px!important;
+  font-weight:800!important;
+  letter-spacing:0!important;
+}
+.brand>span{
+  width:34px!important;
+  height:34px!important;
+  font-size:12px!important;
+}
+.brand>strong{font-size:17px}
+
+/* Restore the original desktop composition while allowing shorter viewports to fit. */
+@media(min-width:861px){
+  .login-intro{
+    justify-content:space-between!important;
+    padding-block:clamp(38px,min(6vw,10vh),88px)!important;
+    padding-inline:clamp(38px,6vw,88px)!important;
+  }
+  .intro-copy{
+    margin-top:0!important;
+  }
+  .intro-copy p{
+    margin-top:22px!important;
+    line-height:1.85!important;
+  }
+  .intro-capabilities{
+    margin-top:0!important;
+    padding-top:26px!important;
+    gap:20px!important;
+  }
+  .intro-capabilities div{gap:6px!important}
+  .intro-capabilities small{line-height:1.5!important}
+  .intro-footnote{margin-top:26px!important}
+}
+
+/* Keep the right auth panel compact and anchored below the viewport edge. */
+@media(min-width:861px){
+  .login-panel-wrap{
+    align-items:flex-start!important;
+    padding:clamp(38px,min(6vw,10vh),88px) clamp(30px,5vw,76px) 24px!important;
+    overflow-y:auto!important;
+  }
+  .login-panel-head{margin-bottom:22px!important}
+  .login-panel h2{font-size:32px!important;line-height:1.18!important}
+  .auth-subtitle{margin:6px 0 20px!important}
+  .auth-method-tabs{margin-bottom:20px!important}
+  .auth-method-tab{padding-bottom:10px!important}
+  .login-panel label{margin-bottom:14px!important}
+  .login-panel input{height:44px!important}
+  .login-options{margin-bottom:16px!important}
+  .login-panel .primary{height:44px!important}
+  .login-panel small#loginMessage{min-height:26px!important;margin-top:14px!important}
+  .auth-footer{margin-top:18px!important;padding-top:16px!important}
+  .login-legal{margin-top:12px!important}
+}
+
+/* Compact, aligned product marks on both sides of the login composition. */
+.intro-brand,
+.login-panel-head{
+  gap:10px!important;
+}
+.intro-brand .login-mark,
+.login-panel-head .login-mark{
+  width:32px!important;
+  height:32px!important;
+  font-size:10px!important;
+}
+.intro-brand>strong,
+.login-panel-label{
+  font-family:inherit!important;
+  font-size:16px!important;
+  font-weight:700!important;
+  line-height:1!important;
+}
+
+@media(min-width:861px){
+  .intro-copy h1{font-size:32px!important}
+  .intro-copy p{font-size:12px!important}
+  .login-panel h2{font-size:30px!important}
+  .auth-subtitle{font-size:10px!important;margin-bottom:18px!important}
+  .auth-method-tab{font-size:12px!important}
+  .login-panel label{font-size:9px!important;margin-bottom:12px!important}
+  .login-panel input{height:42px!important;font-size:11px!important}
+  .login-options{margin-bottom:14px!important}
+  .login-panel .primary{height:42px!important}
+}
+
+@media(max-width:860px){
+  .intro-brand .login-mark,
+  .login-panel-head .login-mark{width:32px!important;height:32px!important}
+  .intro-brand>strong,
+  .login-panel-label{font-size:16px!important}
+  .login-panel h2{font-size:26px!important}
+  .login-panel input{height:40px!important}
+}
+
+/* Keep the right brand header fixed while fitting the complete auth form below it. */
+.login-panel h2{
+  font-size:28px!important;
+  line-height:1.15!important;
+}
+.auth-subtitle{margin:4px 0 14px!important;font-size:10px!important}
+.auth-method-tabs{margin-bottom:14px!important}
+.auth-method-tab{padding-bottom:8px!important;font-size:11px!important}
+.login-panel label{margin-bottom:10px!important}
+.login-panel input{height:40px!important}
+.login-options{margin-bottom:10px!important}
+.login-panel .primary{height:40px!important}
+.login-panel small#loginMessage{min-height:20px!important;margin-top:10px!important}
+.auth-footer{margin-top:12px!important;padding-top:12px!important}
+.login-legal{margin-top:8px!important}
+
+/* Slightly reduce only the copy below the welcome heading. */
+.auth-subtitle{font-size:9px!important}
+.auth-method-tab{font-size:10px!important}
+.login-panel label{font-size:8px!important}
+.login-panel input{font-size:10px!important}
+.login-options,
+.remember-account,
+.login-options .auth-switch{font-size:9px!important}
+.login-panel .primary{font-size:10px!important}
+.login-panel small#loginMessage{font-size:9px!important}
+.auth-footer{font-size:9px!important}
+.login-legal{font-size:8px!important}
+
+/* Workspace preview palette: deep indigo structure with restrained blue-violet actions. */
+:root{
+  --green:#3657d6;
+  --green-dark:#2c47b8;
+  --ink:#17253d;
+  --muted:#6d7a91;
+  --line:#dde5f1;
+  --paper:#ffffff;
+  --soft:#f5f7fb;
+}
+body,
+.app-main{background:#f5f7fb;color:#17253d}
+.app-sidebar{
+  background-color:#061a3f!important;
+  background-image:url("./assets/workspace-sidebar-background.png")!important;
+  background-position:center bottom!important;
+  background-size:100% 100%!important;
+  background-repeat:no-repeat!important;
+  color:#dbe7ff;
+}
+.app-sidebar .nav-item{color:#aebee0}
+.app-sidebar .nav-item i{background:#173a7a;color:#dbe7ff}
+.app-sidebar .nav-item:hover,
+.app-sidebar .nav-item.active{background:#173a7a;color:#fff}
+.sidebar-bottom p{border-color:#27447d;color:#91a8d4}
+.primary,
+.login-panel .primary{
+  background:linear-gradient(135deg,#3657d6 0%,#4a50d8 100%)!important;
+  box-shadow:0 6px 16px rgba(54,87,214,.18)!important;
+}
+.primary:hover,
+.login-panel .primary:hover{background:#2c47b8!important}
+.auth-switch,
+.link-action,
+.structure-link,
+.tab.active,
+.metric a,
+.batch-row b,
+.moka-placeholder,
+.eyebrow,
+.modal header small{color:#3657d6!important}
+.metric b,
+.job-progress-meta b,
+.score,
+.score-large{color:#3657d6}
+.status.warn,
+.quality-warn,
+.tag-accent,
+.profile-chip.accent{background:#fff4df;color:#a56b18}
+.keywords span{background:#eef2ff;color:#405a9c}
+.stage-item.active{border-top-color:#3657d6;background:#eef2ff}
+.candidate-stage.active,
+.candidate-stage:hover{border-bottom-color:#3657d6;color:#3657d6;background:#eef2ff}
+.dashboard-strip{border-left-color:#58b9e8}
+
+/* Compact workspace account header: notification, company, avatar, menu cue. */
+.app-header .service-status{display:none!important}
+.header-actions{gap:12px!important}
+.global-search-wrap{
+  position:relative;
+  flex:0 1 270px;
+  min-width:190px;
+}
+.global-search-box{
+  position:relative;
+  display:flex;
+  align-items:center;
+  height:32px;
+  border:1px solid #d7e0ed;
+  border-radius:7px;
+  background:#fff;
+  transition:border-color .16s ease,box-shadow .16s ease;
+}
+.global-search-box:focus-within{
+  border-color:#6d87df;
+  box-shadow:0 0 0 3px rgba(54,87,214,.1);
+}
+.global-search-box input{
+  width:100%;
+  height:100%;
+  min-width:0;
+  padding:0 34px 0 11px;
+  border:0;
+  outline:0;
+  background:transparent;
+  color:#243657;
+  font-size:11px;
+}
+.global-search-box input::placeholder{color:#9aa8bd}
+.global-search-box input::-webkit-search-cancel-button{cursor:pointer}
+.global-search-box>span{
+  position:absolute;
+  right:10px;
+  top:50%;
+  transform:translateY(-51%);
+  color:#8090ad;
+  font-size:17px;
+  line-height:1;
+  pointer-events:none;
+}
+.global-search-results{
+  position:absolute;
+  z-index:40;
+  top:calc(100% + 8px);
+  left:0;
+  width:100%;
+  max-height:330px;
+  overflow:auto;
+  padding:5px;
+  border:1px solid #e1e7f0;
+  border-radius:9px;
+  background:#fff;
+  box-shadow:0 16px 36px rgba(25,47,94,.16);
+}
+.global-search-results[hidden]{display:none}
+.global-search-result{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  min-height:45px;
+  padding:6px 8px;
+  border:0;
+  border-radius:6px;
+  background:transparent;
+  color:#243657;
+  text-align:left;
+}
+.global-search-result:hover,
+.global-search-result:focus-visible{background:#f2f5fb;outline:0}
+.global-result-avatar{
+  width:27px;
+  height:27px;
+  display:grid;
+  place-items:center;
+  flex:0 0 auto;
+  border-radius:50%;
+  background:#e5edff;
+  color:#3657d6;
+  font-size:11px;
+  font-weight:750;
+}
+.global-search-result>span:last-child{min-width:0}
+.global-search-result strong,
+.global-search-result small{
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.global-search-result strong{font-size:11px;font-weight:700}
+.global-search-result small{margin-top:2px;color:#8491a9;font-size:9px}
+.global-search-empty{padding:14px 10px;color:#8491a9;font-size:10px;text-align:center}
+.header-icon-button{
+  width:30px;
+  height:30px;
+  display:grid;
+  place-items:center;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:#7182a4;
+  font-size:16px;
+  line-height:1;
+}
+.header-icon-button:hover{color:#3657d6}
+.company-display{
+  display:block;
+  max-width:210px;
+  overflow:hidden;
+  color:#243657;
+  font-size:11px;
+  font-weight:650;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.company-menu-wrap{position:relative;display:flex;align-items:center;min-width:0}
+.company-menu-trigger{display:flex;align-items:center;gap:5px;min-width:0;max-width:250px;padding:5px 6px;border:0;border-radius:7px;background:transparent;color:#243657;text-align:left}
+.company-menu-trigger:hover,.company-menu-trigger[aria-expanded="true"]{background:#f2f5fb}
+.company-menu-caret{flex:0 0 auto;color:#8090ad;font-size:13px;line-height:1}
+.company-menu{position:absolute;z-index:40;top:calc(100% + 10px);right:0;width:286px;padding:14px;border:1px solid #e2e8f2;border-radius:10px;background:#fff;box-shadow:0 16px 36px rgba(25,47,94,.16)}
+.company-menu[hidden]{display:none}
+.company-menu-heading{color:#8491a9;font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.company-menu>strong{display:block;margin-top:7px;overflow-wrap:anywhere;color:#17253d;font-size:13px;line-height:1.4}
+.company-menu>small{display:block;margin-top:4px;color:#8491a9;font-size:10px}
+.company-menu-divider{height:1px;margin:12px 0 7px;background:#edf1f6}
+.company-menu-item{width:100%;display:flex;align-items:center;gap:10px;min-height:38px;padding:0 8px;border:0;border-radius:7px;background:transparent;color:#334365;text-align:left;font-size:11px}
+.company-menu-item:hover{background:#f2f5fb;color:#2949a8}
+.company-menu-item b{width:17px;color:#52617e;font-size:13px;text-align:center}
+.user-display{display:none}
+.avatar{
+  width:30px!important;
+  height:30px!important;
+  border:0;
+  background:#e5edff!important;
+  color:#3657d6!important;
+  font-size:10px!important;
+  font-weight:750;
+}
+.header-chevron{
+  width:14px;
+  color:#8a9ab7;
+  font-size:16px;
+  line-height:1;
+  text-align:center;
+}
+.account-menu-wrap{position:relative;display:flex;align-items:center}
+.notification-menu-wrap{position:relative;display:flex;align-items:center}
+.notification-menu{
+  position:absolute;
+  z-index:30;
+  top:calc(100% + 10px);
+  right:-12px;
+  width:190px;
+  padding:14px 16px;
+  border:1px solid #e2e8f2;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 16px 36px rgba(25,47,94,.16);
+}
+.notification-menu[hidden]{display:none}
+.notification-menu strong{display:block;color:#17253d;font-size:12px}
+.notification-menu p{margin:8px 0 0;color:#8491a9;font-size:11px}
+.account-menu{
+  position:absolute;
+  z-index:30;
+  top:calc(100% + 10px);
+  right:0;
+  width:286px;
+  padding:14px;
+  border:1px solid #e2e8f2;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 16px 36px rgba(25,47,94,.16);
+}
+.account-menu[hidden]{display:none}
+.account-menu-profile{display:flex;align-items:center;gap:11px;padding:3px 4px 12px}
+.account-menu-avatar{width:38px;height:38px;display:grid;place-items:center;flex:0 0 auto;border-radius:50%;background:#e5edff;color:#3657d6;font-size:11px;font-weight:800}
+.account-menu-profile strong,.account-menu-profile small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.account-menu-profile strong{max-width:200px;color:#17253d;font-size:13px;font-weight:700}
+.account-menu-profile small{max-width:200px;margin-top:3px;color:#8491a9;font-size:10px}
+.account-menu-divider{height:1px;margin:0 0 8px;background:#edf1f6}
+.account-menu-item{width:100%;display:flex;align-items:center;gap:12px;min-height:42px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:#334365;text-align:left;font-size:12px}
+.account-menu-item:hover{background:#f2f5fb;color:#2949a8}
+.account-menu-item b{width:18px;color:#52617e;font-size:14px;text-align:center}
+.account-menu-item.danger{color:#495776}
+.account-menu-item.danger:hover{background:#fff1f1;color:#bd4c59}
+.account-menu-item.danger b{color:inherit}
+.workspace-name-field{display:block;margin-bottom:14px;font-size:10px;font-weight:650}
+.workspace-name-field>span{display:block;margin-bottom:6px}
+.workspace-name-field input{flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid #cbd5df;border-radius:4px;background:#fff;color:#243657;outline:none;font-size:11px}
+.workspace-name-field input:focus{border-color:#3657d6;box-shadow:0 0 0 2px rgba(54,87,214,.09)}
+.workspace-name-field button{height:36px;min-height:36px}
+.settings-help{margin:12px 0 0;color:var(--muted);font-size:10px;line-height:1.6}
+@media(max-width:620px){
+  .header-actions{min-width:0}
+  .global-search-wrap{flex:1 1 150px;min-width:0;max-width:190px}
+  .global-search-box input{padding-left:9px;font-size:10px}
+  .company-menu-trigger{max-width:125px}
+  .company-display{flex:0 1 90px;max-width:90px}
+  .header-actions{gap:6px!important}
+  .app-header{padding:0 15px}
+  .account-menu{right:-8px;width:min(286px,calc(100vw - 24px))}
+  .notification-menu{right:-8px;width:180px}
+  .company-menu{right:-8px;width:min(286px,calc(100vw - 24px))}
+}

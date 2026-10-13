@@ -1,9 +1,11 @@
-import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@latest/+esm';
+import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+esm';
 
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
 const RULES_KEY = 'acecall-team-rules-v1';
+const LOCAL_MIGRATION_KEY_PREFIX = 'acecall-local-migration-v2:';
 const REMEMBERED_ACCOUNT_KEY = 'acecall-remembered-account-v1';
+const WORKSPACE_NAME_KEY = 'acecall-workspace-name-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
 const REMOTE_BACKEND = Boolean(API_BASE);
 const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
@@ -11,7 +13,8 @@ const FORCE_MIGRATION = new URLSearchParams(location.search).has('migrate');
 const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null };
+const initialLocalState = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), rules: readStore(RULES_KEY) };
+const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
 let cloudbaseClient = null;
@@ -37,6 +40,7 @@ let desktopAgentAvailable = false;
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
   bindShell();
+  updateUserHeader();
   await hydrateWorkspace();
   await hydrateState();
   seedJobs();
@@ -55,9 +59,95 @@ function bindShell() {
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
-  $('#logoutButton').addEventListener('click', signOut);
+  bindAccountMenu();
+  bindGlobalCandidateSearch();
   $('#applyJobRuleLibrary').addEventListener('click', applySelectedTeamRule);
   $('#saveJobRuleLibrary').addEventListener('click', saveCurrentRuleToLibrary);
+}
+
+function bindGlobalCandidateSearch() {
+  const input = $('#globalCandidateSearch');
+  const wrap = $('#globalSearchWrap');
+  const results = $('#globalSearchResults');
+  if (!input || !wrap || !results) return;
+  const close = () => { results.hidden = true; };
+  const searchableText = item => [
+    item.candidateName,
+    item.roleName,
+    item.resume,
+    item.resumeMeta?.fileName,
+    item.resumeMeta?.email,
+    item.resumeMeta?.phone,
+    item.resumeMeta?.currentCompany,
+    item.resumeMeta?.location
+  ].filter(Boolean).join(' ').toLowerCase();
+  const renderResults = () => {
+    const query = input.value.trim().toLowerCase();
+    if (!query) return close();
+    const matches = app.cases.filter(item => searchableText(item).includes(query)).slice(0, 8);
+    results.innerHTML = matches.length
+      ? matches.map(item => `<button class="global-search-result" type="button" data-global-candidate="${escapeHtml(item.id)}"><span class="global-result-avatar">${escapeHtml((item.candidateName || '候').slice(0, 1))}</span><span><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.roleName || item.resumeMeta?.email || '候选人档案')}</small></span></button>`).join('')
+      : '<div class="global-search-empty">没有找到匹配的候选人</div>';
+    results.hidden = false;
+  };
+  input.addEventListener('input', renderResults);
+  input.addEventListener('focus', renderResults);
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { close(); input.blur(); }
+    if (event.key === 'Enter') {
+      const first = results.querySelector('[data-global-candidate]');
+      if (first) { openCandidate(first.dataset.globalCandidate); close(); input.value = ''; }
+    }
+  });
+  results.addEventListener('click', event => {
+    const result = event.target.closest('[data-global-candidate]');
+    if (!result) return;
+    openCandidate(result.dataset.globalCandidate);
+    close();
+    input.value = '';
+  });
+  document.addEventListener('click', event => { if (!wrap.contains(event.target)) close(); });
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'm') {
+      event.preventDefault(); input.focus(); input.select();
+    }
+  });
+}
+
+function bindAccountMenu() {
+  const menus = [];
+  const bindFloatingMenu = (wrapSelector, buttonSelector, menuSelector) => {
+    const wrap = $(wrapSelector); const button = $(buttonSelector); const menu = $(menuSelector);
+    if (!wrap || !button || !menu) return null;
+    let closeTimer = null;
+    const close = () => { clearTimeout(closeTimer); menu.hidden = true; button.setAttribute('aria-expanded', 'false'); };
+    const open = () => { clearTimeout(closeTimer); menu.hidden = false; button.setAttribute('aria-expanded', 'true'); };
+    const scheduleClose = () => { clearTimeout(closeTimer); closeTimer = setTimeout(close, 220); };
+    button.addEventListener('click', event => { event.stopPropagation(); menu.hidden ? open() : close(); });
+    wrap.addEventListener('mouseenter', open);
+    wrap.addEventListener('mouseleave', scheduleClose);
+    menu.addEventListener('mouseenter', open);
+    menu.addEventListener('mouseleave', scheduleClose);
+    menu.addEventListener('click', event => event.stopPropagation());
+    menus.push(close);
+    return { close };
+  };
+  const account = bindFloatingMenu('#accountMenuWrap', '#accountMenuButton', '#accountMenu');
+  const company = bindFloatingMenu('#companyMenuWrap', '#companyMenuButton', '#companyMenu');
+  bindFloatingMenu('#notificationMenuWrap', '#notificationButton', '#notificationMenu');
+  document.addEventListener('click', () => menus.forEach(close => close()));
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') menus.forEach(close => close()); });
+  account?.close();
+  $('#profileMenuButton')?.addEventListener('click', () => { account?.close(); navigate('settings'); });
+  $('#changePasswordMenuButton')?.addEventListener('click', () => {
+    account?.close();
+    $('#loginScreen').classList.remove('hidden');
+    setAuthMode('reset');
+    const email = $('#accountMenuEmail')?.textContent.trim();
+    if (email && email.includes('@')) $('#loginUsername').value = email;
+  });
+  $('#menuLogoutButton')?.addEventListener('click', () => { account?.close(); signOut(); });
+  $('#companySettingsButton')?.addEventListener('click', () => { company?.close(); navigate('settings'); });
 }
 
 async function initializeAuth() {
@@ -108,6 +198,7 @@ function setAuthMode(mode) {
   $('#authSwitch').textContent = registering || resetting ? '返回登录' : '立即注册';
   $('#authMethodTabs').classList.toggle('hidden', registering || resetting);
   $('#loginOptions').classList.toggle('hidden', registering || resetting);
+  $('#registerCompanyField').classList.toggle('hidden', !registering);
   $('#usernameLabel').textContent = registering || resetting ? '邮箱' : '邮箱 / 账号';
   $('#loginUsername').placeholder = registering || resetting ? '请输入邮箱' : '请输入邮箱或账号';
   $('#passwordField').classList.toggle('hidden', resetting && !resetVerification);
@@ -170,6 +261,7 @@ async function handleAuthSubmit(event) {
 async function register(event) {
   event.preventDefault();
   const username = $('#loginUsername').value.trim();
+  const companyName = $('#registerCompanyName').value.trim();
   const password = $('#loginPassword').value;
   const button = $('#loginButton');
   if (registerVerification) {
@@ -180,7 +272,7 @@ async function register(event) {
       const result = await registerVerification({ token: code });
       if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
       registerVerification = null;
-      await enterWorkspace(username);
+      await enterWorkspace(username, companyName);
     } catch (error) {
       showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
     button.disabled = false; button.textContent = '验证并进入';
@@ -198,7 +290,7 @@ async function register(event) {
     });
     if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
     if (result?.data?.session) {
-      await enterWorkspace(username);
+      await enterWorkspace(username, companyName);
       return;
     }
     if (!result?.data?.verifyOtp) throw new Error('验证码接口返回异常，请检查 CloudBase 邮箱登录配置');
@@ -348,10 +440,10 @@ function persistRememberedAccount(username) {
   else localStorage.removeItem(REMEMBERED_ACCOUNT_KEY);
 }
 
-async function enterWorkspace(username = '') {
+async function enterWorkspace(username = '', companyName = '') {
   bindShell();
   $('#loginScreen').classList.add('hidden');
-  await hydrateWorkspace(username);
+  await hydrateWorkspace(username, companyName);
   await hydrateState();
   seedJobs();
   await checkService();
@@ -703,11 +795,32 @@ function historyTab(item) { const events = [['建立候选人档案',item.create
 
 function renderSettings() {
   const workspace = app.workspace || {}; const current = workspace.currentMember || {}; const members = workspace.members || [];
-  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><span class="eyebrow">WORKSPACE ADMIN</span><h1>设置</h1><p>公司工作区、团队成员和服务配置。</p></div></div><div class="settings-grid"><div class="surface"><div class="surface-head"><h2>当前公司工作区</h2><span>${escapeHtml(current.role || '成员')}</span></div><div class="surface-body"><div class="setting-row"><span>公司名称</span><b>${escapeHtml(workspace.workspace?.name || '未设置')}</b></div><div class="setting-row"><span>工作区 ID</span><b>${escapeHtml(workspace.workspace?.id || workspace.workspace?.tenantId || '—')}</b></div><div class="setting-row"><span>当前账号</span><b>${escapeHtml(current.displayName || current.username || current.uid || '—')}</b></div><div class="setting-row"><span>成员数量</span><b>${members.length} 人</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">同一公司主体下的岗位、候选人、规则和工作台统计共享；不同公司使用独立租户数据空间，互不可见。</p></div></div><div class="surface"><div class="surface-head"><h2>团队成员</h2><span>共享工作区</span></div><div class="surface-body">${members.length ? members.map(member => `<div class="setting-row"><span><b>${escapeHtml(member.displayName || member.username || '未命名')}</b><small style="display:block;color:var(--muted)">${escapeHtml(member.uid || '')}</small></span><b>${escapeHtml(member.role || 'recruiter')}</b></div>`).join('') : '<div class="empty">暂无成员信息</div>'}<p style="font-size:10px;color:var(--muted);line-height:1.6">成员邀请和角色管理将在管理后台开放；当前阶段先展示工作区共享状态。</p></div></div><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">API Key仅保存在服务端环境变量中，不会写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
-  if (['owner', 'admin'].includes(current.role)) {
-    $('#settingsView .settings-grid').insertAdjacentHTML('beforeend', '<div class="surface"><div class="surface-head"><h2>邀请团队成员</h2><span>管理员操作</span></div><div class="surface-body"><div class="toolbar"><input id="inviteMemberUid" placeholder="员工 UID"><select id="inviteMemberRole"><option value="recruiter">招聘人员</option><option value="admin">管理员</option><option value="viewer">只读成员</option></select><button class="primary" id="inviteMemberButton" type="button">邀请</button></div><small style="color:var(--muted)">员工首次登录后会自动加入当前公司工作区。</small></div></div>');
+  const workspaceName = workspace.workspace?.name || localStorage.getItem(WORKSPACE_NAME_KEY) || 'AceCall 招聘团队';
+  const canManage = !REMOTE_BACKEND || ['owner', 'admin'].includes(current.role);
+  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><span class="eyebrow">WORKSPACE ADMIN</span><h1>企业与团队</h1><p>企业名称、成员权限和招聘数据都绑定在当前工作区。</p></div></div><div class="settings-grid"><div class="surface workspace-settings-card"><div class="surface-head"><div><h2>当前企业工作区</h2><p class="surface-subtitle">顶部企业名称会同步显示完整工作区信息</p></div><span>${escapeHtml(current.role || '成员')}</span></div><div class="surface-body"><label class="workspace-name-field"><span>企业名称</span><div class="field-inline"><input id="workspaceNameInput" value="${escapeHtml(workspaceName)}" maxlength="120"><button class="primary" id="saveWorkspaceNameButton" type="button" ${canManage ? '' : 'disabled'}>保存</button></div></label><div class="setting-row"><span>工作区 ID</span><b>${escapeHtml(workspace.workspace?.id || workspace.workspace?.tenantId || '—')}</b></div><div class="setting-row"><span>当前账号</span><b>${escapeHtml(current.displayName || current.username || current.uid || '—')}</b></div><div class="setting-row"><span>成员数量</span><b>${members.length} 人</b></div><p class="settings-help">同一企业下的岗位、候选人、规则和统计共享；不同企业使用独立工作区，数据互不可见。企业管理员负责邀请成员加入。</p></div></div><div class="surface"><div class="surface-head"><div><h2>团队成员</h2><p class="surface-subtitle">统一管理招聘人员的协作范围</p></div><span>共享工作区</span></div><div class="surface-body">${members.length ? members.map(member => `<div class="setting-row"><span><b>${escapeHtml(member.displayName || member.username || '未命名')}</b><small style="display:block;color:var(--muted)">${escapeHtml(member.username || member.uid || '')}</small></span><b>${escapeHtml(member.role || 'recruiter')}</b></div>`).join('') : '<div class="empty">暂无成员信息</div>'}${canManage ? '<p class="settings-help">新成员通过管理员邀请加入，首次登录后会自动进入当前企业工作区。</p>' : '<p class="settings-help">如需加入其他企业，请联系该企业管理员发送邀请。</p>'}</div></div><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p class="settings-help">API Key仅保存在服务端环境变量中，不会写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
+  $('#saveWorkspaceNameButton')?.addEventListener('click', saveWorkspaceName);
+  if (canManage) {
+    $('#settingsView .settings-grid').insertAdjacentHTML('beforeend', '<div class="surface"><div class="surface-head"><div><h2>邀请团队成员</h2><p class="surface-subtitle">把成员加入当前企业工作区</p></div><span>管理员操作</span></div><div class="surface-body"><div class="toolbar"><input id="inviteMemberUid" placeholder="员工 UID"><select id="inviteMemberRole"><option value="recruiter">招聘人员</option><option value="admin">管理员</option><option value="viewer">只读成员</option></select><button class="primary" id="inviteMemberButton" type="button">邀请</button></div><small class="settings-help">员工首次登录后会自动加入当前企业；普通成员不能修改企业名称或邀请他人。</small></div></div>');
     $('#inviteMemberButton').addEventListener('click', inviteMember);
   }
+}
+
+async function saveWorkspaceName() {
+  const input = $('#workspaceNameInput'); const name = input?.value.trim();
+  if (!name) return toast('请输入企业名称');
+  const button = $('#saveWorkspaceNameButton'); if (button) button.disabled = true;
+  try {
+    if (REMOTE_BACKEND) {
+      const response = await authenticatedFetch(apiUrl('/api/workspace'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || '企业名称保存失败');
+      app.workspace = { ...(app.workspace || {}), workspace: { ...(app.workspace?.workspace || {}), name } };
+    } else {
+      localStorage.setItem(WORKSPACE_NAME_KEY, name);
+      app.workspace = { ...(app.workspace || {}), workspace: { ...(app.workspace?.workspace || {}), name } };
+    }
+    updateUserHeader(); renderSettings(); toast('企业名称已更新');
+  } catch (error) { toast(error.message || '企业名称保存失败'); if (button) button.disabled = false; }
 }
 
 async function inviteMember() {
@@ -1182,7 +1295,7 @@ function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}
 function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));$('#candidateNavCount').textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
 function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
-function seedJobs(){if(app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
+function seedJobs(){if(REMOTE_BACKEND||app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
 function resumeHint(item){const meta=item.resumeMeta||{};const facts=[meta.age?`${meta.age}岁`:'',meta.experienceYears?`${meta.experienceYears}年经验`:''].filter(Boolean);return facts.join(' · ')||meta.fileName||'简历已录入';}
 function formatDate(value){if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':`${date.getMonth()+1}月${date.getDate()}日`;}
 function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt);}
@@ -1196,7 +1309,13 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}let remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length||(remote.rules||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));await migrateStoredResumesOnce();return;}let failed=0;for(const job of app.jobs){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of app.cases){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}for(const content of teamRules){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}if(failed)toast(`云端同步暂未完成，${failed} 条数据保留在本机，可稍后重试`);}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
+function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
+function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
+function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
+function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
+function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
+async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);$('#serviceStatus').textContent=error.message||'服务状态未知';}}
 async function authenticatedFetch(url, options = {}) {
@@ -1233,5 +1352,5 @@ async function authenticatedFetch(url, options = {}) {
   return response;
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
-async function hydrateWorkspace(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#loginUsername')?.value||''})});}if(!response.ok)throw new Error('工作区初始化失败');app.workspace=await response.json();updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
-function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const company=workspace.workspace?.name||'公司主体';const username=member.username||member.displayName||$('#loginUsername')?.value||member.uid||'当前账号';const companyEl=$('#companyNameDisplay');const userEl=$('#userNameDisplay');if(companyEl)companyEl.textContent=company;if(userEl)userEl.textContent=username;const avatar=$('#logoutButton');if(avatar)avatar.textContent=String(username).slice(0,2).toUpperCase();}
+async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username||$('#loginUsername')?.value||'',companyName})});}if(!response.ok)throw new Error('工作区初始化失败');app.workspace=await response.json();updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
+function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const company=workspace.workspace?.name||localStorage.getItem(WORKSPACE_NAME_KEY)||'AceCall 招聘团队';const username=member.username||member.displayName||$('#loginUsername')?.value||member.uid||'当前账号';const email=member.email||(String(username).includes('@')?username:'未绑定邮箱');const displayName=member.displayName||(String(username).includes('@')?String(username).split('@')[0]:username);const initials=String(username).slice(0,2).toUpperCase();const companyEl=$('#companyNameDisplay');const companyButton=$('#companyMenuButton');const companyMenuName=$('#companyMenuName');const companyMenuMeta=$('#companyMenuMeta');const userEl=$('#userNameDisplay');const avatar=$('#accountMenuButton');const menuAvatar=$('#accountMenuAvatar');const menuName=$('#accountMenuName');const menuEmail=$('#accountMenuEmail');if(companyEl)companyEl.textContent=company;if(companyButton){companyButton.title=company;companyButton.setAttribute('aria-label',`查看企业工作区：${company}`);}if(companyMenuName)companyMenuName.textContent=company;if(companyMenuMeta)companyMenuMeta.textContent=`${member.role||'成员'} · ${(workspace.members||[]).length||1} 位成员`;if(userEl)userEl.textContent=username;if(avatar)avatar.textContent=initials;if(menuAvatar)menuAvatar.textContent=initials;if(menuName)menuName.textContent=displayName;if(menuEmail)menuEmail.textContent=email;}
