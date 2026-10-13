@@ -14,7 +14,7 @@ const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const initialLocalState = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), rules: readStore(RULES_KEY) };
-const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null };
+const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
 let cloudbaseClient = null;
@@ -175,9 +175,23 @@ async function initializeAuth() {
     return false;
   }
   if (!data?.session) return false;
+  captureAuthUser(data.session, rememberedAccount);
   await syncDesktopSession(data.session.access_token);
   $('#loginScreen').classList.add('hidden');
   return true;
+}
+
+function captureAuthUser(sessionOrUser, fallbackUsername = '') {
+  const user = sessionOrUser?.user || sessionOrUser || {};
+  const metadata = user.user_metadata || {};
+  const previous = app.authUser || {};
+  const fallback = String(fallbackUsername || '').trim();
+  const email = String(user.email || previous.email || (fallback.includes('@') ? fallback : '')).trim();
+  const username = String(metadata.username || user.username || previous.username || fallback || email).trim();
+  const displayName = String(metadata.name || metadata.nickName || user.name || previous.displayName || (email ? email.split('@')[0] : username)).trim();
+  const uid = String(user.id || user.uid || metadata.uid || previous.uid || '').trim();
+  app.authUser = { email, username, displayName, uid };
+  updateUserHeader();
 }
 
 let authMode = 'login';
@@ -272,6 +286,7 @@ async function register(event) {
       const result = await registerVerification({ token: code });
       if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
       registerVerification = null;
+      captureAuthUser(result?.data?.session, username);
       await enterWorkspace(username, companyName);
     } catch (error) {
       showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
@@ -290,6 +305,7 @@ async function register(event) {
     });
     if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
     if (result?.data?.session) {
+      captureAuthUser(result.data.session, username);
       await enterWorkspace(username, companyName);
       return;
     }
@@ -387,6 +403,7 @@ async function signIn(event) {
       const result = await loginVerification({ token: code });
       if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
       loginVerification = null;
+      captureAuthUser(result?.data?.session, username);
       persistRememberedAccount(username);
       await enterWorkspace(username);
     } catch (error) {
@@ -418,6 +435,7 @@ async function signIn(event) {
       return;
     }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
+    captureAuthUser(data.session, username);
     await syncDesktopSession(data.session.access_token);
     persistRememberedAccount(username);
     await enterWorkspace($('#loginUsername').value.trim());
@@ -443,6 +461,7 @@ function persistRememberedAccount(username) {
 async function enterWorkspace(username = '', companyName = '') {
   bindShell();
   $('#loginScreen').classList.add('hidden');
+  captureAuthUser(null, username);
   await hydrateWorkspace(username, companyName);
   await hydrateState();
   seedJobs();
@@ -1352,5 +1371,5 @@ async function authenticatedFetch(url, options = {}) {
   return response;
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
-async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username||$('#loginUsername')?.value||'',companyName})});}if(!response.ok)throw new Error('工作区初始化失败');app.workspace=await response.json();updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
-function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const company=workspace.workspace?.name||localStorage.getItem(WORKSPACE_NAME_KEY)||'AceCall 招聘团队';const username=member.username||member.displayName||$('#loginUsername')?.value||member.uid||'当前账号';const email=member.email||(String(username).includes('@')?username:'未绑定邮箱');const displayName=member.displayName||(String(username).includes('@')?String(username).split('@')[0]:username);const initials=String(username).slice(0,2).toUpperCase();const companyEl=$('#companyNameDisplay');const companyButton=$('#companyMenuButton');const companyMenuName=$('#companyMenuName');const companyMenuMeta=$('#companyMenuMeta');const userEl=$('#userNameDisplay');const avatar=$('#accountMenuButton');const menuAvatar=$('#accountMenuAvatar');const menuName=$('#accountMenuName');const menuEmail=$('#accountMenuEmail');if(companyEl)companyEl.textContent=company;if(companyButton){companyButton.title=company;companyButton.setAttribute('aria-label',`查看企业工作区：${company}`);}if(companyMenuName)companyMenuName.textContent=company;if(companyMenuMeta)companyMenuMeta.textContent=`${member.role||'成员'} · ${(workspace.members||[]).length||1} 位成员`;if(userEl)userEl.textContent=username;if(avatar)avatar.textContent=initials;if(menuAvatar)menuAvatar.textContent=initials;if(menuName)menuName.textContent=displayName;if(menuEmail)menuEmail.textContent=email;}
+async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));const account=username||app.authUser?.email||app.authUser?.username||$('#loginUsername')?.value||'';if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:account,companyName})});}if(!response.ok)throw new Error('工作区初始化失败');const workspace=await response.json();workspace.currentMember={...(app.authUser||{}),...(workspace.currentMember||{}),email:workspace.currentMember?.email||app.authUser?.email||''};app.workspace=workspace;updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
+function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const authUser=app.authUser||{};const company=workspace.workspace?.name||localStorage.getItem(WORKSPACE_NAME_KEY)||'AceCall 招聘团队';const email=member.email||authUser.email||'';const username=member.username||authUser.username||member.displayName||authUser.displayName||$('#loginUsername')?.value||member.uid||authUser.uid||'当前账号';const displayName=member.displayName||authUser.displayName||(email?email.split('@')[0]:username);const initials=String(displayName||username).slice(0,2).toUpperCase();const companyEl=$('#companyNameDisplay');const companyButton=$('#companyMenuButton');const companyMenuName=$('#companyMenuName');const companyMenuMeta=$('#companyMenuMeta');const userEl=$('#userNameDisplay');const avatar=$('#accountMenuButton');const menuAvatar=$('#accountMenuAvatar');const menuName=$('#accountMenuName');const menuEmail=$('#accountMenuEmail');if(companyEl)companyEl.textContent=company;if(companyButton){companyButton.title=company;companyButton.setAttribute('aria-label',`查看企业工作区：${company}`);}if(companyMenuName)companyMenuName.textContent=company;if(companyMenuMeta)companyMenuMeta.textContent=`${member.role||'成员'} · ${(workspace.members||[]).length||1} 位成员`;if(userEl)userEl.textContent=username;if(avatar)avatar.textContent=initials;if(menuAvatar)menuAvatar.textContent=initials;if(menuName)menuName.textContent=displayName;if(menuEmail)menuEmail.textContent=email||'未绑定邮箱';}

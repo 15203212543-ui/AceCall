@@ -127,6 +127,10 @@ th{background:#f4f7fc;color:#6f7c91}
 .login-panel-wrap{display:flex;align-items:center;justify-content:center;padding:42px 56px;background:#fdfdfa}.login-panel{width:100%;max-width:360px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}.login-panel-head{display:flex;align-items:center;gap:10px;margin-bottom:30px}.login-panel-head .login-mark{width:30px;height:30px;border-radius:4px;background:#c49b62;color:#18232d;font-size:10px}.login-panel-label{color:#69747b;font-size:10px;font-weight:650;letter-spacing:.2px}.login-panel h2{margin:0;font-size:28px;line-height:1.25;letter-spacing:-.2px;color:#26323b}.auth-subtitle{margin:8px 0 28px!important;color:#7b858b!important;font-size:11px!important;line-height:1.6}.login-panel label{margin-bottom:17px;font-size:10px}.login-panel label span{margin-bottom:7px;color:#59666c;font-weight:650}.login-panel input{height:44px;border-color:#cfd3ce;border-radius:3px;background:#fff;font-size:12px}.login-panel input::placeholder{color:#a4abad}.login-panel .primary{height:44px;margin-top:6px;border-radius:3px;font-size:11px;letter-spacing:.2px}.auth-links{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}.auth-links .auth-switch{margin:0;text-align:left}.auth-links .auth-switch:last-child{text-align:right}.auth-switch{font-size:10px;color:#3f7268}.login-panel small#loginMessage{min-height:30px;margin-top:18px;text-align:left;font-size:10px;line-height:1.55}.login-legal{margin:16px 0 0;color:#a0a6a8;font-size:9px;line-height:1.6;text-align:center}.login-panel small.error{color:#9a5e5e}
 .dashboard-insight{display:flex;align-items:center;gap:13px;margin:-2px 0 15px;padding:12px 15px;border:1px solid #d8e1dc;border-left:3px solid #3f7268;background:#f0f5f2}.insight-mark{display:grid;place-items:center;width:25px;height:25px;border-radius:50%;background:#d8e9e2;color:#3f7268;font-size:13px}.dashboard-insight strong{display:block;color:#2f5b54;font-size:11px}.dashboard-insight p{margin:3px 0 0;color:#64766e;font-size:10px;line-height:1.5}.dashboard-insight .link-action{margin-left:auto;white-space:nowrap}
 .app-main{background:#f5f4f0}.app-header{border-bottom:1px solid #dedfd9}.breadcrumb{font-weight:650}.page{padding-top:30px}.dashboard-title h1{font-size:28px;letter-spacing:-.2px}.dashboard-title p{max-width:560px;font-size:11px}.dashboard-actions .primary{height:36px;border-radius:3px}.dashboard-actions select{height:36px;border-radius:3px}.metric{min-height:98px;padding:16px}.metric b{font-size:25px}.metric span{margin-top:8px;font-size:10px}.metric small{font-size:9px}.surface{border-radius:4px}.surface-head{padding:16px 18px}.surface-head h2{font-size:14px}.action-surface .table-wrap{border-top:1px solid #e1e3dd}.table-wrap{overflow:auto}.table th,.table td{font-size:10px}
+
+/* Use the full workspace width on large screens; the page padding still keeps content readable. */
+.app-main>.view.active>.page{width:100%;max-width:none}
+.app-main>.view.active>.page.dashboard-page{max-width:none}
 @media(max-width:860px){.login-layout{grid-template-columns:1fr;min-height:0;max-width:520px}.login-intro{padding:30px 34px}.intro-copy{margin:44px 0 38px}.intro-copy h1{font-size:30px}.intro-capabilities{padding-top:20px}.login-panel-wrap{padding:38px 34px 42px}}
 @media(max-width:560px){.login-screen{align-items:flex-start;padding:0;background:#fdfdfa;overflow:auto}.login-layout{display:block;width:100%;border:0;box-shadow:none}.login-intro{min-height:330px;padding:26px 22px 24px}.intro-copy{margin:38px 0 30px}.intro-copy h1{font-size:27px}.intro-copy p{margin-top:15px;font-size:11px}.intro-capabilities{gap:10px}.intro-capabilities small{font-size:9px}.intro-footnote{margin-top:18px}.login-panel-wrap{padding:32px 22px 38px}.login-panel-head{margin-bottom:24px}.login-panel h2{font-size:24px}.auth-links{align-items:flex-start;flex-direction:column;gap:5px}.auth-links .auth-switch:last-child{text-align:left}.dashboard-insight{align-items:flex-start}.dashboard-insight .link-action{margin-top:4px}.dashboard-insight{flex-wrap:wrap}.dashboard-insight p{max-width:calc(100vw - 100px)}}
 
@@ -491,6 +495,59 @@ body,
 .candidate-stage:hover{border-bottom-color:#3657d6;color:#3657d6;background:#eef2ff}
 .dashboard-strip{border-left-color:#58b9e8}
 
+/* Deeper blue workspace palette: calm indigo with a restrained blue-violet lift. */
+:root{
+  --green:#2947b8;
+  --green-dark:#1c338f;
+  --ink:#142442;
+  --muted:#6c7890;
+  --line:#dbe3f0;
+  --soft:#f3f6fb;
+  --action-start:#2544ae;
+  --action-end:#4149c4;
+  --action-hover-start:#1d3699;
+  --action-hover-end:#303aa9;
+}
+body,.app-main{background:#f3f6fb;color:#142442}
+.app-sidebar{background-color:#061638!important}
+.app-sidebar .nav-item i{background:#15336f;color:#dbe7ff}
+.app-sidebar .nav-item:hover,
+.app-sidebar .nav-item.active{background:#193a7d;color:#fff}
+.primary,
+.login-panel .primary{
+  background:linear-gradient(110deg,var(--action-start) 0%,#3046bd 52%,var(--action-end) 100%)!important;
+  box-shadow:0 7px 17px rgba(34,62,170,.22)!important;
+}
+.primary:hover,
+.login-panel .primary:hover{
+  background:linear-gradient(110deg,var(--action-hover-start) 0%,var(--action-hover-end) 100%)!important;
+}
+.primary:focus-visible{outline:2px solid #91a7f4;outline-offset:2px}
+.auth-switch,
+.link-action,
+.structure-link,
+.tab.active,
+.metric a,
+.batch-row b,
+.moka-placeholder,
+.eyebrow,
+.modal header small{color:#2947b8!important}
+.metric b,.job-progress-meta b,.score,.score-large{color:#2947b8}
+.stage-item.active{border-top-color:#2947b8;background:#eaf0ff}
+.candidate-stage.active,
+.candidate-stage:hover{border-bottom-color:#2947b8;color:#2947b8;background:#eaf0ff}
+.dashboard-strip{border-left-color:#4169d7}
+.dashboard-insight{border-left-color:#2947b8;background:#eef3ff}
+.dashboard-insight strong{color:#263f99}
+.insight-mark{background:#dce7ff;color:#2947b8}
+.status,.quality-good,.tag-positive,.profile-chip.positive{background:#e6edff;color:#2947b8}
+.keywords span{background:#edf1ff;color:#435da9}
+.decision{border-left-color:#2947b8;background:#eaf0ff}
+.tag{background:#e6edff;color:#2947b8}
+.file-status{background:#e6edff;color:#2947b8}
+.upload-zone{border-color:#a8b9e5;background:#f0f4ff;color:#2947b8}
+.toast{background:#071b42}
+
 /* Compact workspace account header: notification, company, avatar, menu cue. */
 .app-header .service-status{display:none!important}
 .header-actions{gap:12px!important}
@@ -702,3 +759,10 @@ body,
   .notification-menu{right:-8px;width:180px}
   .company-menu{right:-8px;width:min(286px,calc(100vw - 24px))}
 }
+
+/* Header controls use the same deeper action blue as the primary buttons. */
+.header-icon-button:hover{color:#2947b8}
+.avatar{background:#e6edff!important;color:#2947b8!important}
+.account-menu-avatar{background:#e6edff;color:#2947b8}
+.company-menu-item:hover,.account-menu-item:hover{color:#2947b8}
+.workspace-name-field input:focus{border-color:#2947b8;box-shadow:0 0 0 2px rgba(41,71,184,.1)}
