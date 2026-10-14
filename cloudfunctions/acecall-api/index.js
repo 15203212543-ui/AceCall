@@ -230,6 +230,9 @@ async function bootstrapWorkspace(input = {}, request) {
   const tenantName = String(input.companyName || '').trim().slice(0, 120) || '我的公司工作区';
   await db.collection(COLLECTIONS.tenants).doc(tenantId).set({ id: tenantId, name: tenantName, status: 'active', createdBy: uid, createdAt: now, updatedAt: now });
   await db.collection(COLLECTIONS.members).doc(`${tenantId}_${uid}`.slice(0, 80)).set({ id: `${tenantId}_${uid}`.slice(0, 80), tenantId, uid, username: String(input.username || '').slice(0, 120), displayName: String(input.displayName || input.username || '').slice(0, 80), role: 'owner', status: 'active', createdAt: now, updatedAt: now });
+  // Claim only legacy records that have no tenant yet. Existing company data
+  // with a tenantId remains isolated and is never reassigned.
+  await migrateLegacyTenantData({ tenantId, uid });
   return workspaceSummary({ uid, tenantId, role: 'owner' });
 }
 
