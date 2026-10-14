@@ -31,3 +31,9 @@ npm run dist:win
 ```
 
 Mac 和 Windows 安装包应在对应系统上构建并签名。首次正式发布前还需要配置 Apple Developer / Windows 代码签名证书、应用图标和自动更新地址。AceCall 网页登录成功后会把短期会话令牌交给本机助手，助手只保存在内存中，不保存账号密码、长期密钥或 CloudBase 管理凭证。
+
+## Mac 用户安装
+
+从 AceCall 简历中心下载 `AceCall-Sync-Mac.dmg`，打开后将 `AceCall Sync` 拖入“应用程序”，再从“应用程序”启动。当前发布包未使用 Apple Developer 证书签名，首次打开若出现安全提示，请在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+
+首次点击网页中的“开始录音”时，macOS 会请求麦克风权限。若没有弹窗，前往“系统设置 → 隐私与安全性 → 麦克风”，打开 `AceCall Sync`，然后完全退出并重新启动桌面助手。
