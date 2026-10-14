@@ -328,7 +328,7 @@ async function saveJob(context, id, input) {
   const db = getDatabase();
   await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
-  const job = pick(input, ['industry', 'name', 'jd', 'keywords', 'rules', 'status', 'createdAt', 'updatedAt']);
+  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'jd', 'keywords', 'rules', 'status', 'createdAt', 'updatedAt']);
   job.id = id;
   job.tenantId = context.tenantId;
   job.createdBy = context.uid;
