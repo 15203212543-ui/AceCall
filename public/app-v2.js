@@ -308,13 +308,13 @@ function showLoginMessage(message, isError = true) {
 }
 
 function navigate(view, updateHash = true) {
-  if (!['dashboard', 'inbox', 'candidates', 'jobs', 'settings', 'candidate'].includes(view)) view = 'dashboard';
+  if (!['dashboard', 'inbox', 'candidates', 'jobs', 'insights', 'interviewers', 'intelligence', 'connections', 'settings', 'candidate'].includes(view)) view = 'dashboard';
   app.view = view;
   $$('.view').forEach(section => section.classList.remove('active'));
   $$('.nav-item[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view || (view === 'candidate' && button.dataset.view === 'candidates')));
   const target = view === 'candidate' ? $('#candidateDetailView') : $(`#${view}View`);
   target.classList.add('active');
-  $('#breadcrumb').textContent = view === 'candidate' ? '候选人 / 初筛详情' : ({ dashboard: '招聘工作台', inbox: '简历中心', candidates: '候选人管理', jobs: '岗位管理', settings: '系统设置' }[view]);
+  $('#breadcrumb').textContent = view === 'candidate' ? '候选人 / 初筛详情' : ({ dashboard: '招聘工作台', inbox: '简历中心', candidates: '候选人管理', jobs: '岗位管理', insights: '人才洞察', interviewers: '面试官分析', intelligence: '行业情报', connections: '数据连接', settings: '系统设置' }[view]);
   if (updateHash) history.replaceState(null, '', `#${view}`);
   renderCurrent();
 }
@@ -326,8 +326,64 @@ function renderCurrent() {
   if (app.view === 'inbox') renderInbox();
   if (app.view === 'candidates') renderCandidates();
   if (app.view === 'jobs') renderJobs();
+  if (app.view === 'insights') renderInsights();
+  if (app.view === 'interviewers') renderInterviewers();
+  if (app.view === 'intelligence') renderIntelligence();
+  if (app.view === 'connections') renderConnections();
   if (app.view === 'settings') renderSettings();
   if (app.view === 'candidate') renderCandidateDetail();
+}
+
+function analysisDecisionCounts(items) {
+  const counts = new Map();
+  items.forEach(item => { const decision = finalAction(item) || '未决策'; counts.set(decision, (counts.get(decision) || 0) + 1); });
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function insightBar(label, value, total, tone = '') {
+  const percent = total ? Math.round(value / total * 100) : 0;
+  return `<div class="insight-bar-row"><div><span>${escapeHtml(label)}</span><b>${value} 人 · ${percent}%</b></div><div class="insight-bar"><i class="${tone}" style="width:${percent}%"></i></div></div>`;
+}
+
+function renderInsights() {
+  const total = app.cases.length;
+  const completed = app.cases.filter(item => item.communicationSummary || item.report).length;
+  const recommended = app.cases.filter(item => finalAction(item) === '推荐业务面试').length;
+  const highMatch = app.cases.filter(item => scoreValue(item) >= 80).length;
+  const profiles = app.cases.map(inferTalentProfile);
+  const schoolHit = profiles.filter(item => item.school === true).length;
+  const competitorHit = profiles.filter(item => item.competitor === true).length;
+  const decisions = analysisDecisionCounts(app.cases);
+  const jobs = [...new Set(app.cases.map(item => item.jobId).filter(Boolean))].map(id => app.jobs.find(job => job.id === id)).filter(Boolean);
+  $('#insightsView').innerHTML = `<div class="page research-page">
+    <div class="page-title"><div><span class="eyebrow">TALENT INSIGHTS</span><h1>人才洞察</h1><p>从候选人结果反推团队偏好、筛选标准和岗位画像，所有结论都保留数据依据。</p></div><button class="secondary" data-research-refresh>重新计算</button></div>
+    <div class="research-banner"><div><span>招聘样本</span><strong>${total} <small>人</small></strong></div><p>当前基于全部岗位和全部候选人统计，包含已淘汰人才；Moka 接入后可补充历史录用样本。</p><span class="data-status">当前数据：AceCall</span></div>
+    <div class="metrics research-metrics"><div class="metric"><b>${recommended}</b><span>推荐业务面试</span><small>推荐率 ${total ? Math.round(recommended / total * 100) : 0}%</small></div><div class="metric"><b>${completed}</b><span>已有沟通结论</span><small>沟通完成率 ${total ? Math.round(completed / total * 100) : 0}%</small></div><div class="metric"><b>${highMatch}</b><span>高匹配人选</span><small>匹配度 80 分以上</small></div><div class="metric"><b>${schoolHit}</b><span>重点学校背景</span><small>985/211/双一流识别</small></div></div>
+    <div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>人才画像结构</h2><p class="surface-subtitle">自动识别最近 1-2 段经历与教育背景</p></div><span>全部候选人</span></div><div class="surface-body insight-bars">${insightBar('直接竞品经历', competitorHit, total, 'copper')}${insightBar('行业头部经历', profiles.filter(item => item.major === true).length, total, 'blue')}${insightBar('重点学校背景', schoolHit, total, 'green')}${insightBar('待补充标签', profiles.filter(item => item.competitor === null || item.school === null).length, total, 'muted')}</div></section><section class="surface"><div class="surface-head"><div><h2>录用结果分布</h2><p class="surface-subtitle">用于反推团队实际偏好</p></div><span>${decisions.length} 类结果</span></div><div class="surface-body decision-list">${decisions.map(([label, count]) => `<div><span>${escapeHtml(label)}</span><b>${count}</b><i style="width:${total ? Math.round(count / total * 100) : 0}%"></i></div>`).join('') || '<div class="empty">完成候选人沟通后，这里会沉淀决策分布。</div>'}</div></section></div>
+    <section class="surface"><div class="surface-head"><div><h2>岗位筛选标准信号</h2><p class="surface-subtitle">从岗位关键词、匹配依据和面试总结中提取高频判断维度</p></div><span>${jobs.length} 个岗位</span></div><div class="surface-body signal-grid"><div><strong>高频匹配维度</strong><p>${jobs.flatMap(job => job.keywords || []).slice(0, 8).map(keyword => `<span class="research-tag">${escapeHtml(keyword)}</span>`).join('') || '岗位关键词将在建立岗位后出现'}</p></div><div><strong>当前洞察状态</strong><p class="muted-text">当前为规则与历史记录分析。接入 Moka 后，将增加录用、入职和面试轮次的真实结果对照。</p></div></div></section>
+  </div>`;
+  $('#insightsView [data-research-refresh]').addEventListener('click', () => { renderInsights(); toast('人才洞察已重新计算'); });
+}
+
+function renderInterviewers() {
+  const withCalls = app.cases.filter(item => item.communicationSummary || item.report || item.transcript);
+  const questions = withCalls.flatMap(item => item.preparation?.questions || []).map(question => typeof question === 'string' ? question : question.question).filter(Boolean);
+  const reportText = withCalls.map(item => `${item.communicationSummary || ''} ${item.report?.recommendationReason || ''}`).join(' ');
+  const followUp = (reportText.match(/追问|核实|确认|风险/g) || []).length;
+  const coverage = withCalls.length ? Math.min(100, Math.round((questions.length / withCalls.length) * 10)) : 0;
+  const interviewerScore = withCalls.length ? Math.min(100, 55 + Math.round(coverage * .25) + Math.min(20, followUp * 2)) : 0;
+  $('#interviewersView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER REVIEW</span><h1>面试官分析</h1><p>把电话记录和面试总结转化为面试质量反馈，帮助团队持续统一提问和判断标准。</p></div><span class="readonly-badge">分析预览</span></div><div class="research-banner interviewer-banner"><div><span>综合表现分</span><strong>${interviewerScore}<small>/100</small></strong></div><p>${withCalls.length ? `基于 ${withCalls.length} 份已完成沟通记录，当前评分反映问题覆盖、追问深度和记录完整度。` : '尚无完成沟通记录，完成电话沟通后自动生成面试官分析。'}</p><span class="data-status">不作为自动淘汰依据</span></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>面试表现维度</h2><p class="surface-subtitle">月度评价的基础指标</p></div></div><div class="surface-body insight-bars">${insightBar('问题覆盖度', coverage, 100, 'blue')}${insightBar('追问深度', Math.min(100, followUp * 8), 100, 'copper')}${insightBar('记录完整度', withCalls.length ? Math.min(100, Math.round(withCalls.filter(item => item.communicationSummary).length / withCalls.length * 100)) : 0, 100, 'green')}</div></section><section class="surface"><div class="surface-head"><div><h2>建议动作</h2><p class="surface-subtitle">从数据中生成的可执行反馈</p></div></div><div class="surface-body recommendation-list"><p><b>保持：</b>${questions.length ? '继续使用结构化问题，并为每个岗位保留关键核验项。' : '完成首批沟通记录后开始形成个性化建议。'}</p><p><b>加强：</b>${followUp ? '保持对职责边界、项目结果和风险点的连续追问。' : '增加对项目结果、职责边界和离职动机的二次追问。'}</p><p><b>复盘：</b>每月以真实录用结果校准面试标准，避免只看主观印象。</p></div></section></div></div>`;
+}
+
+function renderIntelligence() {
+  const companies = [...new Set(app.cases.flatMap(item => String(item.resume || '').match(/[一-龥A-Za-z]{2,16}(?:证券|银行|科技|集团|互联网|教育|传媒|视频|信息)/g) || []))].slice(0, 12);
+  const themes = [...new Set(app.jobs.flatMap(job => job.keywords || []))].slice(0, 12);
+  $('#intelligenceView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从简历、电话记录与面试转写中沉淀公司业务、人才流动和竞品线索，形成可复用的研究材料。</p></div><button class="secondary" type="button" data-export-intelligence>导出研究草稿</button></div><div class="research-banner"><div><span>待整理线索</span><strong>${companies.length + themes.length}<small> 条</small></strong></div><p>Moka 接入与面试转写权限开通后，这里可按岗位、月份和行业生成正式竞品 mapping 与调研报告。</p><span class="data-status">当前仅展示脱敏线索</span></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>公司与业务线索</h2><p class="surface-subtitle">从简历工作经历中提取的高频组织名称</p></div></div><div class="surface-body research-tags">${companies.map(company => `<span class="research-tag">${escapeHtml(company)}</span>`).join('') || '<div class="empty">导入更多简历后自动生成公司线索。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>岗位能力主题</h2><p class="surface-subtitle">来自岗位关键词与初筛规则</p></div></div><div class="surface-body research-tags">${themes.map(theme => `<span class="research-tag blue">${escapeHtml(theme)}</span>`).join('') || '<div class="empty">创建岗位并添加关键词后生成主题。</div>'}</div></section></div><section class="surface"><div class="surface-head"><div><h2>报告生产路径</h2><p class="surface-subtitle">接入 Moka 后的正式工作流</p></div><span>规划中</span></div><div class="surface-body intelligence-steps"><div><b>01</b><strong>采集</strong><span>岗位、候选人、面试安排与转写</span></div><div><b>02</b><strong>归因</strong><span>按岗位和面试官关联录用结果</span></div><div><b>03</b><strong>提炼</strong><span>识别竞品公司、业务变化与人才信号</span></div><div><b>04</b><strong>输出</strong><span>生成月报、竞品 mapping 与调研文档</span></div></div></section></div>`;
+  $('#intelligenceView [data-export-intelligence]').addEventListener('click', () => toast('研究草稿已生成，正式导出将在接入数据源后开放'));
+}
+
+function renderConnections() {
+  $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">获得企业 API 后按需开启</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。拿到企业 API 后，将先在测试环境完成只读同步，再开启备注回写，并保留同步日志和失败重试队列。</p></div></section></div>`;
 }
 
 function renderDashboard() {
