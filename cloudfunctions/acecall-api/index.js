@@ -346,7 +346,7 @@ async function saveCandidate(context, id, input) {
   await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
   await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync']);
+  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome']);
   candidate.id = id;
   candidate.tenantId = context.tenantId;
   candidate.createdBy = context.uid;
