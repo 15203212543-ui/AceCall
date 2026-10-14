@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session } = require('electron');
 const http = require('node:http');
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -54,9 +54,22 @@ async function startRecorder() {
   recorderWindow.on('closed', () => { recorderWindow = null; });
   recorderWindow.loadFile(path.join(__dirname, 'recorder.html'));
   await new Promise(resolve => recorderWindow.webContents.once('did-finish-load', resolve));
-  recording = { status: 'recording', startedAt: new Date().toISOString(), filePath, bytes: 0 };
-  recorderWindow.webContents.send('recording-start', { filePath });
-  return { status: recording.status, startedAt: recording.startedAt };
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error('麦克风权限或录音设备响应超时，请检查系统麦克风权限')), 12000);
+    const cleanup = () => { clearTimeout(timer); ipcMain.removeListener('recording-ready', onReady); ipcMain.removeListener('recording-error', onError); };
+    const finish = (error, result) => { cleanup(); if (error) { recorderWindow?.close(); recorderWindow = null; reject(error); } else resolve(result); };
+    const onReady = (_event, payload = {}) => {
+      recording = { status: 'recording', startedAt: payload.startedAt || new Date().toISOString(), filePath, bytes: 0, mimeType: payload.mimeType || 'audio/webm' };
+      finish(null, { status: recording.status, startedAt: recording.startedAt, mimeType: recording.mimeType });
+    };
+    const onError = (_event, payload = {}) => {
+      const message = payload.name === 'NotAllowedError' ? '麦克风权限被拒绝，请在 macOS 系统设置中允许 AceCall Sync 使用麦克风' : (payload.message || '无法开始录音');
+      finish(new Error(message));
+    };
+    ipcMain.once('recording-ready', onReady);
+    ipcMain.once('recording-error', onError);
+    recorderWindow.webContents.send('recording-start', { filePath });
+  });
 }
 
 async function stopRecorder() {
@@ -126,8 +139,13 @@ app.whenReady().then(async () => {
 
 ipcMain.on('recording-chunk', async (_event, chunk) => {
   if (recording.status !== 'recording') return;
-  await fsp.appendFile(recording.filePath, Buffer.from(chunk));
-  recording.bytes += chunk.byteLength;
+  try { await fsp.appendFile(recording.filePath, Buffer.from(chunk)); recording.bytes += chunk.byteLength; } catch (error) { console.error(`[AceCall] 录音写入失败：${error.message}`); }
+});
+app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(permission === 'media' && webContents === recorderWindow?.webContents);
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => permission === 'media' && webContents === recorderWindow?.webContents);
 });
 app.on('before-quit', async () => { app.isQuitting = true; await stopRecorder().catch(() => {}); await stopAgent(); localServer?.close(); });
 app.on('window-all-closed', event => event.preventDefault());

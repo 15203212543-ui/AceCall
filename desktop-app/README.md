@@ -18,6 +18,8 @@ npm start -- --background
 
 后台服务默认监听 `127.0.0.1:17890`。网页通过 `/status`、`/recording/start` 和 `/recording/stop` 控制录音；首次使用仍需要操作系统麦克风授权。录音文件会先按 10 秒分片写入应用本地目录，停止后由 AceCall 网页提交到 CloudBase 转写任务。
 
+Mac 首次录音授权：打开“系统设置 → 隐私与安全性 → 麦克风”，打开 `AceCall Sync` 的权限；如果是通过终端运行 Electron，则允许实际显示在列表中的终端应用。修改权限后完全退出并重新启动 AceCall Sync，再点击“开始录音”。
+
 ## 构建安装包
 
 ```bash

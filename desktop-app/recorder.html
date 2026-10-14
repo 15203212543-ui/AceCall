@@ -4,12 +4,20 @@ let recorder;
 let chunks = [];
 let startedAt = null;
 window.acecallRecorder.onStart(async () => {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : undefined });
-  startedAt = new Date().toISOString();
-  recorder.ondataavailable = event => { if (event.data.size) event.data.arrayBuffer().then(buffer => window.acecallRecorder.sendChunk(buffer)); };
-  recorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); window.acecallRecorder.stopped({ startedAt, mimeType: recorder.mimeType }); };
-  recorder.start(10000);
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前系统不支持麦克风采集');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : undefined;
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    startedAt = new Date().toISOString();
+    recorder.ondataavailable = event => { if (event.data.size) event.data.arrayBuffer().then(buffer => window.acecallRecorder.sendChunk(buffer)); };
+    recorder.onerror = event => window.acecallRecorder.failed({ name: 'MediaRecorderError', message: event.error?.message || '录音设备发生异常' });
+    recorder.onstop = () => { stream.getTracks().forEach(track => track.stop()); window.acecallRecorder.stopped({ startedAt, mimeType: recorder.mimeType }); };
+    recorder.start(10000);
+    window.acecallRecorder.ready({ startedAt, mimeType: recorder.mimeType });
+  } catch (error) {
+    window.acecallRecorder.failed(error);
+  }
 });
 window.acecallRecorder.onStop(() => { if (recorder && recorder.state !== 'inactive') recorder.stop(); });
 </script></body></html>
