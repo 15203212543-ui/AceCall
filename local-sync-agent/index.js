@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const STABLE_MS = 10 * 1000;
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const SUPPORTED = /\.(pdf|docx?|txt|md|rtf)$/i;
 const TEMPORARY = /\.(crdownload|part|tmp|download)$/i;
 const signals = ['简历', '个人信息', '工作经历', '教育经历', '项目经历', '任职', '工作经验', '学历', '邮箱', '手机', '电话', 'resume', 'experience', 'education'];
@@ -87,10 +87,22 @@ class SyncAgent {
     await this.saveState();
     console.log(`[AceCall] ${this.policy.label}监听已启动：${this.directory}`);
     console.log(`[AceCall] 仅处理启动后的新增文件，补偿扫描间隔 ${this.options.interval / 60000} 分钟`);
-    this.watcher = fs.watch(this.directory, { persistent: true }, (_event, changedName) => {
-      if (changedName && path.basename(String(changedName)) === path.basename(this.statePath)) return;
-      this.requestScan();
-    });
+    try {
+      this.watcher = fs.watch(this.directory, { persistent: true }, (_event, changedName) => {
+        if (changedName && path.basename(String(changedName)) === path.basename(this.statePath)) return;
+        this.requestScan();
+      });
+      this.watcher.on('error', error => {
+        this.report(error);
+        this.watcher?.close?.();
+        this.watcher = null;
+        console.error('[AceCall] 文件事件监听不可用，已降级为定时扫描');
+      });
+    } catch (error) {
+      this.report(error);
+      this.watcher = null;
+      console.error('[AceCall] 文件事件监听启动失败，已降级为定时扫描');
+    }
     this.scanTimer = setInterval(() => this.scan().catch(error => this.report(error)), this.options.interval);
     await this.scan();
     if (this.options.once) await this.stop();

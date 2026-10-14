@@ -24,7 +24,7 @@ npm run sync-agent -- --once --dir "/tmp/acecall-resumes"
 
 ## 后端同步
 
-不配置 `ACECALL_API_BASE` 时，助手只在本地解析文本并记录状态。接入本地 AceCall 服务时：
+不配置 `ACECALL_API_BASE` 时，独立脚本只在本地解析文本并记录状态（PDF/DOCX 需要配置后端解析）。接入本地 AceCall 服务时：
 
 ```bash
 ACECALL_API_BASE="http://127.0.0.1:4173" npm run sync-agent -- --dir "/Users/你的用户名/Downloads"
@@ -41,3 +41,5 @@ npm run sync-agent -- --dir "/Users/你的用户名/Downloads"
 密码、DeepSeek Key 和 CloudBase 管理 API Key 不会被助手读取或保存。每个监听目录会生成权限为 `0600` 的 `.acecall-sync.json`，保存基线、去重记录和失败重试信息；不要将该文件提交到 Git。
 
 网页关闭后，助手仍可继续运行；退出终端或发送 `Ctrl+C` 会停止监听。
+
+简历文件上限为 50MB。文件事件监听不可用时会自动降级为每 5 分钟扫描，不会因单个监听错误退出。

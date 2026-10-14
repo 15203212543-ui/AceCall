@@ -34,6 +34,7 @@ let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
+const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 let desktopAgentAvailable = false;
 
@@ -448,7 +449,7 @@ async function signIn(event) {
 async function syncDesktopSession(token) {
   if (!token) return false;
   try {
-    const response = await fetch(`${DESKTOP_AGENT_URL}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }), signal: AbortSignal.timeout(1500) });
+    const response = await fetch(`${DESKTOP_AGENT_URL}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, apiBase: API_BASE }), signal: AbortSignal.timeout(1500) });
     return response.ok;
   } catch { return false; }
 }
@@ -1291,7 +1292,7 @@ function saveJob(event) {
 }
 
 async function parseResume(file) {
-  if (!file) return; if (file.size > 10_000_000) return toast('文件不能超过10MB'); const extension = file.name.split('.').pop().toLowerCase(); $('#resumeStatus').className = 'file-status'; $('#resumeStatus').textContent = `正在解析 ${file.name}…`;
+  if (!file) return; if (file.size > RESUME_MAX_BYTES) return toast('简历文件不能超过50MB'); const extension = file.name.split('.').pop().toLowerCase(); $('#resumeStatus').className = 'file-status'; $('#resumeStatus').textContent = `正在解析 ${file.name}…`;
   try { let result; if (STATIC_DEMO && ['txt','md'].includes(extension)) { const text = await file.text(); result = { text, metadata:{ fileName:file.name, extension:extension.toUpperCase(), characters:text.length } }; } else if (STATIC_DEMO) throw new Error('在线演示版PDF/DOCX解析需要后端服务'); else { const response = await authenticatedFetch(apiUrl(`/api/parse-resume?name=${encodeURIComponent(file.name)}`), { method:'POST', body:file }); result = await response.json(); if (!response.ok) throw new Error(result.error || '解析失败'); } $('#candidateResumeInput').value = result.text; app.resumeMeta = result.metadata; app.resumeFile = file; if (!$('#candidateNameInput').value && result.metadata.candidateName) $('#candidateNameInput').value = result.metadata.candidateName; $('#resumeStatus').textContent = `${file.name} · 已提取 ${result.metadata.characters || result.text.length} 字`; } catch (error) { $('#resumeStatus').textContent = error.message; toast(error.message); }
 }
 

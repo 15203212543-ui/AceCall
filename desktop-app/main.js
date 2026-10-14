@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { SyncAgent, platformPolicy } = require('./local-sync-agent');
 
+const DEFAULT_API_BASE = 'https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api';
 let window;
 let agent;
 let currentDirectory = '';
@@ -14,6 +15,7 @@ let recording = { status: 'idle', startedAt: null, filePath: '', bytes: 0 };
 let localServer;
 const LOCAL_PORT = Number(process.env.ACECALL_AGENT_PORT || 17890);
 let sessionToken = process.env.ACECALL_AUTH_TOKEN || '';
+let apiBase = process.env.ACECALL_API_BASE || DEFAULT_API_BASE;
 
 function sendStatus(status, message = '') { window?.webContents.send('sync-status', { status, message, directory: currentDirectory }); }
 
@@ -31,7 +33,7 @@ async function stopAgent() {
 async function startAgent(directory) {
   await stopAgent();
   currentDirectory = directory;
-  const options = { directory, interval: 300000, once: false, apiBase: process.env.ACECALL_API_BASE || '', authToken: process.env.ACECALL_AUTH_TOKEN || '' };
+  const options = { directory, interval: 300000, once: false, apiBase, authToken: sessionToken };
   agent = new SyncAgent(options);
   await agent.start();
   sendStatus('running', `${platformPolicy().label}正在监听`);
@@ -76,7 +78,7 @@ function startLocalServer() {
     const url = new URL(request.url || '/', 'http://127.0.0.1');
     if (request.method === 'GET' && url.pathname === '/status') {
       response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return response.end(JSON.stringify({ ok: true, service: 'acecall-desktop-agent', platform: process.platform, authenticated: Boolean(sessionToken), recording, sync: { status: agent ? 'running' : 'stopped', directory: currentDirectory } }));
+      return response.end(JSON.stringify({ ok: true, service: 'acecall-desktop-agent', platform: process.platform, authenticated: Boolean(sessionToken), backendConfigured: Boolean(apiBase), recording, sync: { status: agent ? 'running' : 'stopped', directory: currentDirectory } }));
     }
     if (request.method === 'GET' && url.pathname === '/recording/file' && recording.status === 'stopped' && recording.filePath) {
       try {
@@ -92,7 +94,9 @@ function startLocalServer() {
         for await (const chunk of request) body += chunk;
         const input = JSON.parse(body || '{}');
         sessionToken = typeof input.token === 'string' ? input.token.slice(0, 12000) : '';
+        if (typeof input.apiBase === 'string' && /^https?:\/\//i.test(input.apiBase)) apiBase = input.apiBase.replace(/\/$/, '');
         if (agent) agent.options.authToken = sessionToken;
+        if (agent) agent.options.apiBase = apiBase;
         result = { authenticated: Boolean(sessionToken) };
       }
       else if (request.method === 'POST' && url.pathname === '/recording/start') result = await startRecorder();
@@ -117,7 +121,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('choose-directory', async () => { const result = await dialog.showOpenDialog(window, { title: '选择要监听的文件夹', properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? '' : result.filePaths[0]; });
   ipcMain.handle('start-sync', (_event, directory) => startAgent(directory));
   ipcMain.handle('stop-sync', () => stopAgent());
-  ipcMain.handle('get-config', () => ({ apiBase: Boolean(process.env.ACECALL_API_BASE), authToken: Boolean(process.env.ACECALL_AUTH_TOKEN), directory: currentDirectory }));
+  ipcMain.handle('get-config', () => ({ apiBase: Boolean(apiBase), authToken: Boolean(sessionToken), directory: currentDirectory }));
 });
 
 ipcMain.on('recording-chunk', async (_event, chunk) => {

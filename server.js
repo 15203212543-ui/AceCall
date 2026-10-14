@@ -38,7 +38,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && request.url?.startsWith('/api/parse-resume')) {
       const fileName = new URL(request.url, 'http://localhost').searchParams.get('name') || 'resume';
-      const buffer = await readBuffer(request, 10_000_000);
+      const buffer = await readBuffer(request, 50 * 1024 * 1024);
       const parsed = await parseResumeFile(fileName, buffer);
       return sendJson(response, 200, parsed);
     }
@@ -87,7 +87,7 @@ async function readBuffer(request, limit) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > limit) throw Object.assign(new Error('简历文件不能超过 10MB'), { statusCode: 413 });
+    if (size > limit) throw Object.assign(new Error(`文件不能超过 ${Math.floor(limit / 1024 / 1024)}MB`), { statusCode: 413 });
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
