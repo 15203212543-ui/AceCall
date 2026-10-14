@@ -1,8 +1,11 @@
-import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@latest/+esm';
+import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+esm';
 
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
 const RULES_KEY = 'acecall-team-rules-v1';
+const LOCAL_MIGRATION_KEY_PREFIX = 'acecall-local-migration-v2:';
+const REMEMBERED_ACCOUNT_KEY = 'acecall-remembered-account-v1';
+const WORKSPACE_NAME_KEY = 'acecall-workspace-name-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
 const REMOTE_BACKEND = Boolean(API_BASE);
 const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
@@ -10,7 +13,8 @@ const FORCE_MIGRATION = new URLSearchParams(location.search).has('migrate');
 const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const app = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null };
+const initialLocalState = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), rules: readStore(RULES_KEY) };
+const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
 let cloudbaseClient = null;
@@ -36,6 +40,7 @@ let desktopAgentAvailable = false;
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
   bindShell();
+  updateUserHeader();
   await hydrateWorkspace();
   await hydrateState();
   seedJobs();
@@ -54,15 +59,108 @@ function bindShell() {
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
-  $('#logoutButton').addEventListener('click', signOut);
+  bindAccountMenu();
+  bindGlobalCandidateSearch();
   $('#applyJobRuleLibrary').addEventListener('click', applySelectedTeamRule);
   $('#saveJobRuleLibrary').addEventListener('click', saveCurrentRuleToLibrary);
+}
+
+function bindGlobalCandidateSearch() {
+  const input = $('#globalCandidateSearch');
+  const wrap = $('#globalSearchWrap');
+  const results = $('#globalSearchResults');
+  if (!input || !wrap || !results) return;
+  const close = () => { results.hidden = true; };
+  const searchableText = item => [
+    item.candidateName,
+    item.roleName,
+    item.resume,
+    item.resumeMeta?.fileName,
+    item.resumeMeta?.email,
+    item.resumeMeta?.phone,
+    item.resumeMeta?.currentCompany,
+    item.resumeMeta?.location
+  ].filter(Boolean).join(' ').toLowerCase();
+  const renderResults = () => {
+    const query = input.value.trim().toLowerCase();
+    if (!query) return close();
+    const matches = app.cases.filter(item => searchableText(item).includes(query)).slice(0, 8);
+    results.innerHTML = matches.length
+      ? matches.map(item => `<button class="global-search-result" type="button" data-global-candidate="${escapeHtml(item.id)}"><span class="global-result-avatar">${escapeHtml((item.candidateName || '候').slice(0, 1))}</span><span><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.roleName || item.resumeMeta?.email || '候选人档案')}</small></span></button>`).join('')
+      : '<div class="global-search-empty">没有找到匹配的候选人</div>';
+    results.hidden = false;
+  };
+  input.addEventListener('input', renderResults);
+  input.addEventListener('focus', renderResults);
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { close(); input.blur(); }
+    if (event.key === 'Enter') {
+      const first = results.querySelector('[data-global-candidate]');
+      if (first) { openCandidate(first.dataset.globalCandidate); close(); input.value = ''; }
+    }
+  });
+  results.addEventListener('click', event => {
+    const result = event.target.closest('[data-global-candidate]');
+    if (!result) return;
+    openCandidate(result.dataset.globalCandidate);
+    close();
+    input.value = '';
+  });
+  document.addEventListener('click', event => { if (!wrap.contains(event.target)) close(); });
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'm') {
+      event.preventDefault(); input.focus(); input.select();
+    }
+  });
+}
+
+function bindAccountMenu() {
+  const menus = [];
+  const bindFloatingMenu = (wrapSelector, buttonSelector, menuSelector) => {
+    const wrap = $(wrapSelector); const button = $(buttonSelector); const menu = $(menuSelector);
+    if (!wrap || !button || !menu) return null;
+    let closeTimer = null;
+    const close = () => { clearTimeout(closeTimer); menu.hidden = true; button.setAttribute('aria-expanded', 'false'); };
+    const open = () => { clearTimeout(closeTimer); menu.hidden = false; button.setAttribute('aria-expanded', 'true'); };
+    const scheduleClose = () => { clearTimeout(closeTimer); closeTimer = setTimeout(close, 220); };
+    button.addEventListener('click', event => { event.stopPropagation(); menu.hidden ? open() : close(); });
+    wrap.addEventListener('mouseenter', open);
+    wrap.addEventListener('mouseleave', scheduleClose);
+    menu.addEventListener('mouseenter', open);
+    menu.addEventListener('mouseleave', scheduleClose);
+    menu.addEventListener('click', event => event.stopPropagation());
+    menus.push(close);
+    return { close };
+  };
+  const account = bindFloatingMenu('#accountMenuWrap', '#accountMenuButton', '#accountMenu');
+  const company = bindFloatingMenu('#companyMenuWrap', '#companyMenuButton', '#companyMenu');
+  bindFloatingMenu('#notificationMenuWrap', '#notificationButton', '#notificationMenu');
+  document.addEventListener('click', () => menus.forEach(close => close()));
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') menus.forEach(close => close()); });
+  account?.close();
+  $('#profileMenuButton')?.addEventListener('click', () => { account?.close(); navigate('settings'); });
+  $('#changePasswordMenuButton')?.addEventListener('click', () => {
+    account?.close();
+    $('#loginScreen').classList.remove('hidden');
+    setAuthMode('reset');
+    const email = $('#accountMenuEmail')?.textContent.trim();
+    if (email && email.includes('@')) $('#loginUsername').value = email;
+  });
+  $('#menuLogoutButton')?.addEventListener('click', () => { account?.close(); signOut(); });
+  $('#companySettingsButton')?.addEventListener('click', () => { company?.close(); navigate('settings'); });
 }
 
 async function initializeAuth() {
   $('#loginForm').addEventListener('submit', handleAuthSubmit);
   $('#authSwitch').addEventListener('click', toggleAuthMode);
   $('#forgotPasswordSwitch').addEventListener('click', startPasswordReset);
+  $('#passwordLoginTab').addEventListener('click', () => setLoginMethod('password'));
+  $('#emailLoginTab').addEventListener('click', () => setLoginMethod('email'));
+  const rememberedAccount = localStorage.getItem(REMEMBERED_ACCOUNT_KEY) || '';
+  if (rememberedAccount) {
+    $('#loginUsername').value = rememberedAccount;
+    $('#rememberAccount').checked = true;
+  }
   if (!REMOTE_BACKEND) { $('#loginScreen').classList.add('hidden'); return true; }
   if (!CLOUD_CONFIG.env || !CLOUD_CONFIG.publishableKey) {
     showLoginMessage('CloudBase登录配置不完整');
@@ -77,12 +175,27 @@ async function initializeAuth() {
     return false;
   }
   if (!data?.session) return false;
+  captureAuthUser(data.session, rememberedAccount);
   await syncDesktopSession(data.session.access_token);
   $('#loginScreen').classList.add('hidden');
   return true;
 }
 
+function captureAuthUser(sessionOrUser, fallbackUsername = '') {
+  const user = sessionOrUser?.user || sessionOrUser || {};
+  const metadata = user.user_metadata || {};
+  const previous = app.authUser || {};
+  const fallback = String(fallbackUsername || '').trim();
+  const email = String(user.email || previous.email || (fallback.includes('@') ? fallback : '')).trim();
+  const username = String(metadata.username || user.username || previous.username || fallback || email).trim();
+  const displayName = String(metadata.name || metadata.nickName || user.name || previous.displayName || (email ? email.split('@')[0] : username)).trim();
+  const uid = String(user.id || user.uid || metadata.uid || previous.uid || '').trim();
+  app.authUser = { email, username, displayName, uid };
+  updateUserHeader();
+}
+
 let authMode = 'login';
+let loginMethod = 'password';
 let registerVerification = null;
 let loginVerification = null;
 let resetVerification = null;
@@ -95,8 +208,13 @@ function setAuthMode(mode) {
   $('#authSubtitle').textContent = registering ? '' : resetting ? '通过邮箱验证后设置新的登录密码' : '登录后继续管理岗位、候选人与面试进展';
   $('#authSubtitle').classList.toggle('hidden', registering);
   $('#loginButton').textContent = registering ? '创建并继续' : resetting ? '发送验证码' : '登录工作台';
-  $('#authSwitch').textContent = registering || resetting ? '已有账号？返回登录' : '没有账号？注册个人账号';
-  $('#forgotPasswordSwitch').classList.toggle('hidden', registering || resetting);
+  $('#authSwitchPrompt').textContent = registering || resetting ? '已有账号？' : '还没有账号？';
+  $('#authSwitch').textContent = registering || resetting ? '返回登录' : '立即注册';
+  $('#authMethodTabs').classList.toggle('hidden', registering || resetting);
+  $('#loginOptions').classList.toggle('hidden', registering || resetting);
+  $('#registerCompanyField').classList.toggle('hidden', !registering);
+  $('#usernameLabel').textContent = registering || resetting ? '邮箱' : '邮箱 / 账号';
+  $('#loginUsername').placeholder = registering || resetting ? '请输入邮箱' : '请输入邮箱或账号';
   $('#passwordField').classList.toggle('hidden', resetting && !resetVerification);
   $('#passwordLabel').textContent = resetting ? '新密码' : '密码';
   $('#confirmPasswordField').classList.toggle('hidden', !registering);
@@ -107,7 +225,28 @@ function setAuthMode(mode) {
   resetVerification = null;
   $('#loginPassword').required = registering;
   $('#confirmPassword').required = registering;
+  if (!registering && !resetting) setLoginMethod('password', false);
   showLoginMessage(registering ? '设置密码后获取验证码，验证成功即可创建个人账号' : resetting ? '输入注册邮箱，接收验证码后设置新密码' : '账号数据仅属于当前账号', false);
+}
+
+function setLoginMethod(method, updateMessage = true) {
+  if (authMode !== 'login') return;
+  loginMethod = method === 'email' ? 'email' : 'password';
+  loginVerification = null;
+  const emailLogin = loginMethod === 'email';
+  $('#passwordLoginTab').classList.toggle('active', !emailLogin);
+  $('#emailLoginTab').classList.toggle('active', emailLogin);
+  $('#passwordLoginTab').setAttribute('aria-selected', String(!emailLogin));
+  $('#emailLoginTab').setAttribute('aria-selected', String(emailLogin));
+  $('#usernameLabel').textContent = emailLogin ? '邮箱' : '邮箱 / 账号';
+  $('#loginUsername').placeholder = emailLogin ? '请输入邮箱' : '请输入邮箱或账号';
+  $('#passwordField').classList.toggle('hidden', emailLogin);
+  $('#loginPassword').required = !emailLogin;
+  $('#verificationCodeField').classList.add('hidden');
+  $('#verificationCode').required = false;
+  $('#verificationCode').value = '';
+  $('#loginButton').textContent = emailLogin ? '获取邮箱验证码' : '登录工作台';
+  if (updateMessage) showLoginMessage(emailLogin ? '验证码将发送至你的注册邮箱' : '账号数据仅属于当前账号', false);
 }
 
 function toggleAuthMode() {
@@ -136,6 +275,7 @@ async function handleAuthSubmit(event) {
 async function register(event) {
   event.preventDefault();
   const username = $('#loginUsername').value.trim();
+  const companyName = $('#registerCompanyName').value.trim();
   const password = $('#loginPassword').value;
   const button = $('#loginButton');
   if (registerVerification) {
@@ -146,7 +286,8 @@ async function register(event) {
       const result = await registerVerification({ token: code });
       if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
       registerVerification = null;
-      await enterWorkspace(username);
+      captureAuthUser(result?.data?.session, username);
+      await enterWorkspace(username, companyName);
     } catch (error) {
       showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
     button.disabled = false; button.textContent = '验证并进入';
@@ -164,7 +305,8 @@ async function register(event) {
     });
     if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
     if (result?.data?.session) {
-      await enterWorkspace(username);
+      captureAuthUser(result.data.session, username);
+      await enterWorkspace(username, companyName);
       return;
     }
     if (!result?.data?.verifyOtp) throw new Error('验证码接口返回异常，请检查 CloudBase 邮箱登录配置');
@@ -232,6 +374,27 @@ async function signIn(event) {
   event.preventDefault();
   const button = $('#loginButton');
   const username = $('#loginUsername').value.trim();
+  if (loginMethod === 'email' && !loginVerification) {
+    if (!username || !/^\S+@\S+\.\S+$/.test(username)) return showLoginMessage('请输入有效的邮箱地址');
+    button.disabled = true; button.textContent = '正在发送'; showLoginMessage('正在发送邮箱验证码', false);
+    try {
+      const result = await cloudbaseAuth.signInWithOtp({
+        email: username,
+        options: { shouldCreateUser: false }
+      });
+      if (result?.error) throw new Error(authErrorMessage(result, '验证码发送失败'));
+      if (!result?.data?.verifyOtp) throw new Error('验证码接口返回异常，请检查 CloudBase 邮箱登录配置');
+      loginVerification = result.data.verifyOtp;
+      $('#verificationCodeField').classList.remove('hidden');
+      $('#verificationCode').required = true;
+      button.disabled = false; button.textContent = '验证并登录';
+      showLoginMessage('验证码已发送到你的邮箱，请查收后输入', false);
+    } catch (error) {
+      showLoginMessage(authErrorMessage(error, '验证码发送失败'));
+      button.disabled = false; button.textContent = '获取邮箱验证码';
+    }
+    return;
+  }
   if (loginVerification) {
     const code = $('#verificationCode').value.trim();
     if (!code) return showLoginMessage('请输入邮箱收到的验证码');
@@ -240,6 +403,8 @@ async function signIn(event) {
       const result = await loginVerification({ token: code });
       if (result?.error) throw new Error(authErrorMessage(result, '邮箱验证失败'));
       loginVerification = null;
+      captureAuthUser(result?.data?.session, username);
+      persistRememberedAccount(username);
       await enterWorkspace(username);
     } catch (error) {
       showLoginMessage(authErrorMessage(error, '邮箱验证失败'));
@@ -270,7 +435,9 @@ async function signIn(event) {
       return;
     }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
+    captureAuthUser(data.session, username);
     await syncDesktopSession(data.session.access_token);
+    persistRememberedAccount(username);
     await enterWorkspace($('#loginUsername').value.trim());
   } catch (error) {
     showLoginMessage(authErrorMessage(error, '登录失败'));
@@ -286,10 +453,16 @@ async function syncDesktopSession(token) {
   } catch { return false; }
 }
 
-async function enterWorkspace(username = '') {
+function persistRememberedAccount(username) {
+  if ($('#rememberAccount').checked) localStorage.setItem(REMEMBERED_ACCOUNT_KEY, username);
+  else localStorage.removeItem(REMEMBERED_ACCOUNT_KEY);
+}
+
+async function enterWorkspace(username = '', companyName = '') {
   bindShell();
   $('#loginScreen').classList.add('hidden');
-  await hydrateWorkspace(username);
+  captureAuthUser(null, username);
+  await hydrateWorkspace(username, companyName);
   await hydrateState();
   seedJobs();
   await checkService();
@@ -334,57 +507,16 @@ function renderCurrent() {
   if (app.view === 'candidate') renderCandidateDetail();
 }
 
-function analysisDecisionCounts(items) {
-  const counts = new Map();
-  items.forEach(item => { const decision = finalAction(item) || '未决策'; counts.set(decision, (counts.get(decision) || 0) + 1); });
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-}
-
-function insightBar(label, value, total, tone = '') {
-  const percent = total ? Math.round(value / total * 100) : 0;
-  return `<div class="insight-bar-row"><div><span>${escapeHtml(label)}</span><b>${value} 人 · ${percent}%</b></div><div class="insight-bar"><i class="${tone}" style="width:${percent}%"></i></div></div>`;
-}
-
+function analysisDecisionCounts(items) { const counts = new Map(); items.forEach(item => { const decision = finalAction(item) || '未决策'; counts.set(decision, (counts.get(decision) || 0) + 1); }); return [...counts.entries()].sort((a, b) => b[1] - a[1]); }
+function insightBar(label, value, total, tone = '') { const percent = total ? Math.round(value / total * 100) : 0; return `<div class="insight-bar-row"><div><span>${escapeHtml(label)}</span><b>${value} 人 · ${percent}%</b></div><div class="insight-bar"><i class="${tone}" style="width:${percent}%"></i></div></div>`; }
 function renderInsights() {
-  const total = app.cases.length;
-  const completed = app.cases.filter(item => item.communicationSummary || item.report).length;
-  const recommended = app.cases.filter(item => finalAction(item) === '推荐业务面试').length;
-  const highMatch = app.cases.filter(item => scoreValue(item) >= 80).length;
-  const profiles = app.cases.map(inferTalentProfile);
-  const schoolHit = profiles.filter(item => item.school === true).length;
-  const competitorHit = profiles.filter(item => item.competitor === true).length;
-  const decisions = analysisDecisionCounts(app.cases);
-  const jobs = [...new Set(app.cases.map(item => item.jobId).filter(Boolean))].map(id => app.jobs.find(job => job.id === id)).filter(Boolean);
-  $('#insightsView').innerHTML = `<div class="page research-page">
-    <div class="page-title"><div><span class="eyebrow">TALENT INSIGHTS</span><h1>人才洞察</h1><p>从候选人结果反推团队偏好、筛选标准和岗位画像，所有结论都保留数据依据。</p></div><button class="secondary" data-research-refresh>重新计算</button></div>
-    <div class="research-banner"><div><span>招聘样本</span><strong>${total} <small>人</small></strong></div><p>当前基于全部岗位和全部候选人统计，包含已淘汰人才；Moka 接入后可补充历史录用样本。</p><span class="data-status">当前数据：AceCall</span></div>
-    <div class="metrics research-metrics"><div class="metric"><b>${recommended}</b><span>推荐业务面试</span><small>推荐率 ${total ? Math.round(recommended / total * 100) : 0}%</small></div><div class="metric"><b>${completed}</b><span>已有沟通结论</span><small>沟通完成率 ${total ? Math.round(completed / total * 100) : 0}%</small></div><div class="metric"><b>${highMatch}</b><span>高匹配人选</span><small>匹配度 80 分以上</small></div><div class="metric"><b>${schoolHit}</b><span>重点学校背景</span><small>985/211/双一流识别</small></div></div>
-    <div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>人才画像结构</h2><p class="surface-subtitle">自动识别最近 1-2 段经历与教育背景</p></div><span>全部候选人</span></div><div class="surface-body insight-bars">${insightBar('直接竞品经历', competitorHit, total, 'copper')}${insightBar('行业头部经历', profiles.filter(item => item.major === true).length, total, 'blue')}${insightBar('重点学校背景', schoolHit, total, 'green')}${insightBar('待补充标签', profiles.filter(item => item.competitor === null || item.school === null).length, total, 'muted')}</div></section><section class="surface"><div class="surface-head"><div><h2>录用结果分布</h2><p class="surface-subtitle">用于反推团队实际偏好</p></div><span>${decisions.length} 类结果</span></div><div class="surface-body decision-list">${decisions.map(([label, count]) => `<div><span>${escapeHtml(label)}</span><b>${count}</b><i style="width:${total ? Math.round(count / total * 100) : 0}%"></i></div>`).join('') || '<div class="empty">完成候选人沟通后，这里会沉淀决策分布。</div>'}</div></section></div>
-    <section class="surface"><div class="surface-head"><div><h2>岗位筛选标准信号</h2><p class="surface-subtitle">从岗位关键词、匹配依据和面试总结中提取高频判断维度</p></div><span>${jobs.length} 个岗位</span></div><div class="surface-body signal-grid"><div><strong>高频匹配维度</strong><p>${jobs.flatMap(job => job.keywords || []).slice(0, 8).map(keyword => `<span class="research-tag">${escapeHtml(keyword)}</span>`).join('') || '岗位关键词将在建立岗位后出现'}</p></div><div><strong>当前洞察状态</strong><p class="muted-text">当前为规则与历史记录分析。接入 Moka 后，将增加录用、入职和面试轮次的真实结果对照。</p></div></div></section>
-  </div>`;
+  const total = app.cases.length; const completed = app.cases.filter(item => item.communicationSummary || item.report).length; const recommended = app.cases.filter(item => finalAction(item) === '推荐业务面试').length; const highMatch = app.cases.filter(item => scoreValue(item) >= 80).length; const profiles = app.cases.map(inferTalentProfile); const schoolHit = profiles.filter(item => item.school === true).length; const competitorHit = profiles.filter(item => item.competitor === true).length; const decisions = analysisDecisionCounts(app.cases); const jobs = [...new Set(app.cases.map(item => item.jobId).filter(Boolean))].map(id => app.jobs.find(job => job.id === id)).filter(Boolean);
+  $('#insightsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">TALENT INSIGHTS</span><h1>人才洞察</h1><p>从候选人结果反推团队偏好、筛选标准和岗位画像，所有结论都保留数据依据。</p></div><button class="secondary" data-research-refresh>重新计算</button></div><div class="research-banner"><div><span>招聘样本</span><strong>${total} <small>人</small></strong></div><p>当前基于全部岗位和全部候选人统计，包含已淘汰人才；Moka 接入后可补充历史录用样本。</p><span class="data-status">当前数据：AceCall</span></div><div class="metrics research-metrics"><div class="metric"><b>${recommended}</b><span>推荐业务面试</span><small>推荐率 ${total ? Math.round(recommended / total * 100) : 0}%</small></div><div class="metric"><b>${completed}</b><span>已有沟通结论</span><small>沟通完成率 ${total ? Math.round(completed / total * 100) : 0}%</small></div><div class="metric"><b>${highMatch}</b><span>高匹配人选</span><small>匹配度 80 分以上</small></div><div class="metric"><b>${schoolHit}</b><span>重点学校背景</span><small>985/211/双一流识别</small></div></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>人才画像结构</h2><p class="surface-subtitle">自动识别最近 1-2 段经历与教育背景</p></div><span>全部候选人</span></div><div class="surface-body insight-bars">${insightBar('直接竞品经历', competitorHit, total, 'copper')}${insightBar('行业头部经历', profiles.filter(item => item.major === true).length, total, 'blue')}${insightBar('重点学校背景', schoolHit, total, 'green')}${insightBar('待补充标签', profiles.filter(item => item.competitor === null || item.school === null).length, total, 'muted')}</div></section><section class="surface"><div class="surface-head"><div><h2>录用结果分布</h2><p class="surface-subtitle">用于反推团队实际偏好</p></div><span>${decisions.length} 类结果</span></div><div class="surface-body decision-list">${decisions.map(([label, count]) => `<div><span>${escapeHtml(label)}</span><b>${count}</b><i style="width:${total ? Math.round(count / total * 100) : 0}%"></i></div>`).join('') || '<div class="empty">完成候选人沟通后，这里会沉淀决策分布。</div>'}</div></section></div><section class="surface"><div class="surface-head"><div><h2>岗位筛选标准信号</h2><p class="surface-subtitle">从岗位关键词、匹配依据和面试总结中提取高频判断维度</p></div><span>${jobs.length} 个岗位</span></div><div class="surface-body signal-grid"><div><strong>高频匹配维度</strong><p>${jobs.flatMap(job => job.keywords || []).slice(0, 8).map(keyword => `<span class="research-tag">${escapeHtml(keyword)}</span>`).join('') || '岗位关键词将在建立岗位后出现'}</p></div><div><strong>当前洞察状态</strong><p class="muted-text">当前为规则与历史记录分析。接入 Moka 后，将增加录用、入职和面试轮次的真实结果对照。</p></div></div></section></div>`;
   $('#insightsView [data-research-refresh]').addEventListener('click', () => { renderInsights(); toast('人才洞察已重新计算'); });
 }
-
-function renderInterviewers() {
-  const withCalls = app.cases.filter(item => item.communicationSummary || item.report || item.transcript);
-  const questions = withCalls.flatMap(item => item.preparation?.questions || []).map(question => typeof question === 'string' ? question : question.question).filter(Boolean);
-  const reportText = withCalls.map(item => `${item.communicationSummary || ''} ${item.report?.recommendationReason || ''}`).join(' ');
-  const followUp = (reportText.match(/追问|核实|确认|风险/g) || []).length;
-  const coverage = withCalls.length ? Math.min(100, Math.round((questions.length / withCalls.length) * 10)) : 0;
-  const interviewerScore = withCalls.length ? Math.min(100, 55 + Math.round(coverage * .25) + Math.min(20, followUp * 2)) : 0;
-  $('#interviewersView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER REVIEW</span><h1>面试官分析</h1><p>把电话记录和面试总结转化为面试质量反馈，帮助团队持续统一提问和判断标准。</p></div><span class="readonly-badge">分析预览</span></div><div class="research-banner interviewer-banner"><div><span>综合表现分</span><strong>${interviewerScore}<small>/100</small></strong></div><p>${withCalls.length ? `基于 ${withCalls.length} 份已完成沟通记录，当前评分反映问题覆盖、追问深度和记录完整度。` : '尚无完成沟通记录，完成电话沟通后自动生成面试官分析。'}</p><span class="data-status">不作为自动淘汰依据</span></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>面试表现维度</h2><p class="surface-subtitle">月度评价的基础指标</p></div></div><div class="surface-body insight-bars">${insightBar('问题覆盖度', coverage, 100, 'blue')}${insightBar('追问深度', Math.min(100, followUp * 8), 100, 'copper')}${insightBar('记录完整度', withCalls.length ? Math.min(100, Math.round(withCalls.filter(item => item.communicationSummary).length / withCalls.length * 100)) : 0, 100, 'green')}</div></section><section class="surface"><div class="surface-head"><div><h2>建议动作</h2><p class="surface-subtitle">从数据中生成的可执行反馈</p></div></div><div class="surface-body recommendation-list"><p><b>保持：</b>${questions.length ? '继续使用结构化问题，并为每个岗位保留关键核验项。' : '完成首批沟通记录后开始形成个性化建议。'}</p><p><b>加强：</b>${followUp ? '保持对职责边界、项目结果和风险点的连续追问。' : '增加对项目结果、职责边界和离职动机的二次追问。'}</p><p><b>复盘：</b>每月以真实录用结果校准面试标准，避免只看主观印象。</p></div></section></div></div>`;
-}
-
-function renderIntelligence() {
-  const companies = [...new Set(app.cases.flatMap(item => String(item.resume || '').match(/[一-龥A-Za-z]{2,16}(?:证券|银行|科技|集团|互联网|教育|传媒|视频|信息)/g) || []))].slice(0, 12);
-  const themes = [...new Set(app.jobs.flatMap(job => job.keywords || []))].slice(0, 12);
-  $('#intelligenceView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从简历、电话记录与面试转写中沉淀公司业务、人才流动和竞品线索，形成可复用的研究材料。</p></div><button class="secondary" type="button" data-export-intelligence>导出研究草稿</button></div><div class="research-banner"><div><span>待整理线索</span><strong>${companies.length + themes.length}<small> 条</small></strong></div><p>Moka 接入与面试转写权限开通后，这里可按岗位、月份和行业生成正式竞品 mapping 与调研报告。</p><span class="data-status">当前仅展示脱敏线索</span></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>公司与业务线索</h2><p class="surface-subtitle">从简历工作经历中提取的高频组织名称</p></div></div><div class="surface-body research-tags">${companies.map(company => `<span class="research-tag">${escapeHtml(company)}</span>`).join('') || '<div class="empty">导入更多简历后自动生成公司线索。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>岗位能力主题</h2><p class="surface-subtitle">来自岗位关键词与初筛规则</p></div></div><div class="surface-body research-tags">${themes.map(theme => `<span class="research-tag blue">${escapeHtml(theme)}</span>`).join('') || '<div class="empty">创建岗位并添加关键词后生成主题。</div>'}</div></section></div><section class="surface"><div class="surface-head"><div><h2>报告生产路径</h2><p class="surface-subtitle">接入 Moka 后的正式工作流</p></div><span>规划中</span></div><div class="surface-body intelligence-steps"><div><b>01</b><strong>采集</strong><span>岗位、候选人、面试安排与转写</span></div><div><b>02</b><strong>归因</strong><span>按岗位和面试官关联录用结果</span></div><div><b>03</b><strong>提炼</strong><span>识别竞品公司、业务变化与人才信号</span></div><div><b>04</b><strong>输出</strong><span>生成月报、竞品 mapping 与调研文档</span></div></div></section></div>`;
-  $('#intelligenceView [data-export-intelligence]').addEventListener('click', () => toast('研究草稿已生成，正式导出将在接入数据源后开放'));
-}
-
-function renderConnections() {
-  $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">获得企业 API 后按需开启</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。拿到企业 API 后，将先在测试环境完成只读同步，再开启备注回写，并保留同步日志和失败重试队列。</p></div></section></div>`;
-}
+function renderInterviewers() { const withCalls = app.cases.filter(item => item.communicationSummary || item.report || item.transcript); const questions = withCalls.flatMap(item => item.preparation?.questions || []).map(question => typeof question === 'string' ? question : question.question).filter(Boolean); const reportText = withCalls.map(item => `${item.communicationSummary || ''} ${item.report?.recommendationReason || ''}`).join(' '); const followUp = (reportText.match(/追问|核实|确认|风险/g) || []).length; const coverage = withCalls.length ? Math.min(100, Math.round((questions.length / withCalls.length) * 10)) : 0; const interviewerScore = withCalls.length ? Math.min(100, 55 + Math.round(coverage * .25) + Math.min(20, followUp * 2)) : 0; $('#interviewersView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER REVIEW</span><h1>面试官分析</h1><p>把电话记录和面试总结转化为面试质量反馈，帮助团队持续统一提问和判断标准。</p></div><span class="readonly-badge">分析预览</span></div><div class="research-banner interviewer-banner"><div><span>综合表现分</span><strong>${interviewerScore}<small>/100</small></strong></div><p>${withCalls.length ? `基于 ${withCalls.length} 份已完成沟通记录，当前评分反映问题覆盖、追问深度和记录完整度。` : '尚无完成沟通记录，完成电话沟通后自动生成面试官分析。'}</p><span class="data-status">不作为自动淘汰依据</span></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>面试表现维度</h2><p class="surface-subtitle">月度评价的基础指标</p></div></div><div class="surface-body insight-bars">${insightBar('问题覆盖度', coverage, 100, 'blue')}${insightBar('追问深度', Math.min(100, followUp * 8), 100, 'copper')}${insightBar('记录完整度', withCalls.length ? Math.min(100, Math.round(withCalls.filter(item => item.communicationSummary).length / withCalls.length * 100)) : 0, 100, 'green')}</div></section><section class="surface"><div class="surface-head"><div><h2>建议动作</h2><p class="surface-subtitle">从数据中生成的可执行反馈</p></div></div><div class="surface-body recommendation-list"><p><b>保持：</b>${questions.length ? '继续使用结构化问题，并为每个岗位保留关键核验项。' : '完成首批沟通记录后开始形成个性化建议。'}</p><p><b>加强：</b>${followUp ? '保持对职责边界、项目结果和风险点的连续追问。' : '增加对项目结果、职责边界和离职动机的二次追问。'}</p><p><b>复盘：</b>每月以真实录用结果校准面试标准，避免只看主观印象。</p></div></section></div></div>`; }
+function renderIntelligence() { const companies = [...new Set(app.cases.flatMap(item => String(item.resume || '').match(/[\u4e00-\u9fa5A-Za-z]{2,16}(?:证券|银行|科技|集团|互联网|教育|传媒|视频|信息)/g) || []))].slice(0, 12); const themes = [...new Set(app.jobs.flatMap(job => job.keywords || []))].slice(0, 12); $('#intelligenceView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从简历、电话记录与面试转写中沉淀公司业务、人才流动和竞品线索，形成可复用的研究材料。</p></div><button class="secondary" type="button" data-export-intelligence>导出研究草稿</button></div><div class="research-banner"><div><span>待整理线索</span><strong>${companies.length + themes.length}<small> 条</small></strong></div><p>Moka 接入与面试转写权限开通后，这里可按岗位、月份和行业生成正式竞品 mapping 与调研报告。</p><span class="data-status">当前仅展示脱敏线索</span></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>公司与业务线索</h2><p class="surface-subtitle">从简历工作经历中提取的高频组织名称</p></div></div><div class="surface-body research-tags">${companies.map(company => `<span class="research-tag">${escapeHtml(company)}</span>`).join('') || '<div class="empty">导入更多简历后自动生成公司线索。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>岗位能力主题</h2><p class="surface-subtitle">来自岗位关键词与初筛规则</p></div></div><div class="surface-body research-tags">${themes.map(theme => `<span class="research-tag blue">${escapeHtml(theme)}</span>`).join('') || '<div class="empty">创建岗位并添加关键词后生成主题。</div>'}</div></section></div><section class="surface"><div class="surface-head"><div><h2>报告生产路径</h2><p class="surface-subtitle">接入 Moka 后的正式工作流</p></div><span>规划中</span></div><div class="surface-body intelligence-steps"><div><b>01</b><strong>采集</strong><span>岗位、候选人、面试安排与转写</span></div><div><b>02</b><strong>归因</strong><span>按岗位和面试官关联录用结果</span></div><div><b>03</b><strong>提炼</strong><span>识别竞品公司、业务变化与人才信号</span></div><div><b>04</b><strong>输出</strong><span>生成月报、竞品 mapping 与调研文档</span></div></div></section></div>`; $('#intelligenceView [data-export-intelligence]').addEventListener('click', () => toast('研究草稿已生成，正式导出将在接入数据源后开放')); }
+function renderConnections() { $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">获得企业 API 后按需开启</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。拿到企业 API 后，将先在测试环境完成只读同步，再开启备注回写，并保留同步日志和失败重试队列。</p></div></section></div>`; }
 
 function renderDashboard() {
   const activeJobs = app.jobs.filter(job => job.status !== 'closed');
@@ -697,11 +829,32 @@ function historyTab(item) { const events = [['建立候选人档案',item.create
 
 function renderSettings() {
   const workspace = app.workspace || {}; const current = workspace.currentMember || {}; const members = workspace.members || [];
-  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><span class="eyebrow">WORKSPACE ADMIN</span><h1>设置</h1><p>公司工作区、团队成员和服务配置。</p></div></div><div class="settings-grid"><div class="surface"><div class="surface-head"><h2>当前公司工作区</h2><span>${escapeHtml(current.role || '成员')}</span></div><div class="surface-body"><div class="setting-row"><span>公司名称</span><b>${escapeHtml(workspace.workspace?.name || '未设置')}</b></div><div class="setting-row"><span>工作区 ID</span><b>${escapeHtml(workspace.workspace?.id || workspace.workspace?.tenantId || '—')}</b></div><div class="setting-row"><span>当前账号</span><b>${escapeHtml(current.displayName || current.username || current.uid || '—')}</b></div><div class="setting-row"><span>成员数量</span><b>${members.length} 人</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">同一公司主体下的岗位、候选人、规则和工作台统计共享；不同公司使用独立租户数据空间，互不可见。</p></div></div><div class="surface"><div class="surface-head"><h2>团队成员</h2><span>共享工作区</span></div><div class="surface-body">${members.length ? members.map(member => `<div class="setting-row"><span><b>${escapeHtml(member.displayName || member.username || '未命名')}</b><small style="display:block;color:var(--muted)">${escapeHtml(member.uid || '')}</small></span><b>${escapeHtml(member.role || 'recruiter')}</b></div>`).join('') : '<div class="empty">暂无成员信息</div>'}<p style="font-size:10px;color:var(--muted);line-height:1.6">成员邀请和角色管理将在管理后台开放；当前阶段先展示工作区共享状态。</p></div></div><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p style="font-size:10px;color:var(--muted);line-height:1.6">API Key仅保存在服务端环境变量中，不会写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
-  if (['owner', 'admin'].includes(current.role)) {
-    $('#settingsView .settings-grid').insertAdjacentHTML('beforeend', '<div class="surface"><div class="surface-head"><h2>邀请团队成员</h2><span>管理员操作</span></div><div class="surface-body"><div class="toolbar"><input id="inviteMemberUid" placeholder="员工 UID"><select id="inviteMemberRole"><option value="recruiter">招聘人员</option><option value="admin">管理员</option><option value="viewer">只读成员</option></select><button class="primary" id="inviteMemberButton" type="button">邀请</button></div><small style="color:var(--muted)">员工首次登录后会自动加入当前公司工作区。</small></div></div>');
+  const workspaceName = workspace.workspace?.name || localStorage.getItem(WORKSPACE_NAME_KEY) || 'AceCall 招聘团队';
+  const canManage = !REMOTE_BACKEND || ['owner', 'admin'].includes(current.role);
+  $('#settingsView').innerHTML = `<div class="page"><div class="page-title"><div><span class="eyebrow">WORKSPACE ADMIN</span><h1>企业与团队</h1><p>企业名称、成员权限和招聘数据都绑定在当前工作区。</p></div></div><div class="settings-grid"><div class="surface workspace-settings-card"><div class="surface-head"><div><h2>当前企业工作区</h2><p class="surface-subtitle">顶部企业名称会同步显示完整工作区信息</p></div><span>${escapeHtml(current.role || '成员')}</span></div><div class="surface-body"><label class="workspace-name-field"><span>企业名称</span><div class="field-inline"><input id="workspaceNameInput" value="${escapeHtml(workspaceName)}" maxlength="120"><button class="primary" id="saveWorkspaceNameButton" type="button" ${canManage ? '' : 'disabled'}>保存</button></div></label><div class="setting-row"><span>工作区 ID</span><b>${escapeHtml(workspace.workspace?.id || workspace.workspace?.tenantId || '—')}</b></div><div class="setting-row"><span>当前账号</span><b>${escapeHtml(current.displayName || current.username || current.uid || '—')}</b></div><div class="setting-row"><span>成员数量</span><b>${members.length} 人</b></div><p class="settings-help">同一企业下的岗位、候选人、规则和统计共享；不同企业使用独立工作区，数据互不可见。企业管理员负责邀请成员加入。</p></div></div><div class="surface"><div class="surface-head"><div><h2>团队成员</h2><p class="surface-subtitle">统一管理招聘人员的协作范围</p></div><span>共享工作区</span></div><div class="surface-body">${members.length ? members.map(member => `<div class="setting-row"><span><b>${escapeHtml(member.displayName || member.username || '未命名')}</b><small style="display:block;color:var(--muted)">${escapeHtml(member.username || member.uid || '')}</small></span><b>${escapeHtml(member.role || 'recruiter')}</b></div>`).join('') : '<div class="empty">暂无成员信息</div>'}${canManage ? '<p class="settings-help">新成员通过管理员邀请加入，首次登录后会自动进入当前企业工作区。</p>' : '<p class="settings-help">如需加入其他企业，请联系该企业管理员发送邀请。</p>'}</div></div><div class="surface"><div class="surface-head"><h2>AI与数据服务</h2><span>${STATIC_DEMO ? '演示模式' : REMOTE_BACKEND ? 'CloudBase模式' : '本地服务模式'}</span></div><div class="surface-body"><div class="setting-row"><span>AI服务</span><b>DeepSeek API</b></div><div class="setting-row"><span>数据存储</span><b>${REMOTE_BACKEND ? 'CloudBase文档数据库' : '浏览器本地存储'}</b></div><p class="settings-help">API Key仅保存在服务端环境变量中，不会写入浏览器。</p></div></div><div class="surface"><div class="surface-head"><h2>人工决策边界</h2></div><div class="surface-body"><div class="setting-row"><span>自动淘汰候选人</span><b>关闭</b></div><div class="setting-row"><span>敏感属性评分</span><b>禁止</b></div><div class="setting-row"><span>结果人工确认</span><b>必须</b></div></div></div></div></div>`;
+  $('#saveWorkspaceNameButton')?.addEventListener('click', saveWorkspaceName);
+  if (canManage) {
+    $('#settingsView .settings-grid').insertAdjacentHTML('beforeend', '<div class="surface"><div class="surface-head"><div><h2>邀请团队成员</h2><p class="surface-subtitle">把成员加入当前企业工作区</p></div><span>管理员操作</span></div><div class="surface-body"><div class="toolbar"><input id="inviteMemberUid" placeholder="员工 UID"><select id="inviteMemberRole"><option value="recruiter">招聘人员</option><option value="admin">管理员</option><option value="viewer">只读成员</option></select><button class="primary" id="inviteMemberButton" type="button">邀请</button></div><small class="settings-help">员工首次登录后会自动加入当前企业；普通成员不能修改企业名称或邀请他人。</small></div></div>');
     $('#inviteMemberButton').addEventListener('click', inviteMember);
   }
+}
+
+async function saveWorkspaceName() {
+  const input = $('#workspaceNameInput'); const name = input?.value.trim();
+  if (!name) return toast('请输入企业名称');
+  const button = $('#saveWorkspaceNameButton'); if (button) button.disabled = true;
+  try {
+    if (REMOTE_BACKEND) {
+      const response = await authenticatedFetch(apiUrl('/api/workspace'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || '企业名称保存失败');
+      app.workspace = { ...(app.workspace || {}), workspace: { ...(app.workspace?.workspace || {}), name } };
+    } else {
+      localStorage.setItem(WORKSPACE_NAME_KEY, name);
+      app.workspace = { ...(app.workspace || {}), workspace: { ...(app.workspace?.workspace || {}), name } };
+    }
+    updateUserHeader(); renderSettings(); toast('企业名称已更新');
+  } catch (error) { toast(error.message || '企业名称保存失败'); if (button) button.disabled = false; }
 }
 
 async function inviteMember() {
@@ -1176,7 +1329,7 @@ function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}
 function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));$('#candidateNavCount').textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
 function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
-function seedJobs(){if(app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
+function seedJobs(){if(REMOTE_BACKEND||app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
 function resumeHint(item){const meta=item.resumeMeta||{};const facts=[meta.age?`${meta.age}岁`:'',meta.experienceYears?`${meta.experienceYears}年经验`:''].filter(Boolean);return facts.join(' · ')||meta.fileName||'简历已录入';}
 function formatDate(value){if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':`${date.getMonth()+1}月${date.getDate()}日`;}
 function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt);}
@@ -1190,7 +1343,13 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}let remote=await response.json();if((remote.jobs||[]).length||(remote.cases||[]).length||(remote.rules||[]).length){app.jobs=remote.jobs||[];app.cases=remote.cases||[];teamRules=(remote.rules||[]).map(item=>item.content).filter(Boolean);localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));await migrateStoredResumesOnce();return;}let failed=0;for(const job of app.jobs){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of app.cases){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}for(const content of teamRules){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}if(failed)toast(`云端同步暂未完成，${failed} 条数据保留在本机，可稍后重试`);}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
+function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
+function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
+function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
+function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
+function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
+async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);$('#serviceStatus').textContent=error.message||'服务状态未知';}}
 async function authenticatedFetch(url, options = {}) {
@@ -1227,5 +1386,5 @@ async function authenticatedFetch(url, options = {}) {
   return response;
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
-async function hydrateWorkspace(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#loginUsername')?.value||''})});}if(!response.ok)throw new Error('工作区初始化失败');app.workspace=await response.json();updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
-function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const company=workspace.workspace?.name||'公司主体';const username=member.username||member.displayName||$('#loginUsername')?.value||member.uid||'当前账号';const companyEl=$('#companyNameDisplay');const userEl=$('#userNameDisplay');if(companyEl)companyEl.textContent=company;if(userEl)userEl.textContent=username;const avatar=$('#logoutButton');if(avatar)avatar.textContent=String(username).slice(0,2).toUpperCase();}
+async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));const account=username||app.authUser?.email||app.authUser?.username||$('#loginUsername')?.value||'';if(response.status===403){response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:account,companyName})});}if(!response.ok)throw new Error('工作区初始化失败');const workspace=await response.json();workspace.currentMember={...(app.authUser||{}),...(workspace.currentMember||{}),email:workspace.currentMember?.email||app.authUser?.email||''};app.workspace=workspace;updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
+function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const authUser=app.authUser||{};const company=workspace.workspace?.name||localStorage.getItem(WORKSPACE_NAME_KEY)||'AceCall 招聘团队';const email=member.email||authUser.email||'';const username=member.username||authUser.username||member.displayName||authUser.displayName||$('#loginUsername')?.value||member.uid||authUser.uid||'当前账号';const displayName=member.displayName||authUser.displayName||(email?email.split('@')[0]:username);const initials=String(displayName||username).slice(0,2).toUpperCase();const companyEl=$('#companyNameDisplay');const companyButton=$('#companyMenuButton');const companyMenuName=$('#companyMenuName');const companyMenuMeta=$('#companyMenuMeta');const userEl=$('#userNameDisplay');const avatar=$('#accountMenuButton');const menuAvatar=$('#accountMenuAvatar');const menuName=$('#accountMenuName');const menuEmail=$('#accountMenuEmail');if(companyEl)companyEl.textContent=company;if(companyButton){companyButton.title=company;companyButton.setAttribute('aria-label',`查看企业工作区：${company}`);}if(companyMenuName)companyMenuName.textContent=company;if(companyMenuMeta)companyMenuMeta.textContent=`${member.role||'成员'} · ${(workspace.members||[]).length||1} 位成员`;if(userEl)userEl.textContent=username;if(avatar)avatar.textContent=initials;if(menuAvatar)menuAvatar.textContent=initials;if(menuName)menuName.textContent=displayName;if(menuEmail)menuEmail.textContent=email||'未绑定邮箱';}

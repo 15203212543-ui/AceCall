@@ -11,7 +11,7 @@
   <section class="login-screen" id="loginScreen">
     <div class="login-layout">
       <section class="login-intro" aria-label="AceCall 产品介绍">
-        <div class="intro-brand"><span class="login-mark">AC</span><strong>AceCall</strong></div>
+        <div class="intro-brand"><span class="login-mark"><b>AC</b></span><strong>AceCall</strong></div>
         <div class="intro-copy">
           <span class="intro-kicker">AI RECRUITING WORKSPACE</span>
           <h1>让每一次招聘判断，<br><em>更快、更有依据。</em></h1>
@@ -26,16 +26,25 @@
       </section>
       <div class="login-panel-wrap">
         <form class="login-panel" id="loginForm">
-          <div class="login-panel-head"><span class="login-mark">AC</span><span class="login-panel-label">招聘团队工作台</span></div>
+          <div class="login-panel-head"><span class="login-mark"><b>AC</b></span><span class="login-panel-label">AceCall</span></div>
           <h2 id="authTitle">欢迎回来</h2>
           <p class="auth-subtitle" id="authSubtitle">登录后继续管理岗位、候选人与面试进展</p>
-          <label><span>工作邮箱</span><input id="loginUsername" autocomplete="username" required placeholder="name@company.com"></label>
+          <div class="auth-method-tabs" id="authMethodTabs" role="tablist" aria-label="登录方式">
+            <button class="auth-method-tab active" id="passwordLoginTab" type="button" role="tab" aria-selected="true">密码登录</button>
+            <button class="auth-method-tab" id="emailLoginTab" type="button" role="tab" aria-selected="false">邮箱登录</button>
+          </div>
+          <label><span id="usernameLabel">邮箱 / 账号</span><input id="loginUsername" autocomplete="username" required placeholder="请输入邮箱或账号"></label>
+          <label class="register-company-field hidden" id="registerCompanyField"><span>企业名称</span><input id="registerCompanyName" autocomplete="organization" maxlength="120" placeholder="请输入企业名称（可稍后修改）"></label>
           <label id="passwordField"><span id="passwordLabel">密码</span><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="请输入密码"></label>
           <label class="confirm-password-field hidden" id="confirmPasswordField"><span>确认密码</span><input id="confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码"></label>
           <label class="verification-code-field hidden" id="verificationCodeField"><span>邮箱验证码</span><input id="verificationCode" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入邮箱收到的验证码"></label>
+          <div class="login-options" id="loginOptions">
+            <label class="remember-account"><input id="rememberAccount" type="checkbox"><span>记住账号</span></label>
+            <button class="auth-switch" id="forgotPasswordSwitch" type="button">忘记密码？</button>
+          </div>
           <button class="primary" id="loginButton" type="submit">登录工作台</button>
-          <div class="auth-links"><button class="auth-switch" id="authSwitch" type="button">没有账号？注册个人账号</button><button class="auth-switch" id="forgotPasswordSwitch" type="button">忘记密码？</button></div>
           <small id="loginMessage">账号数据仅属于当前账号</small>
+          <div class="auth-footer"><span id="authSwitchPrompt">还没有账号？</span><button class="auth-switch" id="authSwitch" type="button">立即注册</button></div>
           <p class="login-legal">继续即表示你同意 AceCall 的服务条款与隐私政策</p>
         </form>
       </div>
@@ -43,7 +52,7 @@
   </section>
   <div class="app-shell">
     <aside class="app-sidebar">
-      <a class="brand" href="#dashboard"><span>AC</span><strong>AceCall</strong></a>
+      <a class="brand" href="#dashboard"><span><b>AC</b></span><strong>AceCall</strong></a>
       <nav>
         <button class="nav-item active" data-view="dashboard"><b>⌂</b><span>工作台</span></button>
         <button class="nav-item" data-view="inbox"><b>↥</b><span>简历中心</span><i id="resumeInboxCount">0</i></button>
@@ -60,7 +69,7 @@
     </aside>
 
     <main class="app-main">
-<header class="app-header"><div><span id="breadcrumb">招聘工作台</span></div><div class="header-actions"><span class="service-status" id="serviceStatus"><i></i>连接中</span><span class="company-display" id="companyNameDisplay"></span><span class="user-display" id="userNameDisplay">—</span><button class="avatar" id="logoutButton" type="button" title="退出登录">RM</button></div></header>
+<header class="app-header"><div><span id="breadcrumb">招聘工作台</span></div><div class="header-actions"><span class="service-status" id="serviceStatus"><i></i>连接中</span><div class="global-search-wrap" id="globalSearchWrap"><div class="global-search-box"><input id="globalCandidateSearch" type="search" autocomplete="off" placeholder="搜索候选人（Ctrl + M）" aria-label="搜索候选人"><span aria-hidden="true">⌕</span></div><div class="global-search-results" id="globalSearchResults" hidden></div></div><div class="company-menu-wrap" id="companyMenuWrap"><button class="company-menu-trigger" id="companyMenuButton" type="button" title="查看企业工作区" aria-label="查看企业工作区" aria-expanded="false"><span class="company-display" id="companyNameDisplay">AceCall 招聘团队</span><span class="company-menu-caret" aria-hidden="true">⌄</span></button><div class="company-menu" id="companyMenu" hidden><div class="company-menu-heading">当前企业工作区</div><strong id="companyMenuName">AceCall 招聘团队</strong><small id="companyMenuMeta">当前账号 · 1 位成员</small><div class="company-menu-divider"></div><button class="company-menu-item" id="companySettingsButton" type="button"><b aria-hidden="true">⚙</b><span>企业与团队管理</span></button></div></div><div class="notification-menu-wrap" id="notificationMenuWrap"><button class="header-icon-button" id="notificationButton" type="button" title="消息提醒" aria-label="消息提醒" aria-expanded="false">&#128276;&#xfe0e;</button><div class="notification-menu" id="notificationMenu" hidden><strong>消息提醒</strong><p>暂无新消息</p></div></div><span class="user-display" id="userNameDisplay" aria-hidden="true">RM</span><div class="account-menu-wrap" id="accountMenuWrap"><button class="avatar" id="accountMenuButton" type="button" title="打开账户菜单" aria-label="打开账户菜单" aria-expanded="false">RM</button><div class="account-menu" id="accountMenu" hidden><div class="account-menu-profile"><span class="account-menu-avatar" id="accountMenuAvatar">RM</span><div><strong id="accountMenuName">当前账号</strong><small id="accountMenuEmail">—</small></div></div><div class="account-menu-divider"></div><button class="account-menu-item" id="profileMenuButton" type="button"><b aria-hidden="true">●</b><span>个人资料</span></button><button class="account-menu-item" id="changePasswordMenuButton" type="button"><b aria-hidden="true">◆</b><span>更改密码</span></button><button class="account-menu-item danger" id="menuLogoutButton" type="button"><b aria-hidden="true">↪</b><span>退出登录</span></button></div></div></div></header>
       <section class="view active" id="dashboardView"></section>
       <section class="view" id="inboxView"></section>
       <section class="view" id="candidatesView"></section>
