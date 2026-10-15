@@ -36,8 +36,9 @@ async function tempFileUrl(fileID) {
 async function downloadParts(parts, directory) {
   const buffers = [];
   for (const part of [...parts].sort((a, b) => a.index - b.index)) {
-    if (!part.path) throw new Error('录音任务存在空分片路径');
-    const response = await fetch(await tempFileUrl(part.path));
+    const fileID = part.fileId || part.path;
+    if (!fileID) throw new Error('录音任务存在空分片路径');
+    const response = await fetch(await tempFileUrl(fileID));
     if (!response.ok) throw new Error(`录音分片下载失败（${response.status}）`);
     buffers.push(Buffer.from(await response.arrayBuffer()));
   }

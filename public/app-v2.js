@@ -1082,8 +1082,8 @@ async function transcribeRecording(file) {
       const extension = file.name.split('.').pop()?.toLowerCase() || 'webm';
       const cloudPath = `${storagePrefix}/part-${String(index).padStart(5, '0')}.${extension}`;
       if (status) status.textContent = `${file.name} · 正在上传录音 ${Math.round(((offset + chunk.size) / file.size) * 100)}%`;
-      await cloudbaseClient.uploadFile({ cloudPath, filePath: chunk });
-      const partResponse = await authenticatedFetch(apiUrl(`/api/recordings/${recordingId}/parts/complete`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index, path: cloudPath, size: chunk.size, final: offset + chunk.size >= file.size }) });
+      const uploadedPart = await cloudbaseClient.uploadFile({ cloudPath, filePath: chunk });
+      const partResponse = await authenticatedFetch(apiUrl(`/api/recordings/${recordingId}/parts/complete`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index, path: cloudPath, fileId: uploadedPart.fileID || uploadedPart.fileId || '', size: chunk.size, final: offset + chunk.size >= file.size }) });
       const partData = await partResponse.json().catch(() => ({}));
       if (!partResponse.ok) throw new Error(partData.error || '录音分片登记失败');
     }

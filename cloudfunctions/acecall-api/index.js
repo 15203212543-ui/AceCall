@@ -460,7 +460,7 @@ async function initRecording(context, input = {}) {
 
 async function completeRecordingPart(context, id, input = {}) {
   const task = await findTask(context, id);
-  const part = { index: Math.max(0, Number(input.index || 0)), path: String(input.path || '').slice(0, 300), size: Math.max(0, Number(input.size || 0)), uploadedAt: new Date().toISOString() };
+  const part = { index: Math.max(0, Number(input.index || 0)), path: String(input.path || '').slice(0, 300), fileId: String(input.fileId || '').slice(0, 500), size: Math.max(0, Number(input.size || 0)), uploadedAt: new Date().toISOString() };
   if (!part.path || part.path.indexOf(`${task.storagePrefix}/`) !== 0) throw serviceError('录音分片路径无效', 400);
   const parts = [...(task.parts || []).filter(item => item.index !== part.index), part].sort((a, b) => a.index - b.index);
   const patch = { parts, status: input.final ? 'uploaded' : 'uploading', updatedAt: new Date().toISOString() };
