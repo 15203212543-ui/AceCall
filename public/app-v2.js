@@ -494,8 +494,10 @@ function navigate(view, updateHash = true) {
 }
 
 function renderCurrent() {
-  $('#candidateNavCount').textContent = app.cases.length;
-  $('#resumeInboxCount').textContent = app.cases.filter(item => item.ingestStatus === '解析中' || item.matching?.status === '待分配').length || '';
+  const candidateNavCount = $('#candidateNavCount');
+  const resumeInboxCount = $('#resumeInboxCount');
+  if (candidateNavCount) candidateNavCount.textContent = app.cases.length;
+  if (resumeInboxCount) resumeInboxCount.textContent = app.cases.filter(item => item.ingestStatus === '解析中' || item.matching?.status === '待分配').length || '';
   if (app.view === 'dashboard') renderDashboard();
   if (app.view === 'inbox') renderInbox();
   if (app.view === 'candidates') renderCandidates();
@@ -1361,7 +1363,7 @@ function scoreValue(item){const value=Number(item.matching?.score);if(Number.isF
 function scoreLabel(item){const value=scoreValue(item);return value==='—'?'<span class="score muted">—</span>':`<strong class="score">${value}分</strong>`;}
 function currentCandidate(){return app.cases.find(item=>item.id===app.candidateId);}
 function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch{return [];}}
-function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));$('#candidateNavCount').textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
+function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
 function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
 function seedJobs(){if(REMOTE_BACKEND||app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
