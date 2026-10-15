@@ -2,6 +2,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
+const { mokaConnectionStatus } = require('./moka-client');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -51,6 +52,16 @@ const server = http.createServer(async (request, response) => {
         mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo',
         provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo',
         model: process.env.DEEPSEEK_MODEL || 'deepseek-chat'
+      });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/integrations/moka/status') {
+      const context = await getRequestContext(request);
+      return sendJson(response, 200, {
+        ok: true,
+        provider: 'moka',
+        tenantId: context.tenantId,
+        status: mokaConnectionStatus(),
+        dataAccess: 'disabled_until_explicit_enablement'
       });
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request), request));

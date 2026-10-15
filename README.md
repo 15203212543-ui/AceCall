@@ -81,6 +81,8 @@ npm start
 
 如需启用模型，在 `.env` 中配置：
 
+Moka 接入采用服务端适配层。当前版本只提供受登录和公司工作区保护的连接状态检查，不读取岗位、候选人或简历数据。将凭据配置在 CloudBase 云函数环境变量中，不要写入前端或仓库：`MOKA_BASE_URL`、`MOKA_API_KEY`，如 Moka 文档要求企业维度，再配置 `MOKA_ENTERPRISE_ID`。连接状态接口为 `GET /api/integrations/moka/status`。
+
 ```env
 DEEPSEEK_API_KEY=your_key
 DEEPSEEK_MODEL=deepseek-chat
