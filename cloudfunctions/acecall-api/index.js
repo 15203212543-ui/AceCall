@@ -147,7 +147,7 @@ function setCors(response, origin) {
   // here as well makes successful responses contain duplicate origins, which
   // browsers reject as an invalid CORS response.
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-AceCall-Token');
 }
 
 function normalizeResumeText(text = '') {
@@ -211,27 +211,36 @@ async function getRequestContext(request) {
 
 async function readGatewayUser(request) {
   const raw = request?.headers?.['x-cloudbase-context'] || request?.headers?.['x-cloudbase-userinfo'];
-  if (!raw) {
-    // CDN-backed routes may validate the bearer token without forwarding the
-    // gateway context. Introspect the token through CloudBase Auth instead of
-    // trusting unverified JWT claims in the business API.
-    const authorization = String(request?.headers?.authorization || request?.headers?.['x-acecall-token'] || '');
-    if (!/^Bearer\s+\S+/i.test(authorization) || !process.env.TCB_ENV) return {};
-    try {
-      const response = await fetch(`https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/auth/v1/token/introspect`, { method: 'GET', headers: { Authorization: authorization }, signal: AbortSignal.timeout(3000) });
-      if (!response.ok) return {};
-      const info = await response.json();
-      return { uid: info.sub || '', isAnonymous: !info.sub || String(info.scope || '').includes('anonymous') };
-    } catch { return {}; }
+  if (raw) {
+    const candidates = [String(raw)];
+    try { candidates.push(Buffer.from(String(raw), 'base64').toString('utf8')); } catch {}
+    try { candidates.push(decodeURIComponent(String(raw))); } catch {}
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const info = findIdentity(parsed);
+        if (info.uid) return info;
+      } catch {}
+    }
   }
-  const candidates = [String(raw)];
-  try { candidates.push(Buffer.from(String(raw), 'base64').toString('utf8')); } catch {}
-  try { candidates.push(decodeURIComponent(String(raw))); } catch {}
-  for (const candidate of candidates) {
+
+  // CDN-backed routes may validate the bearer token without forwarding the
+  // gateway context. Ask CloudBase Auth for the verified user instead of
+  // decoding JWT claims locally. The Web SDK's canonical API is /v1/auth/user;
+  // the legacy introspection path remains a compatibility fallback.
+  const authorization = String(request?.headers?.authorization || request?.headers?.['x-acecall-token'] || '');
+  if (!/^Bearer\s+\S+/i.test(authorization) || !process.env.TCB_ENV) return {};
+  const endpoints = [
+    `https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/v1/auth/user`,
+    `https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/auth/v1/token/introspect`
+  ];
+  for (const endpoint of endpoints) {
     try {
-      const parsed = JSON.parse(candidate);
-      const info = findIdentity(parsed);
-      if (info.uid) return info;
+      const response = await fetch(endpoint, { method: 'GET', headers: { Authorization: authorization }, signal: AbortSignal.timeout(3000) });
+      if (!response.ok) continue;
+      const info = await response.json();
+      const identity = findIdentity(info);
+      if (identity.uid) return identity;
     } catch {}
   }
   return {};
