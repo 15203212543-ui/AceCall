@@ -59,11 +59,19 @@
         <button class="nav-item" data-view="candidates"><b>◎</b><span>候选人</span></button>
         <button class="nav-item" data-view="jobs"><b>▤</b><span>岗位</span></button>
         <div class="nav-section-label">招聘研究</div>
-        <button class="nav-item research-item" data-view="insights"><b>◒</b><span>人才洞察</span></button>
-        <button class="nav-item research-item nav-parent" data-view="insights" aria-expanded="true"><b>⌁</b><span>面试分析</span></button>
-        <div class="nav-submenu">
-          <button class="nav-item nav-subitem" data-view="insights"><span>招聘分析</span></button>
-          <button class="nav-item nav-subitem" data-view="interviewers"><span>面试官分析</span></button>
+        <div class="nav-group" data-nav-group="talent">
+          <button class="nav-item research-item nav-parent" type="button" data-nav-toggle="talent" aria-expanded="false" aria-controls="talentSubmenu"><b>◒</b><span>人才洞察</span></button>
+          <div class="nav-submenu" id="talentSubmenu" data-nav-submenu="talent" hidden>
+            <button class="nav-item nav-subitem" data-view="insights"><span>组织人才分析</span></button>
+            <button class="nav-item nav-subitem" data-view="intelligence"><span>人才市场洞察</span></button>
+          </div>
+        </div>
+        <div class="nav-group" data-nav-group="interview">
+          <button class="nav-item research-item nav-parent" type="button" data-nav-toggle="interview" aria-expanded="false" aria-controls="interviewSubmenu"><b>⌁</b><span>面试分析</span></button>
+          <div class="nav-submenu" id="interviewSubmenu" data-nav-submenu="interview" hidden>
+            <button class="nav-item nav-subitem" data-view="insights"><span>招聘分析</span></button>
+            <button class="nav-item nav-subitem" data-view="interviewers"><span>面试官分析</span></button>
+          </div>
         </div>
         <button class="nav-item research-item" data-view="intelligence"><b>◇</b><span>行业情报</span></button>
         <div class="nav-section-label">系统连接</div>

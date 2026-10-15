@@ -53,7 +53,14 @@ let shellBound = false;
 function bindShell() {
   if (shellBound) return;
   shellBound = true;
-  $$('.nav-item[data-view]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.view)));
+  $$('.nav-item[data-view]').forEach(button => button.addEventListener('click', () => {
+    if (button.classList.contains('nav-subitem')) {
+      $$('.nav-subitem').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    }
+    navigate(button.dataset.view);
+  }));
+  $$('[data-nav-toggle]').forEach(button => button.addEventListener('click', () => toggleNavGroup(button.dataset.navToggle)));
   $$('[data-close]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
   $('#candidateForm').addEventListener('submit', createCandidate);
   $('#jobForm').addEventListener('submit', saveJob);
@@ -64,6 +71,16 @@ function bindShell() {
   bindGlobalCandidateSearch();
   $('#applyJobRuleLibrary').addEventListener('click', applySelectedTeamRule);
   $('#saveJobRuleLibrary').addEventListener('click', saveCurrentRuleToLibrary);
+}
+
+function toggleNavGroup(groupName) {
+  const toggle = $(`[data-nav-toggle="${groupName}"]`);
+  const submenu = $(`[data-nav-submenu="${groupName}"]`);
+  if (!toggle || !submenu) return;
+  const expanded = toggle.getAttribute('aria-expanded') === 'true';
+  toggle.setAttribute('aria-expanded', String(!expanded));
+  submenu.hidden = expanded;
+  submenu.classList.toggle('is-open', !expanded);
 }
 
 function bindGlobalCandidateSearch() {
@@ -485,7 +502,10 @@ function navigate(view, updateHash = true) {
   if (!['dashboard', 'inbox', 'candidates', 'jobs', 'insights', 'interviewers', 'intelligence', 'connections', 'settings', 'candidate'].includes(view)) view = 'dashboard';
   app.view = view;
   $$('.view').forEach(section => section.classList.remove('active'));
-  $$('.nav-item[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view || (view === 'candidate' && button.dataset.view === 'candidates')));
+  $$('.nav-item[data-view]').forEach(button => {
+    const isSubitem = button.classList.contains('nav-subitem');
+    button.classList.toggle('active', isSubitem ? button.classList.contains('active') : button.dataset.view === view || (view === 'candidate' && button.dataset.view === 'candidates'));
+  });
   const target = view === 'candidate' ? $('#candidateDetailView') : $(`#${view}View`);
   target.classList.add('active');
   $('#breadcrumb').textContent = view === 'candidate' ? '候选人 / 初筛详情' : ({ dashboard: '招聘工作台', inbox: '简历中心', candidates: '候选人管理', jobs: '岗位管理', insights: '人才洞察', interviewers: '面试官分析', intelligence: '行业情报', connections: '数据连接', settings: '系统设置' }[view]);
