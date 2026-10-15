@@ -9,8 +9,8 @@
       "runtime": "Nodejs18.15",
       "timeout": 60,
       "memorySize": 512,
-      "installDependency": true,
-      "ignore": ["node_modules/**", "test/**", "*.md"]
+      "installDependency": false,
+      "ignore": ["test/**", "*.md"]
     }
   ]
 }
