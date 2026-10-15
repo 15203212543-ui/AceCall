@@ -7,12 +7,15 @@ const { spawn } = require('node:child_process');
 const tcb = require('@cloudbase/node-sdk');
 const { createProvider } = require('./providers');
 
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 9000);
 const INTERVAL_MS = Math.max(5_000, Number(process.env.WORKER_INTERVAL_MS || 15_000));
 const COLLECTION = 'acecall_transcription_tasks';
 const WORKER_ID = process.env.WORKER_ID || `worker-${crypto.randomUUID()}`;
 let app;
 let running = false;
+
+process.on('uncaughtException', error => console.error(`[AceCall transcription worker] uncaught exception: ${error.message}`));
+process.on('unhandledRejection', error => console.error(`[AceCall transcription worker] unhandled rejection: ${error?.message || error}`));
 
 function database() {
   if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 TCB_ENV 或 CLOUDBASE_APIKEY');
@@ -125,7 +128,8 @@ const server = http.createServer((request, response) => {
   response.end(JSON.stringify({ error: 'Not found' }));
 });
 
-server.listen(PORT, () => {
+server.on('error', error => { console.error(`[AceCall transcription worker] server error: ${error.message}`); process.exitCode = 1; });
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`[AceCall transcription worker] started on port ${PORT}; provider=${process.env.TRANSCRIPTION_PROVIDER || 'baidu'}`);
   poll();
   setInterval(poll, INTERVAL_MS);

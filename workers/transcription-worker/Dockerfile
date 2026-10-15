@@ -9,5 +9,5 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY . .
 
-ENV PORT=8080
+ENV PORT=9000
 CMD ["node", "worker.js"]
