@@ -6,7 +6,8 @@ function getMokaConfig(env = process.env) {
     baseUrl: String(env.MOKA_BASE_URL || '').trim().replace(/\/$/, ''),
     enterpriseId: String(env.MOKA_ENTERPRISE_ID || '').trim(),
     apiKeyHeader: String(env.MOKA_API_KEY_HEADER || 'Authorization').trim() || 'Authorization',
-    apiKeyPrefix: String(env.MOKA_API_KEY_PREFIX || 'Bearer').trim()
+    authMode: String(env.MOKA_AUTH_MODE || 'basic').trim().toLowerCase(),
+    apiKeyPrefix: String(env.MOKA_API_KEY_PREFIX || '').trim()
   };
 }
 
@@ -28,7 +29,9 @@ function createMokaClient(options = {}) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const headers = { Accept: 'application/json', ...(requestOptions.headers || {}) };
-      const value = config.apiKeyPrefix ? `${config.apiKeyPrefix} ${config.apiKey}` : config.apiKey;
+      const value = config.authMode === 'basic'
+        ? `Basic ${Buffer.from(`${config.apiKey}:`, 'utf8').toString('base64')}`
+        : (config.apiKeyPrefix ? `${config.apiKeyPrefix} ${config.apiKey}` : config.apiKey);
       headers[config.apiKeyHeader] = value;
       try {
         const response = await fetch(`${config.baseUrl}/${String(path).replace(/^\//, '')}`, { ...requestOptions, headers, signal: controller.signal });
@@ -45,7 +48,8 @@ function createMokaClient(options = {}) {
         baseUrl: config.baseUrl || '',
         enterpriseConfigured: Boolean(config.enterpriseId),
         apiKey: maskSecret(config.apiKey),
-        apiKeyHeader: config.apiKeyHeader
+        apiKeyHeader: config.apiKeyHeader,
+        authMode: config.authMode
       };
     }
   };
@@ -58,7 +62,8 @@ function mokaConnectionStatus(env = process.env) {
     baseUrl: config.baseUrl || '',
     enterpriseConfigured: Boolean(config.enterpriseId),
     apiKey: maskSecret(config.apiKey),
-    apiKeyHeader: config.apiKeyHeader
+    apiKeyHeader: config.apiKeyHeader,
+    authMode: config.authMode
   };
 }
 
