@@ -33,8 +33,8 @@
             <button class="auth-method-tab active" id="passwordLoginTab" type="button" role="tab" aria-selected="true">密码登录</button>
             <button class="auth-method-tab" id="emailLoginTab" type="button" role="tab" aria-selected="false">邮箱登录</button>
           </div>
+          <label class="register-company-field hidden" id="registerCompanyField"><span>企业名称</span><input id="registerCompanyName" autocomplete="organization" maxlength="120" placeholder="请输入企业名称"></label>
           <label><span id="usernameLabel">邮箱 / 账号</span><input id="loginUsername" autocomplete="username" required placeholder="请输入邮箱或账号"></label>
-          <label class="register-company-field hidden" id="registerCompanyField"><span>企业名称</span><input id="registerCompanyName" autocomplete="organization" maxlength="120" placeholder="请输入企业名称（可稍后修改）"></label>
           <label id="passwordField"><span id="passwordLabel">密码</span><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="请输入密码"></label>
           <label class="confirm-password-field hidden" id="confirmPasswordField"><span>确认密码</span><input id="confirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码"></label>
           <label class="verification-code-field hidden" id="verificationCodeField"><span>邮箱验证码</span><input id="verificationCode" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入邮箱收到的验证码"></label>
@@ -134,6 +134,6 @@
 
   <div class="toast" id="toast" role="status"></div>
   <script src="./config.js"></script>
-  <script type="module" src="./app-v2.js?v=20261015-interviewer-analysis-v1"></script>
+  <script type="module" src="./app-v2.js?v=20261015-registration-gate-v1"></script>
 </body>
 </html>

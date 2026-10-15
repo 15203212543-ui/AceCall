@@ -3,6 +3,7 @@ import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+es
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
 const RULES_KEY = 'acecall-team-rules-v1';
+const INTERNAL_TEST_COMPANY = 'AceCall招聘团队';
 const LOCAL_MIGRATION_KEY_PREFIX = 'acecall-local-migration-v2:';
 const REMEMBERED_ACCOUNT_KEY = 'acecall-remembered-account-v1';
 const WORKSPACE_NAME_KEY = 'acecall-workspace-name-v1';
@@ -298,6 +299,7 @@ async function register(event) {
   const companyName = $('#registerCompanyName').value.trim();
   const password = $('#loginPassword').value;
   const button = $('#loginButton');
+  if (companyName !== INTERNAL_TEST_COMPANY) return showLoginMessage('当前为内部测试阶段，请填写“AceCall招聘团队”；如有疑问请联系工作人员');
   if (registerVerification) {
     const code = $('#verificationCode').value.trim();
     if (!code) return showLoginMessage('请输入邮箱收到的验证码');
