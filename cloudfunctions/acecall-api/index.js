@@ -199,7 +199,7 @@ function parseResumeBasics(text = '') {
 
 async function getRequestContext(request) {
   const user = getCloudbaseApp().auth().getUserInfo() || {};
-  const gatewayUser = readGatewayUser(request);
+  const gatewayUser = await readGatewayUser(request);
   const identity = gatewayUser.uid ? gatewayUser : { uid: user.uid || user.customUserId, isAnonymous: Boolean(user.isAnonymous) };
   const uid = identity.uid;
   if (!uid || identity.isAnonymous) throw serviceError('请先登录后使用业务功能', 401);
@@ -209,9 +209,21 @@ async function getRequestContext(request) {
   return { uid, tenantId: member.tenantId, role: member.role || 'recruiter', member };
 }
 
-function readGatewayUser(request) {
+async function readGatewayUser(request) {
   const raw = request?.headers?.['x-cloudbase-context'] || request?.headers?.['x-cloudbase-userinfo'];
-  if (!raw) return {};
+  if (!raw) {
+    // CDN-backed routes may validate the bearer token without forwarding the
+    // gateway context. Introspect the token through CloudBase Auth instead of
+    // trusting unverified JWT claims in the business API.
+    const authorization = String(request?.headers?.authorization || '');
+    if (!/^Bearer\s+\S+/i.test(authorization) || !process.env.TCB_ENV) return {};
+    try {
+      const response = await fetch(`https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/auth/v1/token/introspect`, { method: 'GET', headers: { Authorization: authorization }, signal: AbortSignal.timeout(3000) });
+      if (!response.ok) return {};
+      const info = await response.json();
+      return { uid: info.sub || '', isAnonymous: !info.sub || String(info.scope || '').includes('anonymous') };
+    } catch { return {}; }
+  }
   try {
     const parsed = JSON.parse(Buffer.from(String(raw), 'base64').toString('utf8'));
     const info = parsed.userInfo || parsed.user || parsed;
@@ -223,7 +235,7 @@ function readGatewayUser(request) {
 
 async function bootstrapWorkspace(input = {}, request) {
   const user = getCloudbaseApp().auth().getUserInfo() || {};
-  const gatewayUser = readGatewayUser(request);
+  const gatewayUser = await readGatewayUser(request);
   const identity = gatewayUser.uid ? gatewayUser : { uid: user.uid || user.customUserId, isAnonymous: Boolean(user.isAnonymous) };
   const uid = identity.uid;
   if (!uid || identity.isAnonymous) throw serviceError('请先登录后初始化工作区', 401);
