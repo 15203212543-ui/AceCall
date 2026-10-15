@@ -57,6 +57,8 @@ function bindShell() {
   $$('.nav-item[data-view]').forEach(button => button.addEventListener('click', () => {
     if (button.classList.contains('nav-subitem')) {
       activeNavKey = button.dataset.navKey || null;
+    } else {
+      activeNavKey = null;
     }
     navigate(button.dataset.view);
   }));
