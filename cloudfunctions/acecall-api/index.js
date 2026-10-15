@@ -215,7 +215,7 @@ async function readGatewayUser(request) {
     // CDN-backed routes may validate the bearer token without forwarding the
     // gateway context. Introspect the token through CloudBase Auth instead of
     // trusting unverified JWT claims in the business API.
-    const authorization = String(request?.headers?.authorization || '');
+    const authorization = String(request?.headers?.authorization || request?.headers?.['x-acecall-token'] || '');
     if (!/^Bearer\s+\S+/i.test(authorization) || !process.env.TCB_ENV) return {};
     try {
       const response = await fetch(`https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/auth/v1/token/introspect`, { method: 'GET', headers: { Authorization: authorization }, signal: AbortSignal.timeout(3000) });
@@ -224,13 +224,28 @@ async function readGatewayUser(request) {
       return { uid: info.sub || '', isAnonymous: !info.sub || String(info.scope || '').includes('anonymous') };
     } catch { return {}; }
   }
-  try {
-    const parsed = JSON.parse(Buffer.from(String(raw), 'base64').toString('utf8'));
-    const info = parsed.userInfo || parsed.user || parsed;
-    return { uid: info.uid || info.customUserId || info.openId || '', isAnonymous: Boolean(info.isAnonymous || info.anonymous) };
-  } catch {
-    try { const parsed = JSON.parse(String(raw)); const info = parsed.userInfo || parsed.user || parsed; return { uid: info.uid || info.customUserId || info.openId || '', isAnonymous: Boolean(info.isAnonymous || info.anonymous) }; } catch { return {}; }
+  const candidates = [String(raw)];
+  try { candidates.push(Buffer.from(String(raw), 'base64').toString('utf8')); } catch {}
+  try { candidates.push(decodeURIComponent(String(raw))); } catch {}
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      const info = findIdentity(parsed);
+      if (info.uid) return info;
+    } catch {}
   }
+  return {};
+}
+
+function findIdentity(value, depth = 0) {
+  if (!value || depth > 4 || typeof value !== 'object') return {};
+  const uid = value.uid || value.userId || value.user_id || value.sub || value.customUserId || value.openId || value.openid || '';
+  if (uid) return { uid: String(uid), isAnonymous: Boolean(value.isAnonymous || value.anonymous || String(value.scope || '').includes('anonymous')) };
+  for (const child of Object.values(value)) {
+    const found = findIdentity(child, depth + 1);
+    if (found.uid) return found;
+  }
+  return {};
 }
 
 async function bootstrapWorkspace(input = {}, request) {

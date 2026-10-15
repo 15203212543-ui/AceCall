@@ -1482,7 +1482,7 @@ async function authenticatedFetch(url, options = {}) {
   // flash the login screen after a successful sign-in.
   if (!cloudbaseAuth) throw new Error('登录已过期，请重新登录');
   const request = async token => {
-    const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`);
+    const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); headers.set('X-AceCall-Token', `Bearer ${token}`);
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs || 20000);
     try { return await fetch(url, { ...options, headers, signal: controller.signal }); }
     catch (error) { if (error.name === 'AbortError') throw new Error('CloudBase请求超时，请检查网络后重试'); throw new Error('CloudBase网络连接失败，请检查网络或跨域配置'); }
