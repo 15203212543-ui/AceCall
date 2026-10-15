@@ -299,7 +299,7 @@ async function register(event) {
   const companyName = $('#registerCompanyName').value.trim();
   const password = $('#loginPassword').value;
   const button = $('#loginButton');
-  if (companyName !== INTERNAL_TEST_COMPANY) return showLoginMessage('当前为内部测试阶段，请填写“AceCall招聘团队”；如有疑问请联系工作人员');
+  if (companyName !== INTERNAL_TEST_COMPANY) return showLoginMessage('请填写企业名称，如有问题请联系工作人员');
   if (registerVerification) {
     const code = $('#verificationCode').value.trim();
     if (!code) return showLoginMessage('请输入邮箱收到的验证码');
