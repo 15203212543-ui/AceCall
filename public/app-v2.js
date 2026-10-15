@@ -50,13 +50,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 let shellBound = false;
+let activeNavKey = null;
 function bindShell() {
   if (shellBound) return;
   shellBound = true;
   $$('.nav-item[data-view]').forEach(button => button.addEventListener('click', () => {
     if (button.classList.contains('nav-subitem')) {
-      $$('.nav-subitem').forEach(item => item.classList.remove('active'));
-      button.classList.add('active');
+      activeNavKey = button.dataset.navKey || null;
     }
     navigate(button.dataset.view);
   }));
@@ -504,7 +504,9 @@ function navigate(view, updateHash = true) {
   $$('.view').forEach(section => section.classList.remove('active'));
   $$('.nav-item[data-view]').forEach(button => {
     const isSubitem = button.classList.contains('nav-subitem');
-    button.classList.toggle('active', isSubitem ? button.classList.contains('active') : button.dataset.view === view || (view === 'candidate' && button.dataset.view === 'candidates'));
+    button.classList.toggle('active', isSubitem
+      ? Boolean(activeNavKey && button.dataset.navKey === activeNavKey)
+      : button.dataset.view === view || (view === 'candidate' && button.dataset.view === 'candidates'));
   });
   const target = view === 'candidate' ? $('#candidateDetailView') : $(`#${view}View`);
   target.classList.add('active');
