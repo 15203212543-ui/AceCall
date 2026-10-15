@@ -437,7 +437,7 @@ function taskDocument(context, input = {}, id, status = 'uploading') {
     size,
     durationSeconds: Math.max(0, Number(input.durationSeconds || 0)),
     storagePrefix: `acecall/recordings/${context.tenantId}/${String(input.candidateId || 'unassigned')}/${id}`,
-    engine: process.env.TRANSCRIPTION_ENGINE || 'external-whisper',
+    engine: process.env.TRANSCRIPTION_PROVIDER || process.env.TRANSCRIPTION_ENGINE || 'baidu',
     status,
     parts: [],
     result: null,
@@ -474,7 +474,7 @@ async function createTranscriptionTask(context, input = {}) {
   const updated = { ...task, status, queuedAt: status === 'queued' ? new Date().toISOString() : task.queuedAt, updatedAt: new Date().toISOString() };
   await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(task.id).set(updated);
   await audit(context, 'transcription.queue', task.id, { engine: updated.engine, partCount: updated.parts.length });
-  return { ok: true, task: cleanDocument(updated), message: status === 'queued' ? '录音已进入异步转写队列，等待 Whisper/FunASR 服务处理' : '录音尚未完成上传' };
+  return { ok: true, task: cleanDocument(updated), message: status === 'queued' ? '录音已进入异步转写队列，等待转写 worker 处理' : '录音尚未完成上传' };
 }
 
 async function getTranscriptionTask(context, id) {

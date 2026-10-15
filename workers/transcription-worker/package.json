@@ -1,0 +1,17 @@
+{
+  "name": "acecall-transcription-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AceCall asynchronous audio transcription worker",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@cloudbase/node-sdk": "3.17.0"
+  }
+}

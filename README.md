@@ -41,6 +41,12 @@ window.ACECALL_CONFIG = {
 
 CloudBase 环境 ID 不可修改；环境别名可以修改，但当前环境仍承载原宠物项目，不建议将环境别名改为 AceCall。
 
+### 长录音转写 worker
+
+`workers/transcription-worker` 是独立的异步转写消费者：它读取 `acecall_transcription_tasks` 中的 `queued` 任务，下载 CloudBase Storage 分片、使用 ffmpeg 统一音频格式，再调用可配置的百度长音频、Whisper 或 FunASR 引擎，最后把转写文本和状态写回任务表。网页端继续使用原有分片上传和轮询，不需要改动交互。
+
+worker 已完成代码和本地测试，但要在云端实际运行，还需要单独部署 CloudRun/容器并配置 `TCB_ENV`、`CLOUDBASE_APIKEY`、`TRANSCRIPTION_PROVIDER` 以及所选引擎的服务密钥。密钥只配置在 CloudRun 环境变量中，不进入前端或 GitHub。
+
 ## 第一阶段页面
 
 - **工作台**：展示待电话、待确认、补充沟通和已推荐候选人。
