@@ -598,6 +598,7 @@ function renderInternalTalentAnalysis(rootSelector = '#talentOrganizationView') 
   [...root.querySelectorAll('.surface')].find(section => section.querySelector('.surface-head h2')?.textContent === '人才表现与发展')?.remove();
   const abilitySection = [...root.querySelectorAll('.surface')].find(section => section.querySelector('.surface-head h2')?.textContent === '能力与人才缺口');
   if (abilitySection) {
+    abilitySection.parentElement?.classList.add('single-panel-grid');
     abilitySection.querySelector('.surface-head h2').textContent = '能力与用人标准';
     abilitySection.querySelector('.surface-subtitle').textContent = '能力标签、团队优势、能力缺口与人才缺口';
     abilitySection.querySelector('.surface-body').innerHTML = `<div class="talent-ability-grid"><div class="talent-ability-item"><h3>能力标签</h3>${empty('接入员工能力标签后查看团队核心技能分布。')}</div><div class="talent-ability-item"><h3>当前优势</h3>${empty('根据现有员工能力和岗位覆盖情况总结团队优势。')}</div><div class="talent-ability-item"><h3>能力缺口</h3>${empty('对照岗位能力要求识别团队缺少的关键能力。')}</div><div class="talent-ability-item"><h3>人才缺口</h3>${empty('结合岗位编制和能力标准识别需要补充的人才类型。')}</div><div class="talent-ability-item"><h3>用人标准</h3>${empty('根据岗位要求和团队能力沉淀统一的能力标准。')}</div></div>`;
