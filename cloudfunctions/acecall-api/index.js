@@ -272,6 +272,27 @@ async function bootstrapWorkspace(input = {}, request) {
     if (member.status !== existingMember.status) await db.collection(COLLECTIONS.members).doc(existingMember._id || existingMember.id).set(member);
     return workspaceSummary({ uid, tenantId: member.tenantId, role: member.role || 'recruiter', member });
   }
+
+  // Internal pilot rule: accounts registering with the exact shared company
+  // name join the one existing active tenant instead of getting an empty
+  // personal workspace. Other company names remain isolated and require an
+  // administrator invitation.
+  const requestedCompany = String(input.companyName || '').trim().slice(0, 120);
+  if (requestedCompany === 'AceCall招聘团队') {
+    const matchingTenants = await db.collection(COLLECTIONS.tenants)
+      .where({ name: requestedCompany, status: 'active' })
+      .limit(2)
+      .get()
+      .catch(() => ({ data: [] }));
+    const sharedTenant = matchingTenants.data?.length === 1 ? matchingTenants.data[0] : null;
+    if (sharedTenant?.id) {
+      const now = new Date().toISOString();
+      const memberId = `${sharedTenant.id}_${uid}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
+      const member = { id: memberId, tenantId: sharedTenant.id, uid, username: String(input.username || '').slice(0, 120), displayName: String(input.displayName || input.username || '').slice(0, 80), role: 'recruiter', status: 'active', membershipSource: 'company_name_pilot', createdAt: now, updatedAt: now };
+      await db.collection(COLLECTIONS.members).doc(memberId).set(member);
+      return workspaceSummary({ uid, tenantId: sharedTenant.id, role: member.role, member });
+    }
+  }
   const tenantId = `tenant_${uid}`.slice(0, 80);
   const now = new Date().toISOString();
   const tenantName = String(input.companyName || '').trim().slice(0, 120) || '我的公司工作区';
