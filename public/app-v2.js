@@ -649,6 +649,9 @@ function renderTalentMarket() {
   const structureBody = structureSection?.querySelector('.surface-body');
   const marketFilters = root.querySelector('.market-filters');
   if (structureBody && marketFilters) structureBody.prepend(marketFilters);
+  root.querySelector('.market-filters .data-status')?.remove();
+  root.querySelector('.market-source-note')?.remove();
+  root.querySelector('.market-structure-content')?.classList.add('market-structure-single-column');
   root.querySelectorAll('.market-section').forEach(section => { if (section.querySelector('.section-kicker')?.textContent.includes('03 人才能力洞察')) section.remove(); });
   if (structureBody) structureBody.insertAdjacentHTML('beforeend', `<section class="market-candidate-list"><div class="candidate-list-head"><div><h3>人才明细</h3><p>根据上方筛选条件查看具体人才</p></div><span>${total ? `${total} 人` : '待接入'}</span></div><div class="table-wrap"><table><thead><tr><th>人才</th><th>目标岗位</th><th>城市</th><th>当前公司</th><th>匹配度</th></tr></thead><tbody>${marketCandidateRows || `<tr><td colspan="5">${empty('接入外部人才数据后，在这里查看具体人选及其来源。')}</td></tr>`}</tbody></table></div></section>`);
   const candidateList = structureBody?.querySelector('.market-candidate-list');
