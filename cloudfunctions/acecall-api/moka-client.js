@@ -7,7 +7,8 @@ function getMokaConfig(env = process.env) {
     enterpriseId: String(env.MOKA_ENTERPRISE_ID || '').trim(),
     apiKeyHeader: String(env.MOKA_API_KEY_HEADER || 'Authorization').trim() || 'Authorization',
     authMode: String(env.MOKA_AUTH_MODE || 'basic').trim().toLowerCase(),
-    apiKeyPrefix: String(env.MOKA_API_KEY_PREFIX || '').trim()
+    apiKeyPrefix: String(env.MOKA_API_KEY_PREFIX || '').trim(),
+    interviewsPath: String(env.MOKA_INTERVIEWS_PATH || '/api/interviews').trim()
   };
 }
 
@@ -49,7 +50,8 @@ function createMokaClient(options = {}) {
         enterpriseConfigured: Boolean(config.enterpriseId),
         apiKey: maskSecret(config.apiKey),
         apiKeyHeader: config.apiKeyHeader,
-        authMode: config.authMode
+        authMode: config.authMode,
+        interviewsPath: config.interviewsPath
       };
     }
   };
@@ -63,7 +65,8 @@ function mokaConnectionStatus(env = process.env) {
     enterpriseConfigured: Boolean(config.enterpriseId),
     apiKey: maskSecret(config.apiKey),
     apiKeyHeader: config.apiKeyHeader,
-    authMode: config.authMode
+    authMode: config.authMode,
+    interviewsPath: config.interviewsPath
   };
 }
 

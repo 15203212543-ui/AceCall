@@ -2,7 +2,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
-const { mokaConnectionStatus } = require('./moka-client');
+const { createMokaClient, mokaConnectionStatus } = require('./moka-client');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -63,6 +63,9 @@ const server = http.createServer(async (request, response) => {
         status: mokaConnectionStatus(),
         dataAccess: 'disabled_until_explicit_enablement'
       });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/integrations/moka/interviews') {
+      return sendJson(response, 200, await loadMokaInterviews(await getRequestContext(request)));
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request), request));
     if (request.method === 'GET' && url.pathname === '/api/workspace') return sendJson(response, 200, await workspaceSummary(await getRequestContext(request)));
@@ -148,6 +151,64 @@ function setCors(response, origin) {
   // browsers reject as an invalid CORS response.
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-AceCall-Token');
+}
+
+function flattenMokaRecords(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['data', 'items', 'results', 'interviews', 'records']) {
+    if (Array.isArray(payload[key])) return payload[key];
+    if (payload[key] && typeof payload[key] === 'object') {
+      const nested = flattenMokaRecords(payload[key]);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+}
+
+function mokaInterviewText(record = {}) {
+  return [
+    record.jobName, record.positionName, record.roleName, record.requisitionName,
+    record.interviewer, record.interviewerName, record.interviewers,
+    record.stage, record.interviewStage, record.round, record.department,
+    record.location, record.candidateName
+  ].flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean).join(' ');
+}
+
+function normalizeMokaInterview(record = {}) {
+  const interviewer = record.interviewerName || record.interviewer || (Array.isArray(record.interviewers) ? record.interviewers[0] : record.interviewers) || '';
+  const jobName = record.jobName || record.positionName || record.roleName || record.requisitionName || '';
+  const outcome = record.result || record.interviewResult || record.status || record.outcome || '';
+  const duration = Number(record.durationMinutes || record.duration || 0) || 0;
+  return {
+    id: String(record.id || record.interviewId || record._id || crypto.randomUUID()),
+    source: 'moka', candidateName: record.candidateName || record.candidate?.name || '',
+    jobName, jobCategory: record.jobCategory || record.category || '', location: record.location || '',
+    interviewer: String(interviewer), round: record.interviewStage || record.stage || record.round || '',
+    outcome: String(outcome), completed: !/取消|未进行|待定|scheduled|cancelled|canceled/i.test(`${record.status || ''} ${outcome}`), interviewPassed: record.interviewPassed === true || /通过|pass|passed/i.test(String(outcome)),
+    offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
+    hired: record.hired === true || /入职|hired|joined/i.test(String(record.hireStatus || record.outcome || '')),
+    durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
+    transcript: record.transcript || record.transcription || '', raw: record
+  };
+}
+
+async function loadMokaInterviews(context) {
+  const status = mokaConnectionStatus();
+  const result = { ok: true, source: 'moka', configured: status.configured, filters: { job: '法务 BP', interviewer: '魏欣欣' }, records: [], fetchedAt: new Date().toISOString() };
+  if (!status.configured) return result;
+  const client = createMokaClient();
+  const response = await client.request(client.config.interviewsPath);
+  if (!response.ok) throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502);
+  const records = flattenMokaRecords(response.body).map(normalizeMokaInterview);
+  result.records = records.filter(record => {
+    const text = mokaInterviewText(record.raw || record);
+    const jobMatch = /法务\s*BP|法务BP/i.test(text);
+    const interviewerMatch = /魏欣欣/.test(text);
+    return jobMatch && interviewerMatch;
+  });
+  result.totalFetched = records.length;
+  return result;
 }
 
 function normalizeResumeText(text = '') {
@@ -414,7 +475,7 @@ async function saveCandidate(context, id, input) {
   await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
   await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome']);
+  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome']);
   candidate.id = id;
   candidate.tenantId = context.tenantId;
   candidate.createdBy = context.uid;
