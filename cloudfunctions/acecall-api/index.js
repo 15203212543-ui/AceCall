@@ -54,6 +54,10 @@ const server = http.createServer(async (request, response) => {
     // independently. Normalize only the known public routes so a gateway
     // rewrite cannot turn a valid request into a misleading 404.
     url.pathname = url.pathname.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+    const declaredRoute = String(url.searchParams.get('__acecall_route') || '').trim();
+    if (url.pathname === '/' && declaredRoute.startsWith('/api/')) {
+      url.pathname = declaredRoute.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+    }
     if (url.pathname === '/') {
       const forwardedPath = ['x-original-uri', 'x-original-url', 'x-forwarded-uri', 'x-cloudbase-path', 'x-tcb-path', 'x-gateway-path']
         .map(name => String(request.headers?.[name] || '').trim())
