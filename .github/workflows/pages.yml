@@ -25,6 +25,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Configure Pages
         uses: actions/configure-pages@v5
+      - name: Version static assets
+        run: sed -i "s/__ACE_CALL_BUILD__/${GITHUB_SHA}/g" public/index.html
       - name: Upload site
         uses: actions/upload-pages-artifact@v3
         with:
