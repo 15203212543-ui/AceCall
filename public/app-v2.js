@@ -595,6 +595,20 @@ function renderInternalTalentAnalysis(rootSelector = '#talentOrganizationView') 
     structureBody.prepend(talentFilters);
     if (talentFilterNote) structureBody.insertBefore(talentFilterNote, talentFilters.nextSibling);
   }
+  [...root.querySelectorAll('.surface')].find(section => section.querySelector('.surface-head h2')?.textContent === '人才表现与发展')?.remove();
+  const abilitySection = [...root.querySelectorAll('.surface')].find(section => section.querySelector('.surface-head h2')?.textContent === '能力与人才缺口');
+  if (abilitySection) {
+    abilitySection.querySelector('.surface-head h2').textContent = '能力与用人标准';
+    abilitySection.querySelector('.surface-subtitle').textContent = '能力标签、团队优势、能力缺口与人才缺口';
+    abilitySection.querySelector('.surface-body').innerHTML = `<div class="talent-ability-grid"><div class="talent-ability-item"><h3>能力标签</h3>${empty('接入员工能力标签后查看团队核心技能分布。')}</div><div class="talent-ability-item"><h3>当前优势</h3>${empty('根据现有员工能力和岗位覆盖情况总结团队优势。')}</div><div class="talent-ability-item"><h3>能力缺口</h3>${empty('对照岗位能力要求识别团队缺少的关键能力。')}</div><div class="talent-ability-item"><h3>人才缺口</h3>${empty('结合岗位编制和能力标准识别需要补充的人才类型。')}</div><div class="talent-ability-item"><h3>用人标准</h3>${empty('根据岗位要求和团队能力沉淀统一的能力标准。')}</div></div>`;
+  }
+  const flowSection = [...root.querySelectorAll('.surface')].find(section => section.querySelector('.surface-head h2')?.textContent === '人才流动与风险');
+  if (flowSection) {
+    flowSection.querySelector('.surface-subtitle').textContent = '入职、晋升、转岗、离职与招聘平台活跃情况';
+    flowSection.querySelector('.surface-body').insertAdjacentHTML('beforeend', '<div class="talent-platform-row"><b>招聘平台活跃情况</b><span>仅分析公开资料或经授权的数据</span><i>待接入</i></div>');
+  }
+  [...root.querySelectorAll('.surface')].filter(section => ['人才决策建议', '员工明细'].includes(section.querySelector('.surface-head h2')?.textContent)).forEach(section => section.remove());
+  root.querySelectorAll('[data-talent-employees]').forEach(button => button.remove());
   root.querySelector('[data-talent-connect]')?.addEventListener('click', () => toast('请前往“数据连接”配置员工花名册或 HRIS 数据'));
   root.querySelector('[data-talent-employees]')?.addEventListener('click', () => toast('接入员工数据后可查看对应人员明细'));
 }
