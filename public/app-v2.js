@@ -610,7 +610,7 @@ function renderInterviewersOld() {
   const preferenceStrength = withCalls.length ? Math.min(100, Math.round((progressed / withCalls.length) * 100)) : 0;
   $('#interviewersView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER PREFERENCE</span><h1>面试官偏好分析</h1><p>根据历史筛选、面试转写和最终结果，总结不同面试官在同岗位或同部门下的真实判断标准。</p></div><span class="readonly-badge">基于历史行为</span></div><div class="research-banner interviewer-banner"><div><span>可分析记录</span><strong>${withCalls.length}<small> 份</small></strong></div><p>${withCalls.length ? `已从 ${withCalls.length} 份沟通记录中提取偏好信号，系统会持续用最终结果校准规则。` : '完成简历筛选和面试记录后，系统会自动形成面试官偏好。'}</p><span class="data-status">不直接替代人工判断</span></div><div class="metrics research-metrics"><div class="metric"><b>${preferenceStrength}%</b><span>偏好稳定度</span><small>基于推进结果</small></div><div class="metric"><b>${progressed}</b><span>推进人选</span><small>进入下一阶段</small></div><div class="metric"><b>${rejected}</b><span>未推进人选</span><small>用于反推风险信号</small></div><div class="metric"><b>${keywords.length}</b><span>高频关注点</span><small>从提问与规则提取</small></div></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>个人筛选偏好</h2><p class="surface-subtitle">系统从历史行为中提取的可解释信号</p></div><span>待确认</span></div><div class="surface-body decision-list">${keywords.map((keyword, index) => `<div><span>${keyword}</span><b>${index < 3 ? '高' : '中'}</b><i style="width:${index < 3 ? 82 - index * 9 : 48}%"></i></div>`).join('')}</div></section><section class="surface"><div class="surface-head"><div><h2>适用范围</h2><p class="surface-subtitle">规则可以按岗位、部门和负责人分别沉淀</p></div></div><div class="surface-body recommendation-list"><p><b>同岗位：</b>识别同一岗位下稳定出现的通过与淘汰标准。</p><p><b>同部门：</b>合并部门内多位面试官的共同偏好。</p><p><b>同负责人：</b>为同一招聘负责人生成可复用的筛选策略。</p><p><b>下一步：</b>确认规则后，可进入筛选规则管理配置“建议直通”或“人工复核”。</p></div></section></div></div>`;
 }
-function renderInterviewers() {
+function renderInterviewersLegacyCurrent() {
   const records = app.cases.filter(item => item.transcript || item.communicationSummary || item.report);
   const transcripts = app.cases.filter(item => item.transcript);
   const progressed = app.cases.filter(item => ['推荐业务面试', '通过', '已录用'].includes(finalAction(item))).length;
@@ -646,7 +646,7 @@ function interviewerRecords(filters = {}) {
   });
   return records;
 }
-function renderInterviewerAnalysis() {
+function renderInterviewers() {
   const root = $('#interviewersView'); if (!root) return;
   const stored = app.interviewerFilters || {};
   const sourceRecords = [...app.mokaInterviews, ...app.cases.map(item => ({ interviewer: interviewerNameOf(item) }))].filter(item => item.interviewer);
