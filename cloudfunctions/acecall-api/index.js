@@ -50,6 +50,18 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === '/acecall-api' || url.pathname.startsWith('/acecall-api/')) {
       url.pathname = url.pathname.slice('/acecall-api'.length) || '/';
     }
+    // Some gateway revisions strip the function prefix and the API prefix
+    // independently. Normalize only the known public routes so a gateway
+    // rewrite cannot turn a valid request into a misleading 404.
+    url.pathname = url.pathname.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+    const legacyRoute = {
+      '/health': '/api/health',
+      '/workspace': '/api/workspace',
+      '/state': '/api/state',
+      '/integrations/moka/status': '/api/integrations/moka/status',
+      '/integrations/moka/interviews': '/api/integrations/moka/interviews'
+    }[url.pathname];
+    if (legacyRoute) url.pathname = legacyRoute;
     if (request.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(response, 200, {
         ok: true,
@@ -58,6 +70,22 @@ const server = http.createServer(async (request, response) => {
         mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo',
         provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo',
         model: process.env.DEEPSEEK_MODEL || 'deepseek-chat'
+      });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/debug/status') {
+      const identity = await readGatewayUser(request);
+      const moka = mokaConnectionStatus();
+      return sendJson(response, 200, {
+        ok: true,
+        service: 'acecall-api',
+        route: 'reachable',
+        pathNormalized: true,
+        authContextDetected: Boolean(identity.uid && !identity.isAnonymous),
+        cloudbaseConfigured: Boolean(process.env.TCB_ENV),
+        mokaConfigured: Boolean(moka.configured),
+        mokaBaseUrlConfigured: Boolean(moka.baseUrl),
+        mokaInterviewsPath: moka.interviewsPath,
+        timestamp: new Date().toISOString()
       });
     }
     if (request.method === 'GET' && url.pathname === '/api/integrations/moka/status') {
