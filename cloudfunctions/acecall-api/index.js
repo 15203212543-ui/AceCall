@@ -44,6 +44,12 @@ const server = http.createServer(async (request, response) => {
 
   try {
     const url = new URL(request.url || '/', 'http://localhost');
+    // With gateway path transmission enabled, HTTP functions receive the
+    // route prefix (for example /acecall-api/api/health). Normalize it so the
+    // same function works with both gateway routing modes.
+    if (url.pathname === '/acecall-api' || url.pathname.startsWith('/acecall-api/')) {
+      url.pathname = url.pathname.slice('/acecall-api'.length) || '/';
+    }
     if (request.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(response, 200, {
         ok: true,
