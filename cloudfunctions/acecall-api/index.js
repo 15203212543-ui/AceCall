@@ -47,7 +47,7 @@ const server = http.createServer(async (request, response) => {
     // With gateway path transmission enabled, HTTP functions receive the
     // route prefix (for example /acecall-api/api/health). Normalize it so the
     // same function works with both gateway routing modes.
-    if (url.pathname === '/acecall-api' || url.pathname.startsWith('/acecall-api/')) {
+    while (url.pathname === '/acecall-api' || url.pathname.startsWith('/acecall-api/')) {
       url.pathname = url.pathname.slice('/acecall-api'.length) || '/';
     }
     // Some gateway revisions strip the function prefix and the API prefix
