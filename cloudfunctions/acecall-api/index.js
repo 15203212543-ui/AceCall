@@ -286,7 +286,12 @@ async function getRequestContext(request) {
 }
 
 async function readGatewayUser(request) {
-  const raw = request?.headers?.['x-cloudbase-context'] || request?.headers?.['x-cloudbase-userinfo'];
+  const headers = request?.headers || {};
+  // HTTP gateway versions differ in the identity header they forward. The
+  // gateway-authenticated route overwrites these headers before invoking the
+  // function, so accept the documented context forms plus the scalar UID
+  // headers used by older gateway deployments.
+  const raw = headers['x-cloudbase-context'] || headers['x-cloudbase-auth-context'] || headers['x-cloudbase-userinfo'] || headers['x-tcb-userinfo'];
   if (raw) {
     const candidates = [String(raw)];
     try { candidates.push(Buffer.from(String(raw), 'base64').toString('utf8')); } catch {}
@@ -298,6 +303,11 @@ async function readGatewayUser(request) {
         if (info.uid) return info;
       } catch {}
     }
+  }
+
+  const scalarUid = headers['x-cloudbase-uid'] || headers['x-cloudbase-user-id'] || headers['x-tcb-uid'] || headers['x-user-id'];
+  if (scalarUid && String(scalarUid).trim()) {
+    return { uid: String(scalarUid).trim(), isAnonymous: false };
   }
 
   // CDN-backed routes may validate the bearer token without forwarding the
