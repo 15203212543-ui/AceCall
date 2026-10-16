@@ -1591,7 +1591,7 @@ function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.upd
 function infoLabel(key){return({currentCompanyRole:'当前公司及职位',location:'当前地点',currentSalary:'当前薪资',expectedSalary:'期望薪资',availability:'到岗时间',motivation:'求职动机',nonCompete:'竞业限制'}[key]||key);}
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
-function apiUrl(path){const [routePath, query='']=String(path).split('?');const params=new URLSearchParams(query);params.set('__acecall_route',routePath||'/');return `${API_BASE}?${params.toString()}`;}
+function apiUrl(path){return `${API_BASE}${path}`;}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function cloudError(status, body = {}) {
   if (body.error) return body.error;
