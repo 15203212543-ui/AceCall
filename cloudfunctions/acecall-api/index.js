@@ -231,6 +231,10 @@ function normalizeMokaInterview(record = {}) {
   const jobName = record.jobName || record.jobTitle || record.positionName || record.roleName || record.requisitionName || '';
   const outcome = record.result || record.interviewResult || record.status || record.outcome || '';
   const duration = Number(record.durationMinutes || record.duration || 0) || 0;
+  const transcript = extractMokaText(record);
+  const recordingUrl = extractMokaUrl(record, ['recordingUrl', 'recordUrl', 'videoUrl', 'interviewRecordingUrl', 'recording', 'recordingFile', 'audioUrl', 'videoInterviewRecordingUrl']);
+  const transcriptUrl = extractMokaUrl(record, ['transcriptUrl', 'transcriptionUrl', 'transcriptFileUrl', 'transcriptionFileUrl', 'interviewTranscriptUrl']);
+  const feedbackUrl = extractMokaUrl(record, ['interviewFeedbackUrl', 'feedbackUrl', 'feedbackFileUrl']);
   return {
     id: String(record.id || record.interviewId || record._id || crypto.randomUUID()),
     source: 'moka', candidateName: record.candidateName || record.candidate?.name || '',
@@ -240,10 +244,82 @@ function normalizeMokaInterview(record = {}) {
     offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
     hired: record.hired === true || /入职|hired|joined/i.test(String(record.hireStatus || record.outcome || '')),
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
-    transcript: record.transcript || record.transcription || record.transcriptText || '',
-    recordingUrl: record.recordingUrl || record.recordUrl || record.videoUrl || record.interviewRecordingUrl || '',
-    feedbackUrl: record.interviewFeedbackUrl || record.feedbackUrl || '', applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
+    transcript, recordingUrl, transcriptUrl, feedbackUrl,
+    transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))),
+    applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
+}
+
+function extractMokaText(record = {}) {
+  const keys = ['transcript', 'transcription', 'transcriptText', 'transcriptionText', 'transcriptContent', 'transcriptionContent', 'recordingTranscript', 'videoInterviewTranscript'];
+  for (const key of keys) if (typeof record[key] === 'string' && record[key].trim()) return record[key].trim();
+  for (const key of ['recording', 'transcriptionFile', 'transcriptFile', 'videoInterview', 'interviewRecording']) {
+    const nested = record[key];
+    if (nested && typeof nested === 'object') {
+      const found = extractMokaText(nested);
+      if (found) return found;
+    }
+  }
+  return '';
+}
+
+function extractMokaUrl(record = {}, keys = []) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+    if (value && typeof value === 'object') {
+      for (const nestedKey of ['url', 'downloadUrl', 'fileUrl', 'href', 'src']) {
+        const nested = value[nestedKey];
+        if (typeof nested === 'string' && /^https?:\/\//i.test(nested)) return nested;
+      }
+    }
+  }
+  for (const key of ['recording', 'recordingFile', 'transcriptionFile', 'transcriptFile', 'videoInterview', 'interviewRecording']) {
+    const nested = record[key];
+    if (nested && typeof nested === 'object') {
+      const found = extractMokaUrl(nested, keys);
+      if (found) return found;
+    }
+  }
+  return '';
+}
+
+function isAllowedMokaAttachment(url = '') {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === 'mokahr.com' || hostname.endsWith('.mokahr.com') || hostname.endsWith('.mokahr.cn');
+  } catch { return false; }
+}
+
+async function parseMokaAttachment(url, contentType = '') {
+  if (!url || !isAllowedMokaAttachment(url)) return { text: '', status: 'blocked-url' };
+  const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  if (!response.ok) return { text: '', status: `download-${response.status}` };
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > 50 * 1024 * 1024) return { text: '', status: 'file-too-large' };
+  const type = String(contentType || response.headers.get('content-type') || '').toLowerCase();
+  const lower = url.toLowerCase().split('?')[0];
+  try {
+    if (type.includes('pdf') || lower.endsWith('.pdf')) return { text: normalizeResumeText((await require('pdf-parse')(buffer)).text), status: 'parsed-pdf' };
+    if (type.includes('wordprocessingml') || lower.endsWith('.docx')) return { text: normalizeResumeText((await require('mammoth').extractRawText({ buffer })).value), status: 'parsed-docx' };
+    if (type.startsWith('text/') || /\.(txt|vtt|srt|json|md)$/i.test(lower)) return { text: normalizeResumeText(buffer.toString('utf8')), status: 'parsed-text' };
+    return { text: '', status: type.startsWith('audio/') || /\.(mp3|m4a|wav|webm|mp4)$/i.test(lower) ? 'audio-ready' : 'unsupported-format' };
+  } catch (error) { return { text: '', status: `parse-failed:${error.message}` }; }
+}
+
+async function enrichMokaAttachment(record) {
+  if (record.transcript) return record;
+  const candidates = [
+    [record.transcriptUrl, 'transcript'],
+    [record.feedbackUrl, 'feedback'],
+    [record.recordingUrl, 'recording']
+  ].filter(([url]) => url);
+  for (const [url, source] of candidates) {
+    const parsed = await parseMokaAttachment(url);
+    if (parsed.text) return { ...record, transcript: parsed.text, transcriptSource: `${source}-${parsed.status}`, transcriptStatus: parsed.status };
+    if (source === 'recording' && parsed.status === 'audio-ready') return { ...record, transcriptStatus: parsed.status };
+  }
+  return record;
 }
 
 async function loadMokaInterviews(context) {
@@ -268,8 +344,9 @@ async function loadMokaInterviews(context) {
   const feedbackByKey = new Map(feedbackRecords.filter(item => /魏欣欣/.test(String(item.interviewerName || item.interviewer || ''))).map(item => [String(item.applicationId || item.interviewId || ''), item]));
   result.records = filtered.map(record => {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
-    return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '' };
+    return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
   });
+  result.records = await Promise.all(result.records.map(enrichMokaAttachment));
   result.totalFetched = records.length; result.totalMatched = result.records.length;
   return result;
 }
