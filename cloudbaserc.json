@@ -11,6 +11,16 @@
       "memorySize": 512,
       "installDependency": false,
       "ignore": ["test/**", "*.md"]
+    },
+    {
+      "name": "acecall-api-v2",
+      "dir": "acecall-api",
+      "type": "HTTP",
+      "runtime": "Nodejs18.15",
+      "timeout": 60,
+      "memorySize": 512,
+      "installDependency": false,
+      "ignore": ["test/**", "*.md"]
     }
   ]
 }
