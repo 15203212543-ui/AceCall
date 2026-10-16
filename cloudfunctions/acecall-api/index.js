@@ -54,6 +54,14 @@ const server = http.createServer(async (request, response) => {
     // independently. Normalize only the known public routes so a gateway
     // rewrite cannot turn a valid request into a misleading 404.
     url.pathname = url.pathname.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+    if (url.pathname === '/') {
+      const forwardedPath = ['x-original-uri', 'x-original-url', 'x-forwarded-uri', 'x-cloudbase-path', 'x-tcb-path', 'x-gateway-path']
+        .map(name => String(request.headers?.[name] || '').trim())
+        .find(value => value.startsWith('/'));
+      if (forwardedPath) {
+        try { url.pathname = new URL(forwardedPath, 'http://localhost').pathname.replace(/\/+/g, '/').replace(/\/$/, '') || '/'; } catch {}
+      }
+    }
     const legacyRoute = {
       '/health': '/api/health',
       '/workspace': '/api/workspace',
@@ -168,7 +176,7 @@ const server = http.createServer(async (request, response) => {
       const id = validateId(url.pathname.split('/')[3]);
       return sendJson(response, 200, await analyzeTranscriptionTask(await getRequestContext(request), id, await readJson(request)));
     }
-    return sendJson(response, 404, { error: 'Not found' });
+    return sendJson(response, 404, { error: 'Not found', route: 'unmatched' });
   } catch (error) {
     console.error(JSON.stringify({ level: 'error', message: error.message, statusCode: error.statusCode || 500 }));
     const statusCode = error.statusCode || 500;
