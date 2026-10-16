@@ -8,7 +8,7 @@ function getMokaConfig(env = process.env) {
     apiKeyHeader: String(env.MOKA_API_KEY_HEADER || 'Authorization').trim() || 'Authorization',
     authMode: String(env.MOKA_AUTH_MODE || 'basic').trim().toLowerCase(),
     apiKeyPrefix: String(env.MOKA_API_KEY_PREFIX || '').trim(),
-    interviewsPath: String(env.MOKA_INTERVIEWS_PATH || '/api/interviews').trim()
+    interviewsPath: String(env.MOKA_INTERVIEWS_PATH || '/api-platform/v1/interviews').trim()
   };
 }
 

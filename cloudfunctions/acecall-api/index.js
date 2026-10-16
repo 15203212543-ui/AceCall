@@ -168,16 +168,19 @@ function flattenMokaRecords(payload) {
 
 function mokaInterviewText(record = {}) {
   return [
-    record.jobName, record.positionName, record.roleName, record.requisitionName,
-    record.interviewer, record.interviewerName, record.interviewers,
-    record.stage, record.interviewStage, record.round, record.department,
+    record.jobName, record.jobTitle, record.positionName, record.roleName, record.requisitionName,
+    record.interviewer, record.interviewerName,
+    ...(Array.isArray(record.interviewers) ? record.interviewers.flatMap(item => [item, item?.name, item?.email]) : [record.interviewers]),
+    record.stage, record.stageName, record.interviewStage, record.round, record.department,
     record.location, record.candidateName
   ].flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean).join(' ');
 }
 
 function normalizeMokaInterview(record = {}) {
-  const interviewer = record.interviewerName || record.interviewer || (Array.isArray(record.interviewers) ? record.interviewers[0] : record.interviewers) || '';
-  const jobName = record.jobName || record.positionName || record.roleName || record.requisitionName || '';
+  const interviewerList = Array.isArray(record.interviewers) ? record.interviewers : [];
+  const interviewerEntry = interviewerList.find(item => item?.name === '魏欣欣' || item?.interviewerName === '魏欣欣') || interviewerList[0] || {};
+  const interviewer = record.interviewerName || record.interviewer || interviewerEntry.name || interviewerEntry.interviewerName || interviewerEntry || '';
+  const jobName = record.jobName || record.jobTitle || record.positionName || record.roleName || record.requisitionName || '';
   const outcome = record.result || record.interviewResult || record.status || record.outcome || '';
   const duration = Number(record.durationMinutes || record.duration || 0) || 0;
   return {
@@ -189,25 +192,37 @@ function normalizeMokaInterview(record = {}) {
     offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
     hired: record.hired === true || /入职|hired|joined/i.test(String(record.hireStatus || record.outcome || '')),
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
-    transcript: record.transcript || record.transcription || '', raw: record
+    transcript: record.transcript || record.transcription || record.transcriptText || '',
+    recordingUrl: record.recordingUrl || record.recordUrl || record.videoUrl || record.interviewRecordingUrl || '',
+    feedbackUrl: record.interviewFeedbackUrl || record.feedbackUrl || '', applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
 }
 
 async function loadMokaInterviews(context) {
   const status = mokaConnectionStatus();
-  const result = { ok: true, source: 'moka', configured: status.configured, filters: { job: '法务 BP', interviewer: '魏欣欣' }, records: [], fetchedAt: new Date().toISOString() };
+  const result = { ok: true, source: 'moka', configured: status.configured, filters: { job: '法务 BP', interviewer: '魏欣欣' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
   if (!status.configured) return result;
   const client = createMokaClient();
-  const response = await client.request(client.config.interviewsPath);
-  if (!response.ok) throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502);
-  const records = flattenMokaRecords(response.body).map(normalizeMokaInterview);
-  result.records = records.filter(record => {
-    const text = mokaInterviewText(record.raw || record);
-    const jobMatch = /法务\s*BP|法务BP/i.test(text);
-    const interviewerMatch = /魏欣欣/.test(text);
-    return jobMatch && interviewerMatch;
+  const lookbackDays = Math.min(730, Math.max(31, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 365)));
+  const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
+  for (let cursor = new Date(start); cursor < end; cursor = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000))) {
+    const rangeEnd = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000));
+    const path = `${client.config.interviewsPath}?startDate=${encodeURIComponent(cursor.toISOString())}&endDate=${encodeURIComponent(rangeEnd.toISOString())}`;
+    const response = await client.request(path);
+    if (!response.ok) throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502);
+    records.push(...flattenMokaRecords(response.body).map(normalizeMokaInterview));
+  }
+  const filtered = records.filter(record => /法务\s*BP/i.test(mokaInterviewText(record.raw || record)) && /魏欣欣/.test(mokaInterviewText(record.raw || record)));
+  const feedbackStart = start.toISOString();
+  const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
+  const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
+  if (!feedbackResponse.ok) result.warnings.push(`面试反馈读取失败（${feedbackResponse.status}）`);
+  const feedbackByKey = new Map(feedbackRecords.filter(item => /魏欣欣/.test(String(item.interviewerName || item.interviewer || ''))).map(item => [String(item.applicationId || item.interviewId || ''), item]));
+  result.records = filtered.map(record => {
+    const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
+    return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '' };
   });
-  result.totalFetched = records.length;
+  result.totalFetched = records.length; result.totalMatched = result.records.length;
   return result;
 }
 
