@@ -43,11 +43,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
   bindShell();
   updateUserHeader();
+  navigate(location.hash.replace('#', '') || 'dashboard');
   await hydrateWorkspace();
   await hydrateState();
   seedJobs();
   await checkService();
-  navigate(location.hash.replace('#', '') || 'dashboard');
+  renderCurrent();
 });
 
 let shellBound = false;
@@ -197,8 +198,8 @@ async function initializeAuth() {
   }
   if (!data?.session) return false;
   captureAuthUser(data.session, rememberedAccount);
-  await syncDesktopSession(data.session.access_token);
   $('#loginScreen').classList.add('hidden');
+  void syncDesktopSession(data.session.access_token);
   return true;
 }
 
@@ -458,7 +459,7 @@ async function signIn(event) {
     }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
     captureAuthUser(data.session, username);
-    await syncDesktopSession(data.session.access_token);
+    void syncDesktopSession(data.session.access_token);
     persistRememberedAccount(username);
     await enterWorkspace($('#loginUsername').value.trim());
   } catch (error) {
@@ -484,11 +485,12 @@ async function enterWorkspace(username = '', companyName = '') {
   bindShell();
   $('#loginScreen').classList.add('hidden');
   captureAuthUser(null, username);
+  navigate(location.hash.replace('#', '') || 'dashboard');
   await hydrateWorkspace(username, companyName);
   await hydrateState();
   seedJobs();
   await checkService();
-  navigate(location.hash.replace('#', '') || 'dashboard');
+  renderCurrent();
 }
 
 async function signOut() {
