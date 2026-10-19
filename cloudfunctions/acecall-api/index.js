@@ -168,12 +168,24 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/recordings/init') {
       return sendJson(response, 200, await initRecording(await getRequestContext(request), await readJson(request)));
     }
+    if (request.method === 'POST' && url.pathname.match(/^\/api\/recordings\/[^/]+\/parts\/upload$/)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      const index = Math.max(0, Number(url.searchParams.get('index') || 0));
+      const final = url.searchParams.get('final') === '1' || url.searchParams.get('final') === 'true';
+      return sendJson(response, 200, await uploadRecordingPart(await getRequestContext(request), id, index, final, await readBuffer(request, 8 * 1024 * 1024)));
+    }
     if (request.method === 'POST' && url.pathname.match(/^\/api\/recordings\/[^/]+\/parts\/complete$/)) {
       const id = validateId(url.pathname.split('/')[3]);
       return sendJson(response, 200, await completeRecordingPart(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'POST' && url.pathname === '/api/transcription-tasks') {
       return sendJson(response, 200, await createTranscriptionTask(await getRequestContext(request), await readJson(request)));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/transcript-imports') {
+      return sendJson(response, 200, await importTranscript(await getRequestContext(request), await readJson(request)));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/transcript-imports') {
+      return sendJson(response, 200, await listTranscriptImports(await getRequestContext(request)));
     }
     if (request.method === 'GET' && url.pathname.match(/^\/api\/transcription-tasks\/[^/]+$/)) {
       const id = validateId(url.pathname.split('/')[3]);
@@ -230,6 +242,50 @@ function mokaInterviewText(record = {}) {
   return `${known.join(' ')} ${serialized}`;
 }
 
+function collectMokaFeedbacks(record = {}) {
+  const sources = [
+    ['record.interviewers', record.interviewers],
+    ['record.interview.interviewers', record.interview?.interviewers],
+    ['record.interviewFeedbacks', record.interviewFeedbacks],
+    ['record.feedbacks', record.feedbacks],
+    ['record.interviewDetail.interviewerFeedbacks', record.interviewDetail?.interviewerFeedbacks],
+    ['record.interviewDetail.entities.interviewerFeedbacks', record.interviewDetail?.entities],
+    ['record.interviewDetail.feedbacks', record.interviewDetail?.feedbacks]
+  ];
+  const feedbacks = [];
+  for (const [source, value] of sources) {
+    if (source.endsWith('entities.interviewerFeedbacks') && Array.isArray(value)) {
+      value.forEach(entity => (entity?.interviewerFeedbacks || []).forEach(feedback => feedbacks.push({ ...feedback, _source: source })));
+    } else if (Array.isArray(value)) {
+      value.forEach(item => { if (item && typeof item === 'object') feedbacks.push({ ...item, _source: source }); });
+    } else if (value && typeof value === 'object') feedbacks.push({ ...value, _source: source });
+  }
+  return feedbacks;
+}
+
+function normalizeMokaOutcome(record = {}) {
+  const feedbacks = collectMokaFeedbacks(record);
+  const values = [
+    record.result, record.interviewResult, record.outcome, record.status,
+    record.decision, record.resultName, record.resultType,
+    ...feedbacks.flatMap(item => [item.resultName, item.resultType, item.result, item.outcome, item.status, item.decision, item.conclusion])
+  ].filter(value => value !== undefined && value !== null && String(value).trim());
+  const outcome = String(values.find(value => /通过|淘汰|拒绝|不通过|待定|pending|pass|reject|fail|accept/i.test(String(value))) || values[0] || '').trim();
+  const passedExplicit = record.interviewPassed === true || feedbacks.some(item => item.interviewPassed === true);
+  const rejectedExplicit = record.interviewRejected === true || record.interviewFailed === true || feedbacks.some(item => item.interviewRejected === true || item.interviewFailed === true);
+  const passed = passedExplicit || /通过|合格|录用|pass(?:ed)?|succeed/i.test(outcome);
+  const rejected = rejectedExplicit || /淘汰|拒绝|不通过|未通过|不合格|reject|fail(?:ed)?|不录用/i.test(outcome);
+  const outcomeStatus = passed && rejected ? 'conflict' : passed ? 'passed' : rejected ? 'rejected' : outcome ? 'pending' : 'unknown';
+  const feedback = feedbacks.map(item => item.feedback || item.comment || item.conclusion || '').filter(Boolean).join('\n');
+  const feedbackTemplateResult = feedbacks.map(item => item.feedbackTemplateResult).find(Boolean) || record.feedbackTemplateResult || null;
+  return {
+    outcome, outcomeStatus, interviewPassed: passed ? true : rejected ? false : null,
+    interviewRejected: rejected ? true : passed ? false : null,
+    outcomeConflict: outcomeStatus === 'conflict', feedback, feedbackTemplateResult,
+    feedbackSources: feedbacks.map(item => item._source).filter(Boolean)
+  };
+}
+
 function normalizeMokaInterview(record = {}) {
   const interviewerList = Array.isArray(record.interviewers) ? record.interviewers : [];
   const interviewerEntry = interviewerList.find(item => item?.name === '魏欣欣' || item?.interviewerName === '魏欣欣') || interviewerList[0] || (record.interviewers && typeof record.interviewers === 'object' ? record.interviewers : {}) || {};
@@ -237,7 +293,8 @@ function normalizeMokaInterview(record = {}) {
   const jobName = record.jobName || record.jobTitle || record.positionName || record.roleName || record.requisitionName || record.job?.name || record.job?.title || record.position?.name || record.position?.title || record.requisition?.name || '';
   const projectName = record.projectName || record.recruitmentProjectName || record.project?.name || record.recruitmentProject?.name || record.project?.title || record.recruitmentProject?.title || '';
   const projectCode = record.projectCode || record.recruitmentProjectCode || record.project?.code || record.recruitmentProject?.code || '';
-  const outcome = record.result || record.interviewResult || record.status || record.outcome || '';
+  const outcomeData = normalizeMokaOutcome(record);
+  const outcome = outcomeData.outcome;
   const duration = Number(record.durationMinutes || record.duration || 0) || 0;
   const transcript = extractMokaText(record);
   const recordingUrl = extractMokaUrl(record, ['recordingUrl', 'recordUrl', 'videoUrl', 'interviewRecordingUrl', 'recording', 'recordingFile', 'audioUrl', 'videoInterviewRecordingUrl', 'recordingDownloadUrl', 'downloadUrl', 'viewUrl']);
@@ -248,12 +305,12 @@ function normalizeMokaInterview(record = {}) {
     source: 'moka', candidateName: record.candidateName || record.candidate?.name || '',
     jobName, jobCategory: record.jobCategory || record.category || '', location: record.location || '', projectName: String(projectName), projectCode: String(projectCode),
     interviewer: String(interviewer), round: record.interviewStage || record.stage || record.round || '',
-    outcome: String(outcome), completed: !/取消|未进行|待定|scheduled|cancelled|canceled/i.test(`${record.status || ''} ${outcome}`), interviewPassed: record.interviewPassed === true || /通过|pass|passed/i.test(String(outcome)),
+    outcome: String(outcome), outcomeStatus: outcomeData.outcomeStatus, outcomeConflict: outcomeData.outcomeConflict, completed: !/取消|未进行|scheduled|cancelled|canceled/i.test(`${record.status || ''} ${outcome}`), interviewPassed: outcomeData.interviewPassed, interviewRejected: outcomeData.interviewRejected,
     offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
     hired: record.hired === true || /入职|hired|joined/i.test(String(record.hireStatus || record.outcome || '')),
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
     transcript, transcriptCharacters: transcript.length, transcriptStatus: transcript ? 'completed' : (transcriptUrl || feedbackUrl || recordingUrl ? 'pending' : 'missing'), transcriptFetchedAt: transcript ? new Date().toISOString() : '', recordingUrl, transcriptUrl, feedbackUrl,
-    transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))),
+    transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))), feedback: outcomeData.feedback, feedbackTemplateResult: outcomeData.feedbackTemplateResult, feedbackSources: outcomeData.feedbackSources,
     jobId: String(record.jobId || record.job_id || record.positionId || record.position_id || record.requisitionId || record.requisition_id || record.job?.id || record.position?.id || record.requisition?.id || record.application?.jobId || record.application?.job_id || ''),
     applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
@@ -682,7 +739,8 @@ async function loadMokaInterviews(context) {
   const scopedRecords = filtered;
   result.records = scopedRecords.map(record => {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
-    return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
+    const outcomeData = normalizeMokaOutcome({ ...record.raw, ...record, interviewerFeedbacks: feedback ? [feedback] : [] });
+    return { ...record, ...outcomeData, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
   });
   const detailLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_INTERVIEW_DETAIL_LOOKUP_LIMIT || 120)));
   for (let index = 0; index < detailLimit; index += 4) {
@@ -717,8 +775,9 @@ function buildMokaAnalytics(records = []) {
     ['风险核验', ['核实', '确认', '风险', '冲突', '竞业']]
   ];
   const topics = topicDefinitions.map(([name, terms]) => ({ name, mentions: terms.reduce((sum, term) => sum + transcripts.reduce((count, text) => count + (text.match(new RegExp(term, 'g')) || []).length, 0), 0), terms: terms.filter(term => transcripts.some(text => text.includes(term))) })).filter(topic => topic.mentions > 0).sort((a, b) => b.mentions - a.mentions);
-  const evaluated = completed.filter(record => record.outcome || record.interviewPassed || record.hired).length;
-  const passed = completed.filter(record => record.interviewPassed).length;
+  const evaluated = completed.filter(record => record.outcomeStatus === 'passed' || record.outcomeStatus === 'rejected' || record.outcome || record.hired).length;
+  const passed = completed.filter(record => record.interviewPassed === true).length;
+  const rejected = completed.filter(record => record.interviewRejected === true || record.interviewFailed === true).length;
   const offerAccepted = completed.filter(record => record.offerAccepted || record.hired).length;
   const hired = completed.filter(record => record.hired).length;
   const coverage = completed.length ? Math.min(100, Math.round(questions.length / completed.length * 12)) : 0;
@@ -732,7 +791,7 @@ function buildMokaAnalytics(records = []) {
   if (!recommendations.length) recommendations.push('保持当前结构化提问和事实核验方式，继续用入职结果校准判断标准。');
   return {
     scope: { project: String(process.env.MOKA_PROJECT_NAME || 'QS'), jobs: 'all', interviewer: 'all' },
-    interviewer: { score: interviewerScore, completed: completed.length, passed, passRate: completed.length ? Math.round(passed / completed.length * 100) : 0, offerAccepted, hired, evaluated, evaluationRate: completed.length ? Math.round(evaluated / completed.length * 100) : 0 },
+    interviewer: { score: interviewerScore, completed: completed.length, passed, rejected, pending: Math.max(0, completed.length - passed - rejected), passRate: completed.length ? Math.round(passed / completed.length * 100) : 0, offerAccepted, hired, evaluated, evaluationRate: completed.length ? Math.round(evaluated / completed.length * 100) : 0 },
     dimensions: { questionCoverage: coverage, followUpDepth: depth, recordCompleteness: completeness },
     questions: questions.slice(0, 30),
     topics: topics.slice(0, 8),
@@ -1162,6 +1221,15 @@ async function completeRecordingPart(context, id, input = {}) {
   return { ok: true, taskId: id, status: patch.status, partCount: parts.length };
 }
 
+async function uploadRecordingPart(context, id, index, final, buffer) {
+  const task = await findTask(context, id);
+  if (!buffer.length) throw serviceError('录音分片为空', 400);
+  const extension = path.extname(task.fileName || '').toLowerCase().replace(/[^a-z0-9]/g, '') || 'webm';
+  const cloudPath = `${task.storagePrefix}/part-${String(index).padStart(5, '0')}.${extension}`;
+  const uploaded = await getCloudbaseApp().uploadFile({ cloudPath, fileContent: buffer });
+  return completeRecordingPart(context, id, { index, path: cloudPath, fileId: uploaded.fileID || uploaded.fileId || '', size: buffer.length, final });
+}
+
 async function createTranscriptionTask(context, input = {}) {
   const task = await findTask(context, String(input.recordingId || input.taskId || ''));
   const status = task.parts?.length ? 'queued' : task.status;
@@ -1182,6 +1250,32 @@ async function analyzeTranscriptionTask(context, id, input = {}) {
   const result = { text, characters: text.length, completedAt: new Date().toISOString(), format: 'text' };
   await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set({ ...task, status: 'completed', result, updatedAt: new Date().toISOString(), error: '' });
   return { ok: true, taskId: id, status: 'completed', result };
+}
+
+async function importTranscript(context, input = {}) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const text = String(input.text || '').trim();
+  if (!text) throw serviceError('转写文件内容为空', 422);
+  if (text.length > 2_000_000) throw serviceError('转写文本超过 200 万字限制', 413);
+  const id = taskId();
+  const now = new Date().toISOString();
+  const metadata = sanitizeJson(input.metadata || {});
+  const result = { text, characters: text.length, completedAt: now, format: 'text', source: 'local-moka-download' };
+  const task = {
+    id, tenantId: context.tenantId, candidateId: String(input.candidateId || '').slice(0, 100),
+    fileName: String(input.fileName || 'moka-transcript.txt').slice(0, 180),
+    mimeType: String(input.mimeType || 'text/plain').slice(0, 100), size: Math.max(0, Number(input.size || 0)),
+    engine: 'document-parser', status: 'completed', source: 'local-moka-download', metadata,
+    result, parts: [], error: '', createdBy: context.uid, createdAt: now, updatedAt: now
+  };
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set(task);
+  await audit(context, 'transcription.import', id, { fileName: task.fileName, characters: text.length });
+  return { ok: true, task: cleanDocument(task) };
+}
+
+async function listTranscriptImports(context) {
+  const result = await getDatabase().collection(COLLECTIONS.transcriptionTasks).where({ tenantId: context.tenantId, source: 'local-moka-download' }).limit(200).get();
+  return { ok: true, records: (result.data || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).map(cleanDocument) };
 }
 
 async function findTask(context, id) {
