@@ -292,6 +292,23 @@ function matchesMokaProject(record = {}, projectName = 'QS') {
   return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:$|[^A-Za-z0-9])`, 'i').test(text);
 }
 
+function mokaProjectFieldSamples(records = [], limit = 3) {
+  return records.slice(0, limit).map(record => {
+    const fields = [];
+    const visit = (value, key = '', depth = 0) => {
+      if (depth > 5 || value == null || fields.length >= 8) return;
+      if (typeof value === 'string' || typeof value === 'number') {
+        if (/(project|recruit|campaign|项目|招聘)/i.test(key)) fields.push(`${key}=${String(value).slice(0, 80)}`);
+        return;
+      }
+      if (Array.isArray(value)) return value.forEach(item => visit(item, key, depth + 1));
+      if (typeof value === 'object') Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
+    };
+    visit(record);
+    return fields;
+  }).filter(fields => fields.length);
+}
+
 function extractMokaText(record = {}) {
   const keys = ['transcript', 'transcription', 'transcriptText', 'transcriptionText', 'transcriptContent', 'transcriptionContent', 'recordingTranscript', 'videoInterviewTranscript'];
   for (const key of keys) if (typeof record[key] === 'string' && record[key].trim()) return record[key].trim();
@@ -434,7 +451,10 @@ async function loadMokaInterviews(context) {
     batch.flat().forEach(record => records.push(record));
   }
   const filtered = records.filter(record => matchesMokaProject(record.raw || record, projectName));
-  if (!filtered.length && records.length) result.warnings.push(`Moka 已返回 ${records.length} 条面试，但没有识别到项目“${projectName}”的匹配记录，请检查 Moka 项目字段映射`);
+  if (!filtered.length && records.length) {
+    const samples = mokaProjectFieldSamples(records);
+    result.warnings.push(`Moka 已返回 ${records.length} 条面试，但没有识别到项目“${projectName}”的匹配记录，请检查 Moka 项目字段映射${samples.length ? `；项目字段样例：${JSON.stringify(samples).slice(0, 600)}` : '；当前样本未发现项目字段'}`);
+  }
   const feedbackStart = start.toISOString();
   const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
   const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
