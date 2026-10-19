@@ -324,7 +324,11 @@ function matchMokaToJobProfiles(record = {}, profiles = [], businessName = 'QS')
   const businessText = mokaBusinessText(record).toLowerCase();
   const expectedBusiness = String(businessName || '').trim().toLowerCase();
   const scoped = profiles.filter(profile => `${profile.business} ${profile.name}`.toLowerCase().includes(expectedBusiness));
-  const candidates = scoped.length ? scoped : profiles;
+  // Do not infer a QS scope from a role name alone when no AceCall job has
+  // explicitly declared QS as its business/department. This prevents a
+  // same-named role from another business line entering the analysis.
+  if (!scoped.length) return null;
+  const candidates = scoped;
   const matches = candidates.map(profile => {
     const businessTerms = [expectedBusiness, ...String(profile.business || '').split(/[、,，\s/|]+/).filter(item => item.length >= 2)].filter(Boolean);
     const businessMatched = businessTerms.some(term => businessText.includes(term.toLowerCase()) || roleText.includes(term.toLowerCase()));
