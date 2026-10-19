@@ -303,7 +303,7 @@ function mokaBusinessText(record = {}) {
   const visit = (value, key = '', depth = 0) => {
     if (depth > 7 || value == null) return;
     if (typeof value === 'string' || typeof value === 'number') {
-      if (/(department|dept|business|division|team|organization|org|事业部|业务线|业务部门|部门|团队|招聘组|职能)/i.test(key)) values.push(String(value));
+      if (/(department|dept|business|division|team|organization|org|path|group|project|事业部|业务线|业务部门|部门|团队|项目组|招聘组|职能)/i.test(key)) values.push(String(value));
       return;
     }
     if (Array.isArray(value)) return value.forEach(item => visit(item, key, depth + 1));
@@ -311,6 +311,16 @@ function mokaBusinessText(record = {}) {
   };
   visit(record);
   return [...new Set(values.map(value => value.trim()).filter(Boolean))].join(' ');
+}
+
+function matchesBusinessScope(value = '', expected = 'QS') {
+  const text = String(value || '').trim(); const target = String(expected || '').trim();
+  if (!text || !target) return false;
+  if (/^[A-Za-z0-9_-]+$/.test(target)) {
+    const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:$|[^A-Za-z0-9])`, 'i').test(text);
+  }
+  return text.includes(target);
 }
 
 function normalizeJobProfile(job = {}) {
@@ -325,7 +335,7 @@ function matchMokaToJobProfiles(record = {}, profiles = [], businessName = 'QS')
   const recordJobId = String(record.jobId || record.positionId || record.requisitionId || '').trim();
   const businessText = mokaBusinessText(record).toLowerCase();
   const expectedBusiness = String(businessName || '').trim().toLowerCase();
-  const scoped = profiles.filter(profile => `${profile.business} ${profile.name}`.toLowerCase().includes(expectedBusiness));
+  const scoped = profiles.filter(profile => matchesBusinessScope(`${profile.business} ${profile.name}`, expectedBusiness));
   // Do not infer a QS scope from a role name alone when no AceCall job has
   // explicitly declared QS as its business/department. This prevents a
   // same-named role from another business line entering the analysis.
@@ -333,7 +343,7 @@ function matchMokaToJobProfiles(record = {}, profiles = [], businessName = 'QS')
   const candidates = scoped;
   const matches = candidates.map(profile => {
     const businessTerms = [expectedBusiness, ...String(profile.business || '').split(/[、,，\s/|]+/).filter(item => item.length >= 2)].filter(Boolean);
-    const businessMatched = businessTerms.some(term => businessText.includes(term.toLowerCase()));
+    const businessMatched = businessTerms.some(term => matchesBusinessScope(businessText, term));
     const roleTerms = [profile.name, ...profile.aliases].filter(item => item.length >= 2).map(item => item.toLowerCase());
     const roleMatched = roleTerms.some(term => roleText.includes(term));
     const idMatched = Boolean(recordJobId && (recordJobId === profile.id || recordJobId === profile.mokaJobId));
@@ -354,7 +364,7 @@ function normalizeMokaJob(record = {}) {
   const valueText = value => typeof value === 'object' && value ? String(value.name || value.title || value.label || value.value || '') : String(value || '');
   const id = valueText(record.id || record.jobId || record.positionId || record.requisitionId || record.code).trim();
   const name = valueText(record.name || record.jobName || record.jobTitle || record.positionName || record.title).trim();
-  const department = valueText(record.departmentName || record.department || record.deptName || record.organizationName || record.businessLine || record.business || record.division || record.team).trim();
+  const department = valueText(record.departmentName || record.department || record.deptName || record.organizationName || record.organizationPath || record.departmentPath || record.businessLine || record.business || record.businessGroup || record.division || record.team || record.groupName).trim();
   const jd = valueText(record.jd || record.jobDescription || record.description || record.responsibilities).trim();
   const keywords = [record.category, record.jobCategory, record.function, record.level, record.location].filter(Boolean).map(String);
   return { id, name, department, jd, keywords: [...new Set(keywords)], raw: record };
@@ -376,7 +386,7 @@ async function syncMokaJobs(context, client, businessName, result) {
     return [];
   }
   const expected = String(businessName || '').trim().toLowerCase();
-  const jobs = responses.map(normalizeMokaJob).filter(job => job.id && job.name && job.department.toLowerCase().includes(expected));
+  const jobs = responses.map(normalizeMokaJob).filter(job => job.id && job.name && matchesBusinessScope(job.department, expected));
   const db = getDatabase(); const synced = []; const now = new Date().toISOString();
   for (const job of jobs) {
     const id = `moka_${job.id}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 120);
