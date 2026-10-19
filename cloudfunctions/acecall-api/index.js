@@ -264,7 +264,23 @@ function mokaProjectText(record = {}) {
     record.recruitmentProject?.name, record.recruitmentProject?.code, record.recruitmentProject?.title,
     record.application?.projectName, record.application?.projectCode, record.job?.projectName, record.job?.projectCode
   ];
-  return values.flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean).join(' ');
+  const projectValues = values.flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean);
+  // Moka payloads are not uniform across interview endpoints. Some tenants
+  // nest the recruitment project several levels deep or use snake_case keys.
+  // Collect only values attached to project/recruitment keys so candidate
+  // notes or transcript text cannot accidentally match the project filter.
+  const visit = (value, key = '', depth = 0) => {
+    if (depth > 7 || value == null) return;
+    if (typeof value === 'string' || typeof value === 'number') {
+      if (/(project|recruit|campaign|项目|招聘)/i.test(key)) projectValues.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) return value.forEach(item => visit(item, key, depth + 1));
+    if (typeof value !== 'object') return;
+    Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
+  };
+  visit(record);
+  return [...new Set(projectValues.map(value => String(value).trim()).filter(Boolean))].join(' ');
 }
 
 function matchesMokaProject(record = {}, projectName = 'QS') {
@@ -418,6 +434,7 @@ async function loadMokaInterviews(context) {
     batch.flat().forEach(record => records.push(record));
   }
   const filtered = records.filter(record => matchesMokaProject(record.raw || record, projectName));
+  if (!filtered.length && records.length) result.warnings.push(`Moka 已返回 ${records.length} 条面试，但没有识别到项目“${projectName}”的匹配记录，请检查 Moka 项目字段映射`);
   const feedbackStart = start.toISOString();
   const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
   const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
