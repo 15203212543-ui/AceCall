@@ -404,8 +404,9 @@ function mergeMokaApplication(record, application = {}) {
 }
 
 async function fetchMokaApplications(records, client, result) {
-  const ids = [...new Set(records.map(record => String(record.applicationId || '').trim()).filter(Boolean))];
-  const configuredLimit = Number(process.env.MOKA_APPLICATION_LOOKUP_LIMIT || 200);
+  const unresolved = records.filter(record => !record.jobId && !mokaProjectText(record.raw || record));
+  const ids = [...new Set(unresolved.map(record => String(record.applicationId || '').trim()).filter(Boolean))];
+  const configuredLimit = Number(process.env.MOKA_APPLICATION_LOOKUP_LIMIT || 100);
   const limit = Math.min(ids.length, Math.max(0, configuredLimit));
   if (!limit) return records;
   const byId = new Map();
