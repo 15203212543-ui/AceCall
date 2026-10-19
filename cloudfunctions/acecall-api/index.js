@@ -234,6 +234,8 @@ function normalizeMokaInterview(record = {}) {
   const interviewerEntry = interviewerList.find(item => item?.name === '魏欣欣' || item?.interviewerName === '魏欣欣') || interviewerList[0] || (record.interviewers && typeof record.interviewers === 'object' ? record.interviewers : {}) || {};
   const interviewer = record.interviewerName || record.interviewer || record.interview?.interviewerName || record.interview?.interviewer || interviewerEntry.name || interviewerEntry.interviewerName || interviewerEntry || '';
   const jobName = record.jobName || record.jobTitle || record.positionName || record.roleName || record.requisitionName || record.job?.name || record.job?.title || record.position?.name || record.position?.title || record.requisition?.name || '';
+  const projectName = record.projectName || record.recruitmentProjectName || record.project?.name || record.recruitmentProject?.name || record.project?.title || record.recruitmentProject?.title || '';
+  const projectCode = record.projectCode || record.recruitmentProjectCode || record.project?.code || record.recruitmentProject?.code || '';
   const outcome = record.result || record.interviewResult || record.status || record.outcome || '';
   const duration = Number(record.durationMinutes || record.duration || 0) || 0;
   const transcript = extractMokaText(record);
@@ -243,7 +245,7 @@ function normalizeMokaInterview(record = {}) {
   return {
     id: String(record.id || record.interviewId || record._id || crypto.randomUUID()),
     source: 'moka', candidateName: record.candidateName || record.candidate?.name || '',
-    jobName, jobCategory: record.jobCategory || record.category || '', location: record.location || '',
+    jobName, jobCategory: record.jobCategory || record.category || '', location: record.location || '', projectName: String(projectName), projectCode: String(projectCode),
     interviewer: String(interviewer), round: record.interviewStage || record.stage || record.round || '',
     outcome: String(outcome), completed: !/取消|未进行|待定|scheduled|cancelled|canceled/i.test(`${record.status || ''} ${outcome}`), interviewPassed: record.interviewPassed === true || /通过|pass|passed/i.test(String(outcome)),
     offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
@@ -253,6 +255,25 @@ function normalizeMokaInterview(record = {}) {
     transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))),
     applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
+}
+
+function mokaProjectText(record = {}) {
+  const values = [
+    record.projectName, record.projectCode, record.recruitmentProjectName, record.recruitmentProjectCode,
+    record.project?.name, record.project?.code, record.project?.title,
+    record.recruitmentProject?.name, record.recruitmentProject?.code, record.recruitmentProject?.title,
+    record.application?.projectName, record.application?.projectCode, record.job?.projectName, record.job?.projectCode
+  ];
+  return values.flatMap(value => Array.isArray(value) ? value : [value]).filter(Boolean).join(' ');
+}
+
+function matchesMokaProject(record = {}, projectName = 'QS') {
+  const expected = String(projectName || '').trim();
+  if (!expected) return true;
+  const text = mokaProjectText(record);
+  if (!text) return false;
+  const escaped = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:$|[^A-Za-z0-9])`, 'i').test(text);
 }
 
 function extractMokaText(record = {}) {
@@ -371,7 +392,8 @@ async function enrichMokaAttachment(record, client) {
 
 async function loadMokaInterviews(context) {
   const status = mokaConnectionStatus();
-  const result = { ok: true, source: 'moka', configured: status.configured, filters: { job: '法务 BP', interviewer: '魏欣欣' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
+  const projectName = String(status.projectName || process.env.MOKA_PROJECT_NAME || 'QS').trim();
+  const result = { ok: true, source: 'moka', configured: status.configured, filters: { project: projectName, jobs: 'all', interviewer: 'all' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
   if (!status.configured) return result;
   const client = createMokaClient();
   const lookbackDays = Math.min(730, Math.max(31, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 365)));
@@ -383,12 +405,12 @@ async function loadMokaInterviews(context) {
     if (!response.ok) throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502);
     records.push(...flattenMokaRecords(response.body).map(normalizeMokaInterview));
   }
-  const filtered = records.filter(record => /法务\s*BP/i.test(mokaInterviewText(record.raw || record)) && /魏欣欣/.test(mokaInterviewText(record.raw || record)));
+  const filtered = records.filter(record => matchesMokaProject(record.raw || record, projectName));
   const feedbackStart = start.toISOString();
   const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
   const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
   if (!feedbackResponse.ok) result.warnings.push(`面试反馈读取失败（${feedbackResponse.status}）`);
-  const feedbackByKey = new Map(feedbackRecords.filter(item => /魏欣欣/.test(String(item.interviewerName || item.interviewer || ''))).map(item => [String(item.applicationId || item.interviewId || ''), item]));
+  const feedbackByKey = new Map(feedbackRecords.map(item => [String(item.applicationId || item.interviewId || ''), item]));
   result.records = filtered.map(record => {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
     return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
@@ -429,7 +451,7 @@ function buildMokaAnalytics(records = []) {
   if (completeness < 80) recommendations.push('在面试结束后及时完成结论记录，并明确通过依据或待核验事项。');
   if (!recommendations.length) recommendations.push('保持当前结构化提问和事实核验方式，继续用入职结果校准判断标准。');
   return {
-    scope: { job: '法务 BP', interviewer: '魏欣欣' },
+    scope: { project: String(process.env.MOKA_PROJECT_NAME || 'QS'), jobs: 'all', interviewer: 'all' },
     interviewer: { score: interviewerScore, completed: completed.length, passed, passRate: completed.length ? Math.round(passed / completed.length * 100) : 0, offerAccepted, hired, evaluated, evaluationRate: completed.length ? Math.round(evaluated / completed.length * 100) : 0 },
     dimensions: { questionCoverage: coverage, followUpDepth: depth, recordCompleteness: completeness },
     questions: questions.slice(0, 30),
