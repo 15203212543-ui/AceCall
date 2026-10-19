@@ -307,7 +307,7 @@ function mokaBusinessText(record = {}) {
       return;
     }
     if (Array.isArray(value)) return value.forEach(item => visit(item, key, depth + 1));
-    if (typeof value === 'object') Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
+    if (typeof value === 'object') Object.entries(value).forEach(([childKey, child]) => visit(child, key ? `${key}.${childKey}` : childKey, depth + 1));
   };
   visit(record);
   return [...new Set(values.map(value => value.trim()).filter(Boolean))].join(' ');
@@ -417,12 +417,12 @@ function mergeMokaApplication(record, application = {}) {
 async function fetchMokaApplications(records, client, result) {
   const unresolved = records.filter(record => !record.jobId && !mokaProjectText(record.raw || record));
   const ids = [...new Set(unresolved.map(record => String(record.applicationId || '').trim()).filter(Boolean))];
-  const configuredLimit = Number(process.env.MOKA_APPLICATION_LOOKUP_LIMIT || 100);
+  const configuredLimit = Number(process.env.MOKA_APPLICATION_LOOKUP_LIMIT || 2200);
   const limit = Math.min(ids.length, Math.max(0, configuredLimit));
   if (!limit) return records;
   const byId = new Map();
-  for (let index = 0; index < limit; index += 12) {
-    const batch = await Promise.all(ids.slice(index, index + 12).map(async applicationId => {
+  for (let index = 0; index < limit; index += 24) {
+    const batch = await Promise.all(ids.slice(index, index + 24).map(async applicationId => {
       try {
         const response = await client.request(`${client.config.applicationsPath}/${encodeURIComponent(applicationId)}`);
         if (!response.ok) return null;
@@ -606,9 +606,6 @@ async function loadMokaInterviews(context) {
   const result = { ok: true, source: 'moka', configured: status.configured, filters: { project: projectName, jobs: 'all', interviewer: 'all' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
   if (!status.configured) return result;
   const client = createMokaClient();
-  const syncedJobs = await syncMokaJobs(context, client, projectName, result);
-  result.syncedJobs = syncedJobs;
-  const jobProfiles = await loadAcecallJobProfiles(context);
   const lookbackDays = Math.min(730, Math.max(31, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 365)));
   const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
   const windows = [];
@@ -634,22 +631,20 @@ async function loadMokaInterviews(context) {
   // application once before filtering so project scope is based on Moka's
   // canonical application object rather than an incomplete interview row.
   const recordsWithApplications = await fetchMokaApplications(records, client, result);
-  const profileMatches = recordsWithApplications.map(record => ({ record, match: matchMokaToJobProfiles(record.raw || record, jobProfiles, projectName) })).filter(item => item.match);
-  const filteredByJob = profileMatches.map(item => ({ ...item.record, acecallJobId: item.match.profile.id, acecallJobName: item.match.profile.name, matchReason: `${item.match.businessMatched ? '业务/部门匹配' : ''}${item.match.roleMatched ? '；岗位名称/关键词匹配' : ''}`.replace(/^；|；$/g, '') }));
+  const filtered = recordsWithApplications.filter(record => matchesBusinessScope(mokaBusinessText(record.raw || record), projectName));
   // Strict scope: projectName is the department/business boundary. Never
   // fall back to a sample of unrelated interviews when the department rule
   // did not match; an empty result is safer than contaminating analytics.
-  const filtered = filteredByJob;
-  if (jobProfiles.length && !filteredByJob.length) result.warnings.push(`AceCall 当前工作区未找到可与 Moka 面试记录匹配的“${projectName}”业务/岗位；请确认岗位的部门字段和岗位名称已保存。`);
+  // No AceCall job matching is applied here; this page is based on Moka interviews.
   result.projectScopeFallback = false;
   result.scopeDiagnostics = {
-    jobProfiles: jobProfiles.length,
+    jobProfiles: 0,
     matched: filtered.length,
     fetched: records.length,
     departmentSamples: [...new Set(recordsWithApplications.map(record => mokaBusinessText(record.raw || record)).filter(Boolean))].slice(0, 10),
     roleSamples: [...new Set(recordsWithApplications.map(record => mokaRoleText(record.raw || record)).filter(Boolean))].slice(0, 10)
   };
-  if (!filtered.length && records.length) result.warnings.push(`严格 QS 部门匹配结果为 0：Moka 返回 ${records.length} 条面试，但没有记录同时满足 QS 部门和 AceCall 岗位规则。已停止展示非 QS 数据。`);
+  if (!filtered.length && records.length) result.warnings.push(`严格 QS 部门匹配结果为 0：Moka 返回 ${records.length} 条面试，但没有记录的部门/组织层级字段明确属于 QS。已停止展示非 QS 数据。`);
   const feedbackStart = start.toISOString();
   const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
   const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];

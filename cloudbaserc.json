@@ -7,7 +7,7 @@
       "dir": "acecall-api",
       "type": "HTTP",
       "runtime": "Nodejs18.15",
-      "timeout": 60,
+      "timeout": 120,
       "memorySize": 512,
       "installDependency": false,
       "ignore": ["test/**", "*.md"]
@@ -17,7 +17,7 @@
       "dir": "acecall-api",
       "type": "HTTP",
       "runtime": "Nodejs18.15",
-      "timeout": 60,
+      "timeout": 120,
       "memorySize": 512,
       "installDependency": false,
       "ignore": ["test/**", "*.md"]
