@@ -244,7 +244,7 @@ function normalizeMokaInterview(record = {}) {
     offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
     hired: record.hired === true || /入职|hired|joined/i.test(String(record.hireStatus || record.outcome || '')),
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
-    transcript, recordingUrl, transcriptUrl, feedbackUrl,
+    transcript, transcriptCharacters: transcript.length, transcriptStatus: transcript ? 'completed' : (transcriptUrl || feedbackUrl || recordingUrl ? 'pending' : 'missing'), transcriptFetchedAt: transcript ? new Date().toISOString() : '', recordingUrl, transcriptUrl, feedbackUrl,
     transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))),
     applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
@@ -308,7 +308,7 @@ async function parseMokaAttachment(url, contentType = '') {
 }
 
 async function enrichMokaAttachment(record) {
-  if (record.transcript) return record;
+  if (record.transcript) return { ...record, transcriptCharacters: record.transcript.length, transcriptStatus: 'completed' };
   const candidates = [
     [record.transcriptUrl, 'transcript'],
     [record.feedbackUrl, 'feedback'],
@@ -316,10 +316,11 @@ async function enrichMokaAttachment(record) {
   ].filter(([url]) => url);
   for (const [url, source] of candidates) {
     const parsed = await parseMokaAttachment(url);
-    if (parsed.text) return { ...record, transcript: parsed.text, transcriptSource: `${source}-${parsed.status}`, transcriptStatus: parsed.status };
-    if (source === 'recording' && parsed.status === 'audio-ready') return { ...record, transcriptStatus: parsed.status };
+    if (parsed.text) return { ...record, transcript: parsed.text, transcriptCharacters: parsed.text.length, transcriptSource: `${source}-${parsed.status}`, transcriptStatus: 'completed', transcriptFetchedAt: new Date().toISOString() };
+    if (source === 'recording' && parsed.status === 'audio-ready') return { ...record, transcriptStatus: 'audio-ready', transcriptError: 'Moka 返回录音文件，但未返回可直接解析的转写文本' };
+    if (parsed.status !== 'blocked-url') return { ...record, transcriptStatus: parsed.status, transcriptError: `转写附件处理未完成：${parsed.status}` };
   }
-  return record;
+  return { ...record, transcriptStatus: record.transcriptStatus || 'missing' };
 }
 
 async function loadMokaInterviews(context) {
@@ -348,6 +349,7 @@ async function loadMokaInterviews(context) {
   });
   result.records = await Promise.all(result.records.map(enrichMokaAttachment));
   result.totalFetched = records.length; result.totalMatched = result.records.length;
+  result.transcriptStats = result.records.reduce((stats, record) => { stats.total += 1; if (record.transcriptStatus === 'completed') stats.completed += 1; else if (record.transcriptStatus === 'pending' || record.transcriptStatus === 'audio-ready') stats.pending += 1; else stats.missing += 1; stats.characters += Number(record.transcriptCharacters || 0); return stats; }, { total: 0, completed: 0, pending: 0, missing: 0, characters: 0 });
   return result;
 }
 
