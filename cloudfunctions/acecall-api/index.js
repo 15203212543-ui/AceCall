@@ -204,7 +204,7 @@ function setCors(response, origin) {
 function flattenMokaRecords(payload) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return [];
-  for (const key of ['data', 'items', 'results', 'interviews', 'records']) {
+  for (const key of ['data', 'items', 'results', 'interviews', 'records', 'list', 'jobList', 'jobs', 'positions', 'requisitions']) {
     if (Array.isArray(payload[key])) return payload[key];
     if (payload[key] && typeof payload[key] === 'object') {
       const nested = flattenMokaRecords(payload[key]);
@@ -253,7 +253,7 @@ function normalizeMokaInterview(record = {}) {
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
     transcript, transcriptCharacters: transcript.length, transcriptStatus: transcript ? 'completed' : (transcriptUrl || feedbackUrl || recordingUrl ? 'pending' : 'missing'), transcriptFetchedAt: transcript ? new Date().toISOString() : '', recordingUrl, transcriptUrl, feedbackUrl,
     transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))),
-    jobId: String(record.jobId || record.positionId || record.requisitionId || record.job?.id || record.position?.id || record.requisition?.id || record.application?.jobId || ''),
+    jobId: String(record.jobId || record.job_id || record.positionId || record.position_id || record.requisitionId || record.requisition_id || record.job?.id || record.position?.id || record.requisition?.id || record.application?.jobId || record.application?.job_id || ''),
     applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
 }
@@ -351,10 +351,11 @@ async function loadAcecallJobProfiles(context) {
 }
 
 function normalizeMokaJob(record = {}) {
-  const id = String(record.id || record.jobId || record.positionId || record.requisitionId || record.code || '').trim();
-  const name = String(record.name || record.jobName || record.jobTitle || record.positionName || record.title || '').trim();
-  const department = String(record.departmentName || record.department || record.deptName || record.businessLine || record.business || record.division || '').trim();
-  const jd = String(record.jd || record.jobDescription || record.description || record.responsibilities || '').trim();
+  const valueText = value => typeof value === 'object' && value ? String(value.name || value.title || value.label || value.value || '') : String(value || '');
+  const id = valueText(record.id || record.jobId || record.positionId || record.requisitionId || record.code).trim();
+  const name = valueText(record.name || record.jobName || record.jobTitle || record.positionName || record.title).trim();
+  const department = valueText(record.departmentName || record.department || record.deptName || record.organizationName || record.businessLine || record.business || record.division || record.team).trim();
+  const jd = valueText(record.jd || record.jobDescription || record.description || record.responsibilities).trim();
   const keywords = [record.category, record.jobCategory, record.function, record.level, record.location].filter(Boolean).map(String);
   return { id, name, department, jd, keywords: [...new Set(keywords)], raw: record };
 }
@@ -375,7 +376,7 @@ async function syncMokaJobs(context, client, businessName, result) {
     return [];
   }
   const expected = String(businessName || '').trim().toLowerCase();
-  const jobs = responses.map(normalizeMokaJob).filter(job => job.id && job.name && `${job.department} ${job.name}`.toLowerCase().includes(expected));
+  const jobs = responses.map(normalizeMokaJob).filter(job => job.id && job.name && job.department.toLowerCase().includes(expected));
   const db = getDatabase(); const synced = []; const now = new Date().toISOString();
   for (const job of jobs) {
     const id = `moka_${job.id}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 120);
@@ -625,29 +626,26 @@ async function loadMokaInterviews(context) {
   const recordsWithApplications = await fetchMokaApplications(records, client, result);
   const profileMatches = recordsWithApplications.map(record => ({ record, match: matchMokaToJobProfiles(record.raw || record, jobProfiles, projectName) })).filter(item => item.match);
   const filteredByJob = profileMatches.map(item => ({ ...item.record, acecallJobId: item.match.profile.id, acecallJobName: item.match.profile.name, matchReason: `${item.match.businessMatched ? '业务/部门匹配' : ''}${item.match.roleMatched ? '；岗位名称/关键词匹配' : ''}`.replace(/^；|；$/g, '') }));
-  const filtered = filteredByJob.length ? filteredByJob : recordsWithApplications.filter(record => matchesMokaProject(record.raw || record, projectName));
+  // Strict scope: projectName is the department/business boundary. Never
+  // fall back to a sample of unrelated interviews when the department rule
+  // did not match; an empty result is safer than contaminating analytics.
+  const filtered = filteredByJob;
   if (jobProfiles.length && !filteredByJob.length) result.warnings.push(`AceCall 当前工作区未找到可与 Moka 面试记录匹配的“${projectName}”业务/岗位；请确认岗位的部门字段和岗位名称已保存。`);
-  const hasBusinessOrRoleFields = recordsWithApplications.some(record => Boolean(mokaBusinessText(record.raw || record) || mokaRoleText(record.raw || record)));
-  const projectFallback = !filtered.length && recordsWithApplications.length;
-  result.projectScopeFallback = Boolean(projectFallback);
-  if (projectFallback) {
-    // Keep the page diagnosable and usable when the tenant's API token does
-    // not expose project fields. The response is explicitly marked as a
-    // fallback; it must not be presented as a confirmed QS-only dataset.
-    result.warnings.push(`${hasBusinessOrRoleFields ? `暂未通过“${projectName}”业务/岗位规则匹配` : 'Moka 未返回业务或岗位字段'}，暂展示有限诊断样本；当前不是已确认的目标范围。`);
-  }
-  if (!filtered.length && records.length) {
-    const samples = mokaProjectFieldSamples(records);
-    result.warnings.push(`Moka 已返回 ${records.length} 条面试，但没有识别到项目“${projectName}”的匹配记录，请检查 Moka 项目字段映射${samples.length ? `；项目字段样例：${JSON.stringify(samples).slice(0, 600)}` : '；当前样本未发现项目字段'}`);
-  }
+  result.projectScopeFallback = false;
+  result.scopeDiagnostics = {
+    jobProfiles: jobProfiles.length,
+    matched: filtered.length,
+    fetched: records.length,
+    departmentSamples: [...new Set(recordsWithApplications.map(record => mokaBusinessText(record.raw || record)).filter(Boolean))].slice(0, 10),
+    roleSamples: [...new Set(recordsWithApplications.map(record => mokaRoleText(record.raw || record)).filter(Boolean))].slice(0, 10)
+  };
+  if (!filtered.length && records.length) result.warnings.push(`严格 QS 部门匹配结果为 0：Moka 返回 ${records.length} 条面试，但没有记录同时满足 QS 部门和 AceCall 岗位规则。已停止展示非 QS 数据。`);
   const feedbackStart = start.toISOString();
   const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
   const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
   if (!feedbackResponse.ok) result.warnings.push([401, 403].includes(feedbackResponse.status) ? `Moka 面试反馈授权不足（${feedbackResponse.status}）` : `面试反馈读取失败（${feedbackResponse.status}）`);
   const feedbackByKey = new Map(feedbackRecords.map(item => [String(item.applicationId || item.interviewId || ''), item]));
-  const fallbackLimit = Math.min(recordsWithApplications.length, Math.max(20, Number(process.env.MOKA_PROJECT_FALLBACK_RECORD_LIMIT || 120)));
-  const scopedRecords = projectFallback ? recordsWithApplications.slice(0, fallbackLimit) : filtered;
-  if (projectFallback && recordsWithApplications.length > fallbackLimit) result.warnings.push(`项目字段缺失时仅返回前 ${fallbackLimit} 条诊断样本，避免一次性传输全部面试记录。`);
+  const scopedRecords = filtered;
   result.records = scopedRecords.map(record => {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
     return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
