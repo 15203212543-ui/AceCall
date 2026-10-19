@@ -9,6 +9,9 @@ function getMokaConfig(env = process.env) {
     authMode: String(env.MOKA_AUTH_MODE || 'basic').trim().toLowerCase(),
     apiKeyPrefix: String(env.MOKA_API_KEY_PREFIX || '').trim(),
     interviewsPath: String(env.MOKA_INTERVIEWS_PATH || '/api-platform/v1/interviews').trim(),
+    applicationsPath: String(env.MOKA_APPLICATIONS_PATH || '/api-platform/v1/applications').trim(),
+    interviewInformationPath: String(env.MOKA_INTERVIEW_INFORMATION_PATH || '/api-platform/v1/interview/interview-information').trim(),
+    interviewInfosV3Path: String(env.MOKA_INTERVIEW_INFOS_V3_PATH || '/api-platform/v3/getInterviewInfos').trim(),
     projectName: String(env.MOKA_PROJECT_NAME || 'QS').trim()
   };
 }

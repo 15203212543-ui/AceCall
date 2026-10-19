@@ -3,6 +3,7 @@ const { getMokaConfig, mokaConnectionStatus, maskSecret } = require('./moka-clie
 
 assert.deepEqual(getMokaConfig({}), {
   apiKey: '', baseUrl: '', enterpriseId: '', apiKeyHeader: 'Authorization', authMode: 'basic', apiKeyPrefix: '', interviewsPath: '/api-platform/v1/interviews', projectName: 'QS'
+  , applicationsPath: '/api-platform/v1/applications', interviewInformationPath: '/api-platform/v1/interview/interview-information', interviewInfosV3Path: '/api-platform/v3/getInterviewInfos'
 });
 assert.equal(mokaConnectionStatus({ MOKA_BASE_URL: 'https://example.test/', MOKA_API_KEY: '1234567890' }).configured, true);
 assert.equal(mokaConnectionStatus({ MOKA_BASE_URL: 'https://example.test/' }).configured, false);
