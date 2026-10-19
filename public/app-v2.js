@@ -574,6 +574,7 @@ function renderCurrent() {
   if (app.view === 'connections') renderConnections();
   if (app.view === 'settings') renderSettings();
   if (app.view === 'candidate') renderCandidateDetail();
+  $$('a[href="downloads/AceCall-Sync-Mac.dmg"]').forEach(link => link.setAttribute('href', 'downloads/AceCall-Sync-Mac.zip'));
 }
 
 function analysisDecisionCounts(items) { const counts = new Map(); items.forEach(item => { const decision = finalAction(item) || '未决策'; counts.set(decision, (counts.get(decision) || 0) + 1); }); return [...counts.entries()].sort((a, b) => b[1] - a[1]); }
