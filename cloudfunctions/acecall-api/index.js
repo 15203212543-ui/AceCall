@@ -95,6 +95,7 @@ const server = http.createServer(async (request, response) => {
         route: 'reachable',
         pathNormalized: true,
         authContextDetected: Boolean(identity.uid && !identity.isAnonymous),
+        authContextAnonymous: Boolean(identity.isAnonymous),
         cloudbaseConfigured: Boolean(process.env.TCB_ENV),
         mokaConfigured: Boolean(moka.configured),
         mokaBaseUrlConfigured: Boolean(moka.baseUrl),
@@ -434,25 +435,32 @@ function mergeMokaApplication(record, application = {}) {
 }
 
 async function fetchMokaApplications(records, client, result) {
-  const unresolved = records.filter(record => !record.jobId && !mokaProjectText(record.raw || record));
+  const unresolved = records.filter(record => !record.jobId && !mokaProjectText(record.raw || record) && !mokaRoleText(record.raw || record));
   const ids = [...new Set(unresolved.map(record => String(record.applicationId || '').trim()).filter(Boolean))];
-  const configuredLimit = Number(process.env.MOKA_APPLICATION_LOOKUP_LIMIT || 2200);
+  const configuredLimit = Number(process.env.MOKA_APPLICATION_LOOKUP_LIMIT || 480);
   const limit = Math.min(ids.length, Math.max(0, configuredLimit));
   if (!limit) return records;
   const byId = new Map();
-  for (let index = 0; index < limit; index += 24) {
-    const batch = await Promise.all(ids.slice(index, index + 24).map(async applicationId => {
-      try {
-        const response = await client.request(`${client.config.applicationsPath}/${encodeURIComponent(applicationId)}`);
-        if (!response.ok) return null;
-        const body = response.body && typeof response.body === 'object' ? response.body : {};
-        const application = body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
-        return { applicationId, application };
-      } catch { return null; }
-    }));
-    batch.filter(Boolean).forEach(item => byId.set(item.applicationId, item.application));
+  const deadline = Date.now() + Math.max(15000, Number(process.env.MOKA_APPLICATION_LOOKUP_BUDGET_MS || 65000));
+  const fetchBatch = async batchIds => (await Promise.all(batchIds.map(async applicationId => {
+    try {
+      const response = await client.request(`${client.config.applicationsPath}/${encodeURIComponent(applicationId)}`);
+      if (!response.ok) return null;
+      const body = response.body && typeof response.body === 'object' ? response.body : {};
+      const application = body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
+      return { applicationId, application };
+    } catch { return null; }
+  }))).filter(Boolean);
+  // Moka application lookups are independent. Run a bounded number of
+  // batches in parallel and stop before the HTTP function budget is consumed.
+  for (let index = 0; index < limit && Date.now() < deadline; index += 48) {
+    const batches = [];
+    for (let offset = index; offset < Math.min(limit, index + 96); offset += 48) batches.push(fetchBatch(ids.slice(offset, offset + 48)));
+    const results = await Promise.all(batches);
+    results.flat().forEach(item => byId.set(item.applicationId, item.application));
   }
   if (ids.length > limit) result.warnings.push(`已读取 ${limit}/${ids.length} 个申请详情用于项目识别；可通过 MOKA_APPLICATION_LOOKUP_LIMIT 提高上限。`);
+  if (Date.now() >= deadline && byId.size < limit) result.warnings.push(`Moka 申请补查达到 ${Math.round((deadline - (deadline - Math.max(15000, Number(process.env.MOKA_APPLICATION_LOOKUP_BUDGET_MS || 65000)))) / 1000)} 秒预算，已先返回已完成结果。`);
   return records.map(record => mergeMokaApplication(record, byId.get(String(record.applicationId || ''))));
 }
 
@@ -622,7 +630,7 @@ async function enrichMokaAttachment(record, client) {
 async function loadMokaInterviews(context) {
   const status = mokaConnectionStatus();
   const projectName = String(status.projectName || process.env.MOKA_PROJECT_NAME || 'QS').trim();
-  const client = createMokaClient();
+  const client = createMokaClient({ timeoutMs: Math.max(3000, Number(process.env.MOKA_REQUEST_TIMEOUT_MS || 8000)) });
   const targetJobs = client.config.jobNames;
   const result = { ok: true, source: 'moka', configured: status.configured, filters: { project: '', jobs: targetJobs, interviewer: 'all' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
   if (!status.configured) return result;
@@ -676,17 +684,18 @@ async function loadMokaInterviews(context) {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
     return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
   });
-  const detailLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_INTERVIEW_DETAIL_LOOKUP_LIMIT || 300)));
+  const detailLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_INTERVIEW_DETAIL_LOOKUP_LIMIT || 120)));
   for (let index = 0; index < detailLimit; index += 4) {
     const details = await Promise.all(result.records.slice(index, index + 4).map(record => fetchMokaInterviewDetails(record, client)));
     result.records.splice(index, details.length, ...details);
   }
   if (result.records.length > detailLimit && detailLimit > 0) result.warnings.push(`已读取前 ${detailLimit} 场面试详情以查找录制/转写附件。`);
-  const enrichedRecords = [];
-  for (let index = 0; index < result.records.length; index += 4) {
-    enrichedRecords.push(...await Promise.all(result.records.slice(index, index + 4).map(record => enrichMokaAttachment(record, client))));
-  }
-  result.records = enrichedRecords;
+  const attachmentLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_TRANSCRIPT_LOOKUP_LIMIT || detailLimit)));
+  const enrichedRecords = result.records.slice(0, attachmentLimit).length
+    ? await Promise.all(result.records.slice(0, attachmentLimit).map(record => enrichMokaAttachment(record, client)))
+    : [];
+  result.records = [...enrichedRecords, ...result.records.slice(attachmentLimit)];
+  if (result.records.length > attachmentLimit && attachmentLimit > 0) result.warnings.push(`已读取前 ${attachmentLimit} 场面试的录音/转写附件，其余记录保留为待补抓。`);
   result.totalFetched = records.length; result.totalMatched = result.records.length;
   result.transcriptStats = result.records.reduce((stats, record) => { stats.total += 1; if (record.transcriptStatus === 'completed') stats.completed += 1; else if (record.transcriptStatus === 'pending' || record.transcriptStatus === 'audio-ready') stats.pending += 1; else stats.missing += 1; stats.characters += Number(record.transcriptCharacters || 0); return stats; }, { total: 0, completed: 0, pending: 0, missing: 0, characters: 0 });
   result.analytics = buildMokaAnalytics(result.records);
@@ -856,7 +865,17 @@ async function readGatewayUser(request) {
 function findIdentity(value, depth = 0) {
   if (!value || depth > 4 || typeof value !== 'object') return {};
   const uid = value.uid || value.userId || value.user_id || value.sub || value.customUserId || value.openId || value.openid || '';
-  if (uid) return { uid: String(uid), isAnonymous: Boolean(value.isAnonymous || value.anonymous || String(value.scope || '').includes('anonymous')) };
+  if (uid) {
+    const normalizedUid = String(uid);
+    const scope = String(value.scope || value.user_type || value.userType || '').toLowerCase();
+    return {
+      uid: normalizedUid,
+      isAnonymous: Boolean(
+        value.isAnonymous || value.is_anonymous || value.anonymous ||
+        scope.includes('anonymous') || normalizedUid === 'anon'
+      )
+    };
+  }
   for (const child of Object.values(value)) {
     const found = findIdentity(child, depth + 1);
     if (found.uid) return found;

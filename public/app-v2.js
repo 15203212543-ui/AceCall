@@ -219,7 +219,13 @@ async function initializeAuth() {
     showLoginMessage('登录状态已重置，请重新输入账号密码', false);
     return false;
   }
-  if (!data?.session) return false;
+  // The publishable key can expose an anonymous session. It is not a valid
+  // business login and must never unlock the workspace or protected APIs.
+  if (!data?.session || isAnonymousSession(data.session)) {
+    if (data?.session) await cloudbaseAuth.signOut().catch(() => {});
+    showLoginMessage('请先使用账号密码登录后再进入工作台', false);
+    return false;
+  }
   captureAuthUser(data.session, rememberedAccount);
   restoreRemoteCache();
   $('#loginScreen').classList.add('hidden');
@@ -1747,10 +1753,20 @@ async function authenticatedFetch(url, options = {}) {
     finally { clearTimeout(timer); }
   };
   let sessionResult = await cloudbaseAuth.getSession();
-  let token = sessionResult.data?.session?.access_token;
+  let session = sessionResult.data?.session;
+  if (session && isAnonymousSession(session)) {
+    await cloudbaseAuth.signOut().catch(() => {});
+    throw new Error('请先登录后使用业务功能');
+  }
+  let token = session?.access_token;
   if (!token) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
-    token = refreshed?.data?.session?.access_token;
+    session = refreshed?.data?.session;
+    if (session && isAnonymousSession(session)) {
+      await cloudbaseAuth.signOut().catch(() => {});
+      throw new Error('请先登录后使用业务功能');
+    }
+    token = session?.access_token;
   }
   if (!token) throw new Error('登录已过期，请重新登录');
   let response;
@@ -1762,9 +1778,30 @@ async function authenticatedFetch(url, options = {}) {
   if (response.status === 401) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
-    if (freshToken) response = await request(freshToken);
+    if (freshToken && !isAnonymousSession(refreshed?.data?.session)) response = await request(freshToken);
   }
   return response;
+}
+function isAnonymousSession(session) {
+  const user = session?.user || {};
+  const metadata = user.user_metadata || {};
+  const claims = session?.access_token ? decodeJwtPayload(session.access_token) : {};
+  return Boolean(
+    user.is_anonymous === true || user.isAnonymous === true ||
+    metadata.is_anonymous === true || metadata.isAnonymous === true ||
+    claims.is_anonymous === true || claims.isAnonymous === true ||
+    claims.scope === 'anonymous' || claims.name === 'Anonymous' || claims.sub === 'anon'
+  );
+}
+function decodeJwtPayload(token) {
+  try {
+    const part = String(token).split('.')[1];
+    if (!part) return {};
+    const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(decodeURIComponent(Array.from(atob(normalized), char => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')));
+  } catch {
+    return {};
+  }
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
 async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));const account=username||app.authUser?.email||app.authUser?.username||$('#loginUsername')?.value||'';if(response.status===403){const requestedCompany=companyName||INTERNAL_TEST_COMPANY;response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:account,companyName:requestedCompany})});}if(!response.ok)throw new Error('工作区初始化失败');const workspace=await response.json();workspace.currentMember={...(app.authUser||{}),...(workspace.currentMember||{}),email:workspace.currentMember?.email||app.authUser?.email||''};app.workspace=workspace;updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
