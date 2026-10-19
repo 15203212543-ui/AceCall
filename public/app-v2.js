@@ -1696,7 +1696,6 @@ async function authenticatedFetch(url, options = {}) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
     if (freshToken) response = await request(freshToken);
-    else throw new Error('登录已过期，请重新登录');
   }
   return response;
 }

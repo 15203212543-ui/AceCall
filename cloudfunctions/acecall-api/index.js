@@ -402,14 +402,17 @@ async function loadMokaInterviews(context) {
     const rangeEnd = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000));
     const path = `${client.config.interviewsPath}?startDate=${encodeURIComponent(cursor.toISOString())}&endDate=${encodeURIComponent(rangeEnd.toISOString())}`;
     const response = await client.request(path);
-    if (!response.ok) throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502);
+    if (!response.ok) {
+      if ([401, 403].includes(response.status)) throw serviceError(`Moka API 鉴权失败（${response.status}），请检查 MOKA_API_KEY 和企业授权范围`, 502, { code: 'MOKA_AUTH_FAILED' });
+      throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502, { code: 'MOKA_INTERVIEWS_FAILED' });
+    }
     records.push(...flattenMokaRecords(response.body).map(normalizeMokaInterview));
   }
   const filtered = records.filter(record => matchesMokaProject(record.raw || record, projectName));
   const feedbackStart = start.toISOString();
   const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
   const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
-  if (!feedbackResponse.ok) result.warnings.push(`面试反馈读取失败（${feedbackResponse.status}）`);
+  if (!feedbackResponse.ok) result.warnings.push([401, 403].includes(feedbackResponse.status) ? `Moka 面试反馈授权不足（${feedbackResponse.status}）` : `面试反馈读取失败（${feedbackResponse.status}）`);
   const feedbackByKey = new Map(feedbackRecords.map(item => [String(item.applicationId || item.interviewId || ''), item]));
   result.records = filtered.map(record => {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
