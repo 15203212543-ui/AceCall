@@ -398,15 +398,24 @@ async function loadMokaInterviews(context) {
   const client = createMokaClient();
   const lookbackDays = Math.min(730, Math.max(31, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 365)));
   const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
+  const windows = [];
   for (let cursor = new Date(start); cursor < end; cursor = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000))) {
-    const rangeEnd = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000));
-    const path = `${client.config.interviewsPath}?startDate=${encodeURIComponent(cursor.toISOString())}&endDate=${encodeURIComponent(rangeEnd.toISOString())}`;
-    const response = await client.request(path);
-    if (!response.ok) {
-      if ([401, 403].includes(response.status)) throw serviceError(`Moka API 鉴权失败（${response.status}），请检查 MOKA_API_KEY 和企业授权范围`, 502, { code: 'MOKA_AUTH_FAILED' });
-      throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502, { code: 'MOKA_INTERVIEWS_FAILED' });
-    }
-    records.push(...flattenMokaRecords(response.body).map(normalizeMokaInterview));
+    windows.push([cursor, new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000))]);
+  }
+  // Moka exposes date-range reads rather than a single project query. Keep a
+  // small concurrency cap so a full-year refresh completes within the gateway
+  // budget without creating a burst of requests against Moka.
+  for (let index = 0; index < windows.length; index += 4) {
+    const batch = await Promise.all(windows.slice(index, index + 4).map(async ([cursor, rangeEnd]) => {
+      const path = `${client.config.interviewsPath}?startDate=${encodeURIComponent(cursor.toISOString())}&endDate=${encodeURIComponent(rangeEnd.toISOString())}`;
+      const response = await client.request(path);
+      if (!response.ok) {
+        if ([401, 403].includes(response.status)) throw serviceError(`Moka API 鉴权失败（${response.status}），请检查 MOKA_API_KEY 和企业授权范围`, 502, { code: 'MOKA_AUTH_FAILED' });
+        throw serviceError(`Moka 面试数据读取失败（${response.status}）`, 502, { code: 'MOKA_INTERVIEWS_FAILED' });
+      }
+      return flattenMokaRecords(response.body).map(normalizeMokaInterview);
+    }));
+    batch.flat().forEach(record => records.push(record));
   }
   const filtered = records.filter(record => matchesMokaProject(record.raw || record, projectName));
   const feedbackStart = start.toISOString();
@@ -418,7 +427,11 @@ async function loadMokaInterviews(context) {
     const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
     return { ...record, outcome: feedback.resultName || feedback.feedback || record.outcome, interviewPassed: /通过|满意|pass/i.test(String(feedback.resultName || feedback.resultType || record.outcome)), feedback: feedback.feedback || '', feedbackTemplateResult: feedback.feedbackTemplateResult || null, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
   });
-  result.records = await Promise.all(result.records.map(record => enrichMokaAttachment(record, client)));
+  const enrichedRecords = [];
+  for (let index = 0; index < result.records.length; index += 4) {
+    enrichedRecords.push(...await Promise.all(result.records.slice(index, index + 4).map(record => enrichMokaAttachment(record, client))));
+  }
+  result.records = enrichedRecords;
   result.totalFetched = records.length; result.totalMatched = result.records.length;
   result.transcriptStats = result.records.reduce((stats, record) => { stats.total += 1; if (record.transcriptStatus === 'completed') stats.completed += 1; else if (record.transcriptStatus === 'pending' || record.transcriptStatus === 'audio-ready') stats.pending += 1; else stats.missing += 1; stats.characters += Number(record.transcriptCharacters || 0); return stats; }, { total: 0, completed: 0, pending: 0, missing: 0, characters: 0 });
   result.analytics = buildMokaAnalytics(result.records);

@@ -1,4 +1,4 @@
-const DEFAULT_TIMEOUT_MS = 8000;
+const DEFAULT_TIMEOUT_MS = 15000;
 
 function getMokaConfig(env = process.env) {
   return {
