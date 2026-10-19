@@ -7,6 +7,7 @@ const INTERNAL_TEST_COMPANY = 'AceCall招聘团队';
 const LOCAL_MIGRATION_KEY_PREFIX = 'acecall-local-migration-v2:';
 const REMEMBERED_ACCOUNT_KEY = 'acecall-remembered-account-v1';
 const WORKSPACE_NAME_KEY = 'acecall-workspace-name-v1';
+const REMOTE_CACHE_META_KEY = 'acecall-remote-cache-meta-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
 const REMOTE_BACKEND = Boolean(API_BASE);
 const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
@@ -197,6 +198,7 @@ async function initializeAuth() {
   }
   if (!data?.session) return false;
   captureAuthUser(data.session, rememberedAccount);
+  restoreRemoteCache();
   $('#loginScreen').classList.add('hidden');
   void syncDesktopSession(data.session.access_token);
   return true;
@@ -484,6 +486,7 @@ async function enterWorkspace(username = '', companyName = '') {
   bindShell();
   $('#loginScreen').classList.add('hidden');
   captureAuthUser(null, username);
+  restoreRemoteCache();
   navigate('dashboard');
   await Promise.all([hydrateWorkspace(username, companyName), hydrateState()]);
   seedJobs();
@@ -1640,7 +1643,9 @@ async function saveRemote(path,payload,silent=false){try{const response=await au
 async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(() => ({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();renderCurrent();void migrateStoredResumesOnce();void loadMokaInterviews();}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
-function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
+function remoteCacheOwner(){const user=app.authUser||{};return String(user.uid||user.email||user.username||'').trim().toLowerCase();}
+function restoreRemoteCache(){if(!REMOTE_BACKEND)return false;const owner=remoteCacheOwner();if(!owner)return false;let meta;try{meta=JSON.parse(localStorage.getItem(REMOTE_CACHE_META_KEY)||'null');}catch{return false;}if(!meta||meta.owner!==owner)return false;app.jobs=Array.isArray(initialLocalState.jobs)?initialLocalState.jobs:[];app.cases=Array.isArray(initialLocalState.cases)?initialLocalState.cases:[];teamRules=Array.isArray(initialLocalState.rules)?initialLocalState.rules:[];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};return true;}
+function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));const owner=remoteCacheOwner();if(owner)localStorage.setItem(REMOTE_CACHE_META_KEY,JSON.stringify({owner,updatedAt:new Date().toISOString()}));}
 async function loadMokaInterviews() {
   if (!REMOTE_BACKEND) return;
   app.mokaInterviewStatus = { configured: false, loading: true };
