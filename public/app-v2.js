@@ -32,6 +32,7 @@ let folderWatchSeenKeys = new Set();
 let inboxQueueFilter = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
+const MOKA_AUTO_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
 let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -43,6 +44,8 @@ let stateRefreshTimer = null;
 let stateRefreshInFlight = null;
 let lastStateRefreshAt = 0;
 let remoteStateFingerprint = '';
+let mokaRefreshTimer = null;
+let mokaRefreshInFlight = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -53,6 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   seedJobs();
   renderCurrent();
   void checkService();
+  startMokaAutoRefresh();
 });
 
 let shellBound = false;
@@ -524,6 +528,7 @@ async function enterWorkspace(username = '', companyName = '') {
 }
 
 async function signOut() {
+  if (mokaRefreshTimer) { clearInterval(mokaRefreshTimer); mokaRefreshTimer = null; }
   await cloudbaseAuth?.signOut();
   await syncDesktopSession('');
   location.reload();
@@ -775,7 +780,7 @@ function renderInterviewers() {
   root.querySelector('.interviewer-filters')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-data-quality"><div class="surface-head"><div><h2>分析数据质量</h2><p class="surface-subtitle">先区分已完成分析与等待转写，避免把缺失数据当成面试官表现</p></div><span>${records.length ? `${transcriptCoverage}% 已有转写` : '暂无记录'}</span></div><div class="interviewer-quality-grid"><div><b>${records.filter(item => item.source === 'moka').length}</b><span>Moka 面试</span><small>只读来源 · 已抓取 ${status.totalFetched || 0} 条</small></div><div><b>${records.filter(item => item.source === 'acecall').length}</b><span>AceCall 沟通</span><small>本地记录</small></div><div><b>${questionCount || '—'}</b><span>可识别问题</span><small>以问号结尾的句子</small></div><div><b>${followUpSignals || '—'}</b><span>追问信号</span><small>项目、职责与风险核验</small></div><div><b>${pendingTranscript || '—'}</b><span>待处理转写</span><small>${pendingTranscript ? '需要先获取转写' : '当前无缺口'}${status.warnings?.length ? ` · ${status.warnings.length} 项来源提醒` : ''}</small></div></div></section>`);
   root.querySelector('.interviewer-data-quality')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-server-analysis"><div class="surface-head"><div><h2>云端结构化分析</h2><p class="surface-subtitle">由 AceCall 云函数基于 Moka 转写统一计算，便于后续月度复盘</p></div><span>${serverAnalytics.interviewer ? '已生成' : '等待数据'}</span></div><div class="server-analysis-grid"><div><b>${serverAnalytics.interviewer?.score ?? '—'}</b><span>面试表现分</span><small>问题覆盖、追问深度、记录完整度</small></div><div><b>${serverAnalytics.dimensions?.questionCoverage ?? '—'}%</b><span>问题覆盖</span><small>${serverAnalytics.questions?.length || 0} 条问题句</small></div><div><b>${serverAnalytics.dimensions?.followUpDepth ?? '—'}%</b><span>追问深度</span><small>${serverAnalytics.followUpSignals || 0} 个追问信号</small></div><div><b>${serverAnalytics.interviewer?.evaluationRate ?? '—'}%</b><span>评价完成</span><small>${serverAnalytics.interviewer?.evaluated || 0} / ${serverAnalytics.interviewer?.completed || 0} 场</small></div></div><div class="recommendation-list server-analysis-recommendations">${(serverAnalytics.recommendations || ['同步 Moka 后生成面试官改进建议。']).map(item => `<p><b>建议：</b>${escapeHtml(item)}</p>`).join('')}</div><div class="research-tags server-analysis-topics">${(serverAnalytics.topics || []).map(item => `<span class="research-tag blue">${escapeHtml(item.name)} · ${item.mentions}</span>`).join('') || '<span class="muted-text">暂无可识别主题</span>'}</div></section>`);
   ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; renderInterviewers(); renderInterviewerFollowups(); }); });
-  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews(); renderInterviewers(); renderInterviewerFollowups(); });
+  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
 function renderInterviewerFollowups() {
@@ -1710,8 +1715,17 @@ function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenant
 function remoteCacheOwner(){const user=app.authUser||{};return String(user.uid||user.email||user.username||'').trim().toLowerCase();}
 function restoreRemoteCache(){if(!REMOTE_BACKEND)return false;const owner=remoteCacheOwner();if(!owner)return false;let meta;try{meta=JSON.parse(localStorage.getItem(REMOTE_CACHE_META_KEY)||'null');}catch{return false;}if(!meta||meta.owner!==owner)return false;app.jobs=Array.isArray(initialLocalState.jobs)?initialLocalState.jobs:[];app.cases=Array.isArray(initialLocalState.cases)?initialLocalState.cases:[];teamRules=Array.isArray(initialLocalState.rules)?initialLocalState.rules:[];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};remoteStateFingerprint=stateFingerprint(app.remoteState);return true;}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));const owner=remoteCacheOwner();if(owner)localStorage.setItem(REMOTE_CACHE_META_KEY,JSON.stringify({owner,updatedAt:new Date().toISOString()}));}
-async function loadMokaInterviews() {
+function startMokaAutoRefresh() {
+  if (!REMOTE_BACKEND || mokaRefreshTimer) return;
+  mokaRefreshTimer = setInterval(() => {
+    if (!document.hidden && app.authUser) void loadMokaInterviews({ automatic: true });
+  }, MOKA_AUTO_REFRESH_INTERVAL_MS);
+}
+async function loadMokaInterviews(options = {}) {
   if (!REMOTE_BACKEND) return;
+  if (mokaRefreshInFlight) return mokaRefreshInFlight;
+  const automatic = options.automatic === true;
+  mokaRefreshInFlight = (async () => {
   app.mokaInterviewStatus = { configured: false, loading: true };
   try {
     const debugResponse = await authenticatedFetch(apiUrl('/api/debug/status'), { timeoutMs: 8000 });
@@ -1726,7 +1740,7 @@ async function loadMokaInterviews() {
       persistHydratedState();
     }
     app.mokaAnalytics = data.analytics || null;
-    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, httpStatus: response.status };
+    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual' };
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   } catch (error) {
     console.warn('[AceCall Moka interviews]', error);
@@ -1734,6 +1748,8 @@ async function loadMokaInterviews() {
     app.mokaAnalytics = null;
     app.mokaInterviewStatus = { configured: false, loading: false, error: error.message, httpStatus: error.status || 0 };
   }
+  })();
+  try { return await mokaRefreshInFlight; } finally { mokaRefreshInFlight = null; }
 }
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
 function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
