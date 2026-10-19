@@ -1714,8 +1714,12 @@ async function loadMokaInterviews() {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(cloudError(response.status, data));
     app.mokaInterviews = Array.isArray(data.records) ? data.records : [];
+    if (Array.isArray(data.syncedJobs) && data.syncedJobs.length) {
+      app.jobs = mergeRecords(app.jobs, data.syncedJobs);
+      persistHydratedState();
+    }
     app.mokaAnalytics = data.analytics || null;
-    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), httpStatus: response.status };
+    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), mokaJobStats: data.mokaJobStats || null, httpStatus: response.status };
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   } catch (error) {
     console.warn('[AceCall Moka interviews]', error);

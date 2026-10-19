@@ -239,8 +239,8 @@ function normalizeMokaInterview(record = {}) {
   const outcome = record.result || record.interviewResult || record.status || record.outcome || '';
   const duration = Number(record.durationMinutes || record.duration || 0) || 0;
   const transcript = extractMokaText(record);
-  const recordingUrl = extractMokaUrl(record, ['recordingUrl', 'recordUrl', 'videoUrl', 'interviewRecordingUrl', 'recording', 'recordingFile', 'audioUrl', 'videoInterviewRecordingUrl']);
-  const transcriptUrl = extractMokaUrl(record, ['transcriptUrl', 'transcriptionUrl', 'transcriptFileUrl', 'transcriptionFileUrl', 'interviewTranscriptUrl']);
+  const recordingUrl = extractMokaUrl(record, ['recordingUrl', 'recordUrl', 'videoUrl', 'interviewRecordingUrl', 'recording', 'recordingFile', 'audioUrl', 'videoInterviewRecordingUrl', 'recordingDownloadUrl', 'downloadUrl', 'viewUrl']);
+  const transcriptUrl = extractMokaUrl(record, ['transcriptUrl', 'transcriptionUrl', 'transcriptFileUrl', 'transcriptionFileUrl', 'interviewTranscriptUrl', 'transcriptDownloadUrl', 'transcriptionDownloadUrl']);
   const feedbackUrl = extractMokaUrl(record, ['interviewFeedbackUrl', 'feedbackUrl', 'feedbackFileUrl']);
   return {
     id: String(record.id || record.interviewId || record._id || crypto.randomUUID()),
@@ -253,6 +253,7 @@ function normalizeMokaInterview(record = {}) {
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
     transcript, transcriptCharacters: transcript.length, transcriptStatus: transcript ? 'completed' : (transcriptUrl || feedbackUrl || recordingUrl ? 'pending' : 'missing'), transcriptFetchedAt: transcript ? new Date().toISOString() : '', recordingUrl, transcriptUrl, feedbackUrl,
     transcriptSource: transcript ? 'moka-field' : (transcriptUrl ? 'moka-transcript-file' : (feedbackUrl ? 'moka-feedback-file' : (recordingUrl ? 'moka-recording' : ''))),
+    jobId: String(record.jobId || record.positionId || record.requisitionId || record.job?.id || record.position?.id || record.requisition?.id || record.application?.jobId || ''),
     applicationId: record.applicationId || record.candidates?.[0]?.applicationId || '', raw: record
   };
 }
@@ -316,11 +317,12 @@ function normalizeJobProfile(job = {}) {
   const business = [job.department, job.business, job.businessLine, job.division, job.industry, job.category].filter(Boolean).join(' ');
   const aliases = Array.isArray(job.aliases) ? job.aliases : String(job.aliases || '').split(/[、,，\s/|]+/);
   const keywords = Array.isArray(job.keywords) ? job.keywords : String(job.keywords || '').split(/[、,，\s/|]+/);
-  return { id: String(job.id || ''), name: String(job.name || ''), business, aliases: [...new Set([...aliases, ...keywords].map(item => String(item).trim()).filter(item => item.length >= 2))] };
+  return { id: String(job.id || ''), mokaJobId: String(job.mokaJobId || job.externalId || job.sourceId || ''), name: String(job.name || ''), business, aliases: [...new Set([...aliases, ...keywords].map(item => String(item).trim()).filter(item => item.length >= 2))] };
 }
 
 function matchMokaToJobProfiles(record = {}, profiles = [], businessName = 'QS') {
   const roleText = mokaRoleText(record).toLowerCase();
+  const recordJobId = String(record.jobId || record.positionId || record.requisitionId || '').trim();
   const businessText = mokaBusinessText(record).toLowerCase();
   const expectedBusiness = String(businessName || '').trim().toLowerCase();
   const scoped = profiles.filter(profile => `${profile.business} ${profile.name}`.toLowerCase().includes(expectedBusiness));
@@ -331,11 +333,13 @@ function matchMokaToJobProfiles(record = {}, profiles = [], businessName = 'QS')
   const candidates = scoped;
   const matches = candidates.map(profile => {
     const businessTerms = [expectedBusiness, ...String(profile.business || '').split(/[、,，\s/|]+/).filter(item => item.length >= 2)].filter(Boolean);
-    const businessMatched = businessTerms.some(term => businessText.includes(term.toLowerCase()) || roleText.includes(term.toLowerCase()));
+    const businessMatched = businessTerms.some(term => businessText.includes(term.toLowerCase()));
     const roleTerms = [profile.name, ...profile.aliases].filter(item => item.length >= 2).map(item => item.toLowerCase());
     const roleMatched = roleTerms.some(term => roleText.includes(term));
-    return { profile, businessMatched, roleMatched, score: (businessMatched ? 2 : 0) + (roleMatched ? 2 : 0) };
-  }).filter(item => item.score >= (scoped.length ? 2 : 2)).sort((a, b) => b.score - a.score);
+    const idMatched = Boolean(recordJobId && (recordJobId === profile.id || recordJobId === profile.mokaJobId));
+    const score = idMatched ? 5 : (businessMatched ? 2 : 0) + (roleMatched ? 2 : 0);
+    return { profile, businessMatched, roleMatched, idMatched, score };
+  }).filter(item => item.idMatched || (item.roleMatched && (!businessText || item.businessMatched))).sort((a, b) => b.score - a.score);
   return matches[0] || null;
 }
 
@@ -344,6 +348,45 @@ async function loadAcecallJobProfiles(context) {
     const result = await getDatabase().collection(COLLECTIONS.jobs).where({ tenantId: context.tenantId }).limit(200).get();
     return (result.data || []).map(normalizeJobProfile).filter(profile => profile.name);
   } catch { return []; }
+}
+
+function normalizeMokaJob(record = {}) {
+  const id = String(record.id || record.jobId || record.positionId || record.requisitionId || record.code || '').trim();
+  const name = String(record.name || record.jobName || record.jobTitle || record.positionName || record.title || '').trim();
+  const department = String(record.departmentName || record.department || record.deptName || record.businessLine || record.business || record.division || '').trim();
+  const jd = String(record.jd || record.jobDescription || record.description || record.responsibilities || '').trim();
+  const keywords = [record.category, record.jobCategory, record.function, record.level, record.location].filter(Boolean).map(String);
+  return { id, name, department, jd, keywords: [...new Set(keywords)], raw: record };
+}
+
+async function syncMokaJobs(context, client, businessName, result) {
+  const responses = [];
+  for (const path of [client.config.jobsPath, client.config.requisitionsPath]) {
+    try {
+      const response = await client.request(path);
+      if (response.ok) {
+        const records = flattenMokaRecords(response.body);
+        if (records.length) { responses.push(...records); break; }
+      }
+    } catch {}
+  }
+  if (!responses.length) {
+    result.warnings.push('Moka 岗位接口未返回可用岗位列表；面试数据仍按已有 AceCall 岗位配置匹配。');
+    return [];
+  }
+  const expected = String(businessName || '').trim().toLowerCase();
+  const jobs = responses.map(normalizeMokaJob).filter(job => job.id && job.name && `${job.department} ${job.name}`.toLowerCase().includes(expected));
+  const db = getDatabase(); const synced = []; const now = new Date().toISOString();
+  for (const job of jobs) {
+    const id = `moka_${job.id}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 120);
+    const existing = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+    const current = existing.data || {};
+    const stored = { ...current, id, tenantId: context.tenantId, source: 'moka', mokaJobId: job.id, name: current.name || job.name, department: current.department || job.department, jd: current.jd || job.jd, keywords: current.keywords?.length ? current.keywords : job.keywords, status: current.status || 'active', syncedFromMokaAt: now, createdAt: current.createdAt || now, updatedAt: now, updatedBy: context.uid, createdBy: current.createdBy || context.uid };
+    await db.collection(COLLECTIONS.jobs).doc(id).set(stored);
+    synced.push(cleanDocument(stored));
+  }
+  result.mokaJobStats = { fetched: responses.length, matched: jobs.length, synced: synced.length, business: businessName };
+  return synced;
 }
 
 function mergeMokaApplication(record, application = {}) {
@@ -423,7 +466,7 @@ function mokaProjectFieldSamples(records = [], limit = 3) {
 }
 
 function extractMokaText(record = {}) {
-  const keys = ['transcript', 'transcription', 'transcriptText', 'transcriptionText', 'transcriptContent', 'transcriptionContent', 'recordingTranscript', 'videoInterviewTranscript'];
+  const keys = ['transcript', 'transcription', 'transcriptText', 'transcriptionText', 'transcriptContent', 'transcriptionContent', 'recordingTranscript', 'videoInterviewTranscript', 'captions', 'subtitle', 'subtitleText', 'interviewTranscript'];
   for (const key of keys) if (typeof record[key] === 'string' && record[key].trim()) return record[key].trim();
   for (const key of ['recording', 'transcriptionFile', 'transcriptFile', 'videoInterview', 'interviewRecording']) {
     const nested = record[key];
@@ -432,6 +475,15 @@ function extractMokaText(record = {}) {
       if (found) return found;
     }
   }
+  const visit = (value, key = '', depth = 0) => {
+    if (depth > 7 || value == null) return '';
+    if (typeof value === 'string' && /(transcript|transcription|caption|subtitle|转写)/i.test(key) && value.trim().length > 20) return value.trim();
+    if (Array.isArray(value)) { for (const item of value) { const found = visit(item, key, depth + 1); if (found) return found; } return ''; }
+    if (typeof value === 'object') { for (const [childKey, child] of Object.entries(value)) { const found = visit(child, childKey, depth + 1); if (found) return found; } }
+    return '';
+  };
+  const discovered = visit(record);
+  if (discovered) return discovered;
   return '';
 }
 
@@ -457,7 +509,7 @@ function extractMokaUrl(record = {}, keys = []) {
 }
 
 function isMokaPathLike(value = '') {
-  return /^\/(?:api|file|files|attachment|attachments|download|uploads?)\//i.test(String(value)) || /\.(?:txt|vtt|srt|json|pdf|docx?|mp3|m4a|wav|webm|mp4)(?:\?|$)/i.test(String(value));
+  return /^\/(?:api|api-platform|file|files|attachment|attachments|download|uploads?)\//i.test(String(value)) || /\.(?:txt|vtt|srt|json|pdf|docx?|mp3|m4a|wav|webm|mp4)(?:\?|$)/i.test(String(value));
 }
 
 function extractMokaAttachmentRefs(record = {}) {
@@ -542,6 +594,8 @@ async function loadMokaInterviews(context) {
   const result = { ok: true, source: 'moka', configured: status.configured, filters: { project: projectName, jobs: 'all', interviewer: 'all' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
   if (!status.configured) return result;
   const client = createMokaClient();
+  const syncedJobs = await syncMokaJobs(context, client, projectName, result);
+  result.syncedJobs = syncedJobs;
   const jobProfiles = await loadAcecallJobProfiles(context);
   const lookbackDays = Math.min(730, Math.max(31, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 365)));
   const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
@@ -924,7 +978,7 @@ async function saveJob(context, id, input) {
   const db = getDatabase();
   await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
-  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'jd', 'keywords', 'rules', 'status', 'createdAt', 'updatedAt']);
+  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt']);
   job.id = id;
   job.tenantId = context.tenantId;
   job.createdBy = context.uid;
