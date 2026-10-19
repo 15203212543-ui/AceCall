@@ -39,6 +39,10 @@ const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 let desktopAgentAvailable = false;
+let stateRefreshTimer = null;
+let stateRefreshInFlight = null;
+let lastStateRefreshAt = 0;
+let remoteStateFingerprint = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -73,8 +77,27 @@ function bindShell() {
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
   bindAccountMenu();
   bindGlobalCandidateSearch();
+  startRemoteStateRefresh();
   $('#applyJobRuleLibrary').addEventListener('click', applySelectedTeamRule);
   $('#saveJobRuleLibrary').addEventListener('click', saveCurrentRuleToLibrary);
+}
+
+function startRemoteStateRefresh() {
+  if (!REMOTE_BACKEND || stateRefreshTimer) return;
+  const refresh = () => {
+    if (!document.hidden) refreshRemoteState();
+  };
+  window.addEventListener('focus', refresh);
+  document.addEventListener('visibilitychange', refresh);
+  stateRefreshTimer = setInterval(refresh, 30000);
+}
+
+function refreshRemoteState(force = false) {
+  if (!REMOTE_BACKEND || !app.authUser) return;
+  const now = Date.now();
+  if (!force && now - lastStateRefreshAt < 8000) return;
+  lastStateRefreshAt = now;
+  void hydrateState({ background: true });
 }
 
 function toggleNavGroup(groupName) {
@@ -1640,11 +1663,45 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(() => ({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();renderCurrent();void migrateStoredResumesOnce();void loadMokaInterviews();}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
+function stateFingerprint(remote = {}) {
+  const summarize = items => (Array.isArray(items) ? items : []).map(item => [item.id || item._id || '', item.updatedAt || item.createdAt || '', item.status || '', item.ingestStatus || '']);
+  return JSON.stringify({ jobs: summarize(remote.jobs), cases: summarize(remote.cases), rules: (Array.isArray(remote.rules) ? remote.rules : []).map(item => [item.id || item._id || '', item.updatedAt || item.createdAt || '', item.content || '']) });
+}
+async function hydrateState({ background = false } = {}) {
+  if (!REMOTE_BACKEND) return;
+  if (stateRefreshInFlight) return stateRefreshInFlight;
+  stateRefreshInFlight = (async () => {
+    try {
+      const response = await authenticatedFetch(apiUrl('/api/state'));
+      if (!response.ok) { const body = await response.clone().json().catch(() => ({})); throw new Error(cloudError(response.status, body)); }
+      const payload = await response.json();
+      const remote = { jobs: payload.jobs || [], cases: payload.cases || [], rules: payload.rules || [] };
+      const nextFingerprint = stateFingerprint(remote);
+      const changed = nextFingerprint !== remoteStateFingerprint;
+      if (changed) {
+        remoteStateFingerprint = nextFingerprint;
+        app.remoteState = remote;
+        app.jobs = remote.jobs;
+        app.cases = remote.cases;
+        teamRules = remote.rules.map(item => item.content).filter(Boolean);
+        app.legacyLocalState = null;
+        persistHydratedState();
+        renderCurrent();
+      }
+      if (!background) { void migrateStoredResumesOnce(); void loadMokaInterviews(); }
+    } catch (error) {
+      console.error(error);
+      if (!background) toast(`CloudBase暂不可用：${error.message || '已使用本机数据'}`);
+    } finally {
+      stateRefreshInFlight = null;
+    }
+  })();
+  return stateRefreshInFlight;
+}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function remoteCacheOwner(){const user=app.authUser||{};return String(user.uid||user.email||user.username||'').trim().toLowerCase();}
-function restoreRemoteCache(){if(!REMOTE_BACKEND)return false;const owner=remoteCacheOwner();if(!owner)return false;let meta;try{meta=JSON.parse(localStorage.getItem(REMOTE_CACHE_META_KEY)||'null');}catch{return false;}if(!meta||meta.owner!==owner)return false;app.jobs=Array.isArray(initialLocalState.jobs)?initialLocalState.jobs:[];app.cases=Array.isArray(initialLocalState.cases)?initialLocalState.cases:[];teamRules=Array.isArray(initialLocalState.rules)?initialLocalState.rules:[];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};return true;}
+function restoreRemoteCache(){if(!REMOTE_BACKEND)return false;const owner=remoteCacheOwner();if(!owner)return false;let meta;try{meta=JSON.parse(localStorage.getItem(REMOTE_CACHE_META_KEY)||'null');}catch{return false;}if(!meta||meta.owner!==owner)return false;app.jobs=Array.isArray(initialLocalState.jobs)?initialLocalState.jobs:[];app.cases=Array.isArray(initialLocalState.cases)?initialLocalState.cases:[];teamRules=Array.isArray(initialLocalState.rules)?initialLocalState.rules:[];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};remoteStateFingerprint=stateFingerprint(app.remoteState);return true;}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));const owner=remoteCacheOwner();if(owner)localStorage.setItem(REMOTE_CACHE_META_KEY,JSON.stringify({owner,updatedAt:new Date().toISOString()}));}
 async function loadMokaInterviews() {
   if (!REMOTE_BACKEND) return;
