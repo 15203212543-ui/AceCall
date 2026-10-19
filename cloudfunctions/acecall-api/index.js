@@ -350,7 +350,62 @@ async function loadMokaInterviews(context) {
   result.records = await Promise.all(result.records.map(enrichMokaAttachment));
   result.totalFetched = records.length; result.totalMatched = result.records.length;
   result.transcriptStats = result.records.reduce((stats, record) => { stats.total += 1; if (record.transcriptStatus === 'completed') stats.completed += 1; else if (record.transcriptStatus === 'pending' || record.transcriptStatus === 'audio-ready') stats.pending += 1; else stats.missing += 1; stats.characters += Number(record.transcriptCharacters || 0); return stats; }, { total: 0, completed: 0, pending: 0, missing: 0, characters: 0 });
+  result.analytics = buildMokaAnalytics(result.records);
   return result;
+}
+
+function buildMokaAnalytics(records = []) {
+  const completed = records.filter(record => record.completed !== false);
+  const transcripts = completed.map(record => String(record.transcript || '')).filter(Boolean);
+  const questions = transcripts.flatMap(text => text.split(/\n+/).map(line => line.trim()).filter(line => line.length >= 6 && /[？?]$/.test(line)));
+  const followUpTerms = ['为什么', '如何', '具体', '负责', '结果', '规模', '上线', '核实', '确认', '追问'];
+  const followUpSignals = transcripts.reduce((sum, text) => sum + followUpTerms.reduce((count, term) => count + (text.match(new RegExp(term, 'g')) || []).length, 0), 0);
+  const topicDefinitions = [
+    ['项目结果', ['上线', '结果', '指标', '交付', '复盘']],
+    ['个人职责', ['负责', '主导', '参与', '职责', '决策']],
+    ['业务规模', ['规模', '客户', '收入', '交易量', '市场']],
+    ['动机与稳定性', ['离职', '机会', '动机', '发展', '稳定']],
+    ['团队协作', ['团队', '协作', '汇报', '跨部门', '管理']],
+    ['风险核验', ['核实', '确认', '风险', '冲突', '竞业']]
+  ];
+  const topics = topicDefinitions.map(([name, terms]) => ({ name, mentions: terms.reduce((sum, term) => sum + transcripts.reduce((count, text) => count + (text.match(new RegExp(term, 'g')) || []).length, 0), 0), terms: terms.filter(term => transcripts.some(text => text.includes(term))) })).filter(topic => topic.mentions > 0).sort((a, b) => b.mentions - a.mentions);
+  const evaluated = completed.filter(record => record.outcome || record.interviewPassed || record.hired).length;
+  const passed = completed.filter(record => record.interviewPassed).length;
+  const offerAccepted = completed.filter(record => record.offerAccepted || record.hired).length;
+  const hired = completed.filter(record => record.hired).length;
+  const coverage = completed.length ? Math.min(100, Math.round(questions.length / completed.length * 12)) : 0;
+  const depth = completed.length ? Math.min(100, Math.round(followUpSignals / completed.length * 8)) : 0;
+  const completeness = completed.length ? Math.round(evaluated / completed.length * 100) : 0;
+  const interviewerScore = completed.length ? Math.round(coverage * 0.35 + depth * 0.35 + completeness * 0.3) : 0;
+  const recommendations = [];
+  if (coverage < 60) recommendations.push('提高结构化问题覆盖，确保每场面试都核实项目结果、个人职责和业务规模。');
+  if (depth < 60) recommendations.push('增加基于候选人回答的二次追问，避免停留在经历复述。');
+  if (completeness < 80) recommendations.push('在面试结束后及时完成结论记录，并明确通过依据或待核验事项。');
+  if (!recommendations.length) recommendations.push('保持当前结构化提问和事实核验方式，继续用入职结果校准判断标准。');
+  return {
+    scope: { job: '法务 BP', interviewer: '魏欣欣' },
+    interviewer: { score: interviewerScore, completed: completed.length, passed, passRate: completed.length ? Math.round(passed / completed.length * 100) : 0, offerAccepted, hired, evaluated, evaluationRate: completed.length ? Math.round(evaluated / completed.length * 100) : 0 },
+    dimensions: { questionCoverage: coverage, followUpDepth: depth, recordCompleteness: completeness },
+    questions: questions.slice(0, 30),
+    topics: topics.slice(0, 8),
+    followUpSignals,
+    recommendations,
+    intelligence: buildIntelligenceAnalytics(records)
+  };
+}
+
+function buildIntelligenceAnalytics(records = []) {
+  const texts = records.flatMap(record => [record.transcript, record.feedback, record.candidateName, record.jobName]).filter(Boolean).join('\n');
+  const companies = [...new Set((texts.match(/[\u4e00-\u9fa5A-Za-z]{2,16}(?:证券|银行|科技|集团|互联网|传媒|信息|投资|资本)/g) || []))].slice(0, 20);
+  const signalDefinitions = [
+    ['业务方向', ['战略', '增长', '产品规划', '商业化', '客户', '市场', '业务']],
+    ['组织与协作', ['组织架构', '汇报', '团队', '协作', '部门', '负责人', '管理']],
+    ['竞品与行业', ['竞品', '竞争', '行业', '市场份额', '对标', '竞争对手', '同业']],
+    ['人才与能力', ['招聘', '人才', '能力', '经验', '岗位', '专业']]
+  ];
+  const signals = signalDefinitions.map(([label, terms]) => ({ label, terms: terms.filter(term => texts.includes(term)), evidenceCount: terms.reduce((sum, term) => sum + (texts.match(new RegExp(term, 'g')) || []).length, 0) })).filter(item => item.evidenceCount > 0);
+  const questions = records.flatMap(record => String(record.transcript || '').split(/\n+/).map(line => line.trim()).filter(line => /[？?]$/.test(line))).slice(0, 30);
+  return { companies, signals, questions, sourceRecords: records.filter(record => record.transcript || record.feedback).length, generatedAt: new Date().toISOString(), reviewStatus: '待人工确认' };
 }
 
 function normalizeResumeText(text = '') {
