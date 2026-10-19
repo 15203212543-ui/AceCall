@@ -14,7 +14,8 @@ function getMokaConfig(env = process.env) {
     applicationsPath: String(env.MOKA_APPLICATIONS_PATH || '/api-platform/v1/applications').trim(),
     interviewInformationPath: String(env.MOKA_INTERVIEW_INFORMATION_PATH || '/api-platform/v1/interview/interview-information').trim(),
     interviewInfosV3Path: String(env.MOKA_INTERVIEW_INFOS_V3_PATH || '/api-platform/v3/getInterviewInfos').trim(),
-    projectName: String(env.MOKA_PROJECT_NAME || 'QS').trim()
+    projectName: String(env.MOKA_PROJECT_NAME || 'QS').trim(),
+    jobNames: String(env.MOKA_JOB_NAMES || '法务BP,交易产品经理,清结算产品经理,行情产品经理,账户产品经理,数据分析师,券商服务端开发工程师（长沙）,结算专员,券商客服主管,证券设计师,证券运维工程师,券商测试工程师,券商业务后端开发工程师').split(',').map(item => item.trim()).filter(Boolean)
   };
 }
 
@@ -79,6 +80,7 @@ function createMokaClient(options = {}) {
         apiKeyHeader: config.apiKeyHeader,
         authMode: config.authMode,
         interviewsPath: config.interviewsPath,
+        jobNames: config.jobNames,
         projectName: config.projectName
       };
     }
@@ -95,6 +97,7 @@ function mokaConnectionStatus(env = process.env) {
     apiKeyHeader: config.apiKeyHeader,
     authMode: config.authMode,
     interviewsPath: config.interviewsPath,
+    jobNames: config.jobNames,
     projectName: config.projectName
   };
 }
