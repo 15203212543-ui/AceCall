@@ -2,7 +2,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
-const { createMokaClient, mokaConnectionStatus } = require('./moka-client');
+const { createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -110,7 +110,7 @@ const server = http.createServer(async (request, response) => {
         provider: 'moka',
         tenantId: context.tenantId,
         status: mokaConnectionStatus(),
-        dataAccess: 'disabled_until_explicit_enablement'
+        dataAccess: 'append_comment_only'
       });
     }
     if (request.method === 'GET' && url.pathname === '/api/integrations/moka/interviews') {
@@ -135,8 +135,8 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'PUT' && url.pathname.startsWith('/api/candidates/')) {
       const id = validateId(url.pathname.slice('/api/candidates/'.length));
       const candidate = await readJson(request);
-      await saveCandidate(await getRequestContext(request), id, candidate);
-      return sendJson(response, 200, { ok: true, id });
+      const saved = await saveCandidate(await getRequestContext(request), id, candidate);
+      return sendJson(response, 200, saved);
     }
     if (request.method === 'POST' && url.pathname === '/api/migrate-resumes') {
       return sendJson(response, 200, await migrateStoredResumes(await getRequestContext(request)));
@@ -1157,7 +1157,7 @@ async function saveCandidate(context, id, input) {
   await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
   await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome', 'assignmentSource', 'assignmentStatus', 'assignedAt', 'assignedBy']);
+  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome', 'assignmentSource', 'assignmentStatus', 'assignedAt', 'assignedBy']);
   candidate.id = id;
   candidate.tenantId = context.tenantId;
   candidate.createdBy = context.uid;
@@ -1174,11 +1174,35 @@ async function saveCandidate(context, id, input) {
   screening.jobId = input.jobId || '';
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
+  const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+  const mokaSync = await resolveMokaSync(context, existingCandidate.data?.mokaSync, { ...candidate, ...screening, reviewConfirmed: input.report?.reviewConfirmed === true });
+  if (mokaSync) candidate.mokaSync = mokaSync;
   await Promise.all([
     db.collection(COLLECTIONS.candidates).doc(id).set(candidate),
     db.collection(COLLECTIONS.screenings).doc(id).set(screening)
   ]);
-  await audit(context, 'candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status });
+  await audit(context, 'candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status, mokaSync: candidate.mokaSync?.status || '' });
+  return { ok: true, id, mokaSync: candidate.mokaSync || null };
+}
+
+function hasScreeningResult(record) {
+  const summary = record?.communicationSummary;
+  const report = record?.report;
+  return Boolean((summary && typeof summary === 'object' && Object.keys(summary).length) || (report && typeof report === 'object' && Object.keys(report).length));
+}
+
+async function resolveMokaSync(context, previousSync, record) {
+  const previous = previousSync && typeof previousSync === 'object' ? previousSync : null;
+  if (!hasScreeningResult(record)) return previous;
+  const fingerprint = screeningFingerprint(record);
+  if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
+  const operatorEmail = process.env.MOKA_OPERATOR_EMAIL || context.member?.username || '';
+  try {
+    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail);
+    return { ...result, fingerprint };
+  } catch (error) {
+    return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, syncedAt: new Date().toISOString() };
+  }
 }
 
 async function assertWritableRecord(collection, id, tenantId) {
