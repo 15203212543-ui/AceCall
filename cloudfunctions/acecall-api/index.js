@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
 const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
 const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
+const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -248,6 +249,7 @@ function collectMokaFeedbacks(record = {}) {
     ['record.interviewers', record.interviewers],
     ['record.interview.interviewers', record.interview?.interviewers],
     ['record.interviewFeedbacks', record.interviewFeedbacks],
+    ['record.interviewerFeedbacks', record.interviewerFeedbacks],
     ['record.feedbacks', record.feedbacks],
     ['record.interviewDetail.interviewerFeedbacks', record.interviewDetail?.interviewerFeedbacks],
     ['record.interviewDetail.entities.interviewerFeedbacks', record.interviewDetail?.entities],
@@ -266,25 +268,7 @@ function collectMokaFeedbacks(record = {}) {
 
 function normalizeMokaOutcome(record = {}) {
   const feedbacks = collectMokaFeedbacks(record);
-  const values = [
-    record.result, record.interviewResult, record.outcome, record.status,
-    record.decision, record.resultName, record.resultType,
-    ...feedbacks.flatMap(item => [item.resultName, item.resultType, item.result, item.outcome, item.status, item.decision, item.conclusion])
-  ].filter(value => value !== undefined && value !== null && String(value).trim());
-  const outcome = String(values.find(value => /通过|淘汰|拒绝|不通过|待定|pending|pass|reject|fail|accept/i.test(String(value))) || values[0] || '').trim();
-  const passedExplicit = record.interviewPassed === true || feedbacks.some(item => item.interviewPassed === true);
-  const rejectedExplicit = record.interviewRejected === true || record.interviewFailed === true || feedbacks.some(item => item.interviewRejected === true || item.interviewFailed === true);
-  const passed = passedExplicit || /通过|合格|录用|pass(?:ed)?|succeed/i.test(outcome);
-  const rejected = rejectedExplicit || /淘汰|拒绝|不通过|未通过|不合格|reject|fail(?:ed)?|不录用/i.test(outcome);
-  const outcomeStatus = passed && rejected ? 'conflict' : passed ? 'passed' : rejected ? 'rejected' : outcome ? 'pending' : 'unknown';
-  const feedback = feedbacks.map(item => item.feedback || item.comment || item.conclusion || '').filter(Boolean).join('\n');
-  const feedbackTemplateResult = feedbacks.map(item => item.feedbackTemplateResult).find(Boolean) || record.feedbackTemplateResult || null;
-  return {
-    outcome, outcomeStatus, interviewPassed: passed ? true : rejected ? false : null,
-    interviewRejected: rejected ? true : passed ? false : null,
-    outcomeConflict: outcomeStatus === 'conflict', feedback, feedbackTemplateResult,
-    feedbackSources: feedbacks.map(item => item._source).filter(Boolean)
-  };
+  return { ...summarizeMokaFeedback(record, feedbacks), feedbackSources: feedbacks.map(item => item._source).filter(Boolean) };
 }
 
 function normalizeMokaInterview(record = {}) {
@@ -303,10 +287,11 @@ function normalizeMokaInterview(record = {}) {
   const feedbackUrl = extractMokaUrl(record, ['interviewFeedbackUrl', 'feedbackUrl', 'feedbackFileUrl']);
   return {
     id: String(record.id || record.interviewId || record._id || crypto.randomUUID()),
-    source: 'moka', candidateName: record.candidateName || record.candidate?.name || '',
+    source: 'moka', candidateName: record.candidateName || record.candidate?.name || record.candidates?.[0]?.name || record.candidates?.[0]?.candidateName || '',
     jobName, jobCategory: record.jobCategory || record.category || '', location: record.location || '', projectName: String(projectName), projectCode: String(projectCode),
-    interviewer: String(interviewer), round: record.interviewStage || record.stage || record.round || '',
-    outcome: String(outcome), outcomeStatus: outcomeData.outcomeStatus, outcomeConflict: outcomeData.outcomeConflict, completed: !/取消|未进行|scheduled|cancelled|canceled/i.test(`${record.status || ''} ${outcome}`), interviewPassed: outcomeData.interviewPassed, interviewRejected: outcomeData.interviewRejected,
+    interviewer: String(interviewer), round: record.interviewStage || record.stageName || record.stage || record.roundName || record.round || '',
+    scheduleStatus: String(record.status || ''),
+    outcome: String(outcome), outcomeStatus: outcomeData.outcomeStatus, outcomeConflict: outcomeData.outcomeConflict, completed: !/取消|未结束|未进行|scheduled|cancelled|canceled/i.test(String(record.status || '')), interviewPassed: outcomeData.interviewPassed, interviewRejected: outcomeData.interviewRejected,
     offerAccepted: record.offerAccepted === true || /接受|accept|accepted/i.test(String(record.offerStatus || record.offerOutcome || '')),
     hired: record.hired === true || /入职|hired|joined/i.test(String(record.hireStatus || record.outcome || '')),
     durationMinutes: duration, startedAt: record.startTime || record.startedAt || record.interviewTime || record.createdAt || '',
@@ -565,7 +550,7 @@ async function fetchMokaInterviewDetails(record, client) {
         if (!response.ok) continue;
         const body = response.body && typeof response.body === 'object' ? response.body : {};
         const detail = flattenMokaRecords(body)[0] || body.data || body.interview || body;
-        if (detail && typeof detail === 'object') return mergeMokaApplication(record, { interviewDetail: detail, ...detail });
+        if (detail && typeof detail === 'object') return keepInterviewResult(record, mergeMokaApplication(record, { interviewDetail: detail, ...detail }));
       } catch {}
     }
   }
@@ -712,6 +697,42 @@ async function enrichMokaAttachment(record, client) {
   return { ...record, transcriptStatus: record.transcriptStatus || 'missing' };
 }
 
+function keepInterviewResult(record, merged) {
+  const hasResult = Boolean(record.outcome || record.feedback || record.interviewPassed != null || record.interviewRejected != null);
+  if (!hasResult) return { ...merged, scheduleStatus: record.scheduleStatus || merged.scheduleStatus || '', completed: record.completed === false ? false : merged.completed };
+  return {
+    ...merged,
+    scheduleStatus: record.scheduleStatus || merged.scheduleStatus || '',
+    completed: record.completed,
+    outcome: record.outcome,
+    outcomeStatus: record.outcomeStatus,
+    interviewPassed: record.interviewPassed,
+    interviewRejected: record.interviewRejected,
+    outcomeConflict: record.outcomeConflict,
+    feedback: record.feedback,
+    feedbackTemplateResult: record.feedbackTemplateResult,
+    feedbackSources: record.feedbackSources
+  };
+}
+
+async function fetchMokaFeedbacks(client, fromTime, result) {
+  const records = [];
+  let nextPath = `/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(fromTime)}&limit=1000`;
+  for (let page = 0; page < 3 && nextPath; page += 1) {
+    const response = await client.request(nextPath);
+    if (!response.ok) {
+      result.warnings.push([401, 403].includes(response.status) ? `Moka 面试反馈授权不足（${response.status}）` : `面试反馈读取失败（${response.status}）`);
+      break;
+    }
+    const body = response.body && typeof response.body === 'object' ? response.body : {};
+    records.push(...flattenMokaRecords(body));
+    const next = body.next || body.data?.next;
+    if (body.hasNext === false || typeof next !== 'string' || /^https?:/i.test(next)) break;
+    nextPath = next.startsWith('/') ? next : `/${next}`;
+  }
+  return records;
+}
+
 async function loadMokaInterviews(context) {
   const status = mokaConnectionStatus();
   const projectName = String(status.projectName || process.env.MOKA_PROJECT_NAME || 'QS').trim();
@@ -721,7 +742,9 @@ async function loadMokaInterviews(context) {
   if (!status.configured) return result;
   const syncedJobs = await syncMokaJobs(context, client, targetJobs, result);
   result.syncedJobs = syncedJobs;
-  const lookbackDays = Math.min(730, Math.max(31, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 365)));
+  const startedAt = Date.now();
+  const lookbackDays = Math.min(30, Math.max(1, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 30)));
+  result.filters.lookbackDays = lookbackDays;
   const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
   const windows = [];
   for (let cursor = new Date(start); cursor < end; cursor = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000))) {
@@ -763,24 +786,35 @@ async function loadMokaInterviews(context) {
     roleSamples: [...new Set(recordsWithApplications.map(record => mokaRoleText(record.raw || record)).filter(Boolean))].slice(0, 20)
   };
   if (!filtered.length && records.length) result.warnings.push(`目标岗位匹配结果为 0：Moka 返回 ${records.length} 条面试，但没有记录的岗位名称命中配置的 13 个目标岗位。`);
-  const feedbackStart = start.toISOString();
-  const feedbackResponse = await client.request(`/api-platform/v1/data/interviewer_feedbacks?fromTime=${encodeURIComponent(feedbackStart)}&limit=1000`);
-  const feedbackRecords = feedbackResponse.ok ? flattenMokaRecords(feedbackResponse.body) : [];
-  if (!feedbackResponse.ok) result.warnings.push([401, 403].includes(feedbackResponse.status) ? `Moka 面试反馈授权不足（${feedbackResponse.status}）` : `面试反馈读取失败（${feedbackResponse.status}）`);
-  const feedbackByKey = new Map(feedbackRecords.map(item => [String(item.applicationId || item.interviewId || ''), item]));
+  const feedbackRecords = await fetchMokaFeedbacks(client, start.toISOString(), result);
+  const feedbackByApplication = new Map();
+  for (const item of feedbackRecords) {
+    const applicationId = String(item.applicationId || '');
+    if (!applicationId) continue;
+    const list = feedbackByApplication.get(applicationId) || [];
+    list.push(item);
+    feedbackByApplication.set(applicationId, list);
+  }
   const scopedRecords = filtered;
   result.records = scopedRecords.map(record => {
-    const feedback = feedbackByKey.get(String(record.applicationId || record.id)) || {};
-    const outcomeData = normalizeMokaOutcome({ ...record.raw, ...record, interviewerFeedbacks: feedback ? [feedback] : [] });
-    return { ...record, ...outcomeData, recordingUrl: record.recordingUrl || feedback.recordingUrl || feedback.recordUrl || '', feedbackUrl: record.feedbackUrl || feedback.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || feedback.transcriptUrl || feedback.transcriptionUrl || '' };
+    const applicationId = String(record.applicationId || record.raw?.candidates?.[0]?.applicationId || '');
+    const feedbacks = selectMokaFeedbacks(record, feedbackByApplication.get(applicationId) || []);
+    const outcomeData = normalizeMokaOutcome({ ...record.raw, ...record, interviewerFeedbacks: feedbacks });
+    const first = feedbacks[0] || {};
+    return { ...record, ...outcomeData, recordingUrl: record.recordingUrl || first.recordingUrl || first.recordUrl || '', feedbackUrl: record.feedbackUrl || first.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || first.transcriptUrl || first.transcriptionUrl || '' };
   });
-  const detailLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_INTERVIEW_DETAIL_LOOKUP_LIMIT || 120)));
+  result.feedbackStats = { fetched: feedbackRecords.length, matched: result.records.filter(record => record.feedback || record.outcome).length };
+  const detailLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_INTERVIEW_DETAIL_LOOKUP_LIMIT || 40)));
+  let detailRead = 0;
   for (let index = 0; index < detailLimit; index += 4) {
+    if (Date.now() - startedAt > 70000) break;
     const details = await Promise.all(result.records.slice(index, index + 4).map(record => fetchMokaInterviewDetails(record, client)));
     result.records.splice(index, details.length, ...details);
+    detailRead += details.length;
   }
-  if (result.records.length > detailLimit && detailLimit > 0) result.warnings.push(`已读取前 ${detailLimit} 场面试详情以查找录制/转写附件。`);
-  const attachmentLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_TRANSCRIPT_LOOKUP_LIMIT || detailLimit)));
+  if (detailRead && result.records.length > detailRead) result.warnings.push(`已读取前 ${detailRead} 场面试详情以查找录制/转写附件，面试结果和评价已全部返回。`);
+  const attachmentBudget = Date.now() - startedAt > 80000 ? 0 : Math.min(detailRead, Math.max(0, Number(process.env.MOKA_TRANSCRIPT_LOOKUP_LIMIT || 20)));
+  const attachmentLimit = Math.min(result.records.length, attachmentBudget);
   const enrichedRecords = result.records.slice(0, attachmentLimit).length
     ? await Promise.all(result.records.slice(0, attachmentLimit).map(record => enrichMokaAttachment(record, client)))
     : [];
