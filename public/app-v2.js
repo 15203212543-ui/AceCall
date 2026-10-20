@@ -797,6 +797,26 @@ function attachTranscriptImports(interviews, imports) {
 function syncInterviewTranscripts() {
   app.mokaInterviews = attachTranscriptImports(app.mokaInterviews, app.transcriptImports);
 }
+function transcriptCaptureEntries() {
+  const interviews = app.mokaInterviews.filter(item => item.source !== 'acecall-local');
+  return (app.transcriptImports || []).map(task => {
+    const text = String(task.result?.text || '').trim();
+    const hint = task.metadata || {};
+    const match = matchImportedTranscript(task, interviews);
+    return {
+      id: task.id,
+      fileName: task.fileName || hint.fileName || '转写文件',
+      capturedAt: task.createdAt || task.updatedAt || '',
+      candidateName: match?.candidateName || hint.candidateName || '',
+      jobName: match?.jobName || hint.jobName || '',
+      interviewer: match?.interviewer || hint.interviewer || '',
+      startedAt: match?.startedAt || hint.interviewAt || '',
+      round: match?.round || hint.round || '',
+      text,
+      matched: Boolean(match)
+    };
+  }).filter(item => item.text).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
+}
 function interviewResultLabel(item = {}) {
   const schedule = String(item.scheduleStatus || '');
   if (item.interviewPassed === true && item.interviewRejected === true) return '结果冲突';
@@ -863,9 +883,22 @@ function renderInterviewers() {
     return `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.scheduleStatus || (item.completed === false ? '未完成' : '已结束'))}</small></td><td>${escapeHtml(item.jobName || '未识别岗位')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatDate(item.startedAt))}</td><td><span class="${interviewResultClass(label)}">${escapeHtml(label)}</span></td><td><div class="interview-feedback-cell">${feedback ? escapeHtml(feedback) : '暂无评价'}</div></td><td><div class="interview-feedback-cell">${transcript ? escapeHtml(transcript) : '未抓到转写'}</div></td></tr>`;
   }).join('');
   const transcriptCount = detailRecords.filter(item => String(item.transcript || '').trim()).length;
+  const captureEntries = transcriptCaptureEntries();
+  const capturePageSize = 10;
+  const capturePageCount = Math.max(1, Math.ceil(captureEntries.length / capturePageSize));
+  const capturePage = Math.min(Math.max(1, Number(app.transcriptCapturePage || 1)), capturePageCount);
+  app.transcriptCapturePage = capturePage;
+  const captureVisible = captureEntries.slice((capturePage - 1) * capturePageSize, capturePage * capturePageSize);
+  const captureStart = captureEntries.length ? (capturePage - 1) * capturePageSize + 1 : 0;
+  const captureEnd = captureEntries.length ? captureStart + captureVisible.length - 1 : 0;
+  const captureRows = captureVisible.map(item => `<tr><td><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml(formatDate(item.capturedAt))}</small></td><td><span class="${item.matched ? 'quality quality-good' : 'quality quality-warn'}">${item.matched ? '已匹配' : '未匹配'}</span></td><td>${escapeHtml(item.candidateName || '未识别')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.jobName || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatDate(item.startedAt))}</td><td><div class="interview-feedback-cell">${escapeHtml(item.text)}</div></td></tr>`).join('');
+  const capturePager = captureEntries.length > capturePageSize ? `<div class="interview-record-pager"><button type="button" data-capture-page="prev"${capturePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-capture-page-select>${Array.from({ length: capturePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === capturePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${capturePageCount} 页</label><span>${captureStart}–${captureEnd} / ${captureEntries.length} 份</span><button type="button" data-capture-page="next"${capturePage >= capturePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
   const recordPager = detailRecords.length > recordPageSize ? `<div class="interview-record-pager"><button type="button" data-interview-page="prev"${recordPage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-interview-page-select>${Array.from({ length: recordPageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === recordPage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${recordPageCount} 页</label><span>${pageStart}–${pageEnd} / ${detailRecords.length} 场</span><button type="button" data-interview-page="next"${recordPage >= recordPageCount ? ' disabled' : ''}>下一页</button></div>` : '';
-  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `<section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
+  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `<section class="surface transcript-capture-list"><div class="surface-head"><div><h2>转写抓取记录</h2><p class="surface-subtitle">助手抓到的转写文件会先出现在这里，再匹配到面试官、岗位和面试时间。${captureEntries.filter(item => item.matched).length} 份已匹配，${captureEntries.filter(item => !item.matched).length} 份未匹配。</p></div><span>${captureEntries.length ? `${captureStart}–${captureEnd} / ${captureEntries.length} 份` : '0 份'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>文件</th><th>抓取状态</th><th>候选人</th><th>面试官</th><th>岗位</th><th>环节</th><th>面试时间</th><th>转写正文</th></tr></thead><tbody>${captureRows || '<tr><td colspan="8"><div class="empty">还没有抓到转写文件。助手导入新文件后，点刷新 Moka 数据即可在这里确认。</div></td></tr>'}</tbody></table></div>${capturePager}</section><section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
   const keepRecordScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
+  root.querySelector('[data-capture-page="prev"]')?.addEventListener('click', () => { app.transcriptCapturePage = Math.max(1, capturePage - 1); keepRecordScroll(); });
+  root.querySelector('[data-capture-page="next"]')?.addEventListener('click', () => { app.transcriptCapturePage = Math.min(capturePageCount, capturePage + 1); keepRecordScroll(); });
+  root.querySelector('[data-capture-page-select]')?.addEventListener('change', event => { app.transcriptCapturePage = Number(event.target.value) || 1; keepRecordScroll(); });
   root.querySelector('[data-interview-page="prev"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.max(1, recordPage - 1); keepRecordScroll(); });
   root.querySelector('[data-interview-page="next"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.min(recordPageCount, recordPage + 1); keepRecordScroll(); });
   root.querySelector('[data-interview-page-select]')?.addEventListener('change', event => { app.interviewerRecordPage = Number(event.target.value) || 1; keepRecordScroll(); });
@@ -884,7 +917,7 @@ function renderInterviewerFollowups() {
   const coverage = transcripts.length ? Math.min(100, Math.round(questionLines.length / transcripts.length * 12)) : 0;
   const completeness = records.length ? Math.round(records.filter(item => item.outcome || item.interviewPassed || item.hired).length / records.length * 100) : 0;
   const depth = transcripts.length ? Math.min(100, Math.round(followUpCount / transcripts.length * 8)) : 0;
-  const transcriptBriefs = records.filter(item => item.transcript).slice(0, 6).map(item => `<p><b>转写输出：</b>${escapeHtml(item.candidateName || '未命名候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(String(item.transcript).replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('');
+  const transcriptBriefs = transcriptCaptureEntries().slice(0, 6).map(item => `<p><b>转写输出：</b>${item.matched ? '已匹配' : '未匹配'} · ${escapeHtml(item.fileName)} · ${escapeHtml(item.candidateName || '未识别候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(item.text.replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('') || records.filter(item => item.transcript).slice(0, 6).map(item => `<p><b>转写输出：</b>${escapeHtml(item.candidateName || '未命名候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(String(item.transcript).replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('');
   const score = records.length ? Math.round(coverage * .35 + depth * .35 + completeness * .3) : 0;
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
