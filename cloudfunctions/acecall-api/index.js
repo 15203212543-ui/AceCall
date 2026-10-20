@@ -2,7 +2,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
-const { createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
+const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -1196,7 +1196,7 @@ async function resolveMokaSync(context, previousSync, record) {
   if (!hasScreeningResult(record)) return previous;
   const fingerprint = screeningFingerprint(record);
   if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
-  const operatorEmail = process.env.MOKA_OPERATOR_EMAIL || context.member?.username || '';
+  const operatorEmail = chooseOperatorEmail(context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
   try {
     const result = await syncScreeningComment(createMokaClient(), record, operatorEmail);
     return { ...result, fingerprint };

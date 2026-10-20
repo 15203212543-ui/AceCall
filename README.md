@@ -81,7 +81,7 @@ npm start
 
 如需启用模型，在 `.env` 中配置：
 
-Moka 接入采用服务端适配层。面试记录读取和初筛备注回写都在云函数中完成，凭据只放在 CloudBase 云函数环境变量里：`MOKA_BASE_URL`、`MOKA_API_KEY`，需要企业维度时再配置 `MOKA_ENTERPRISE_ID`。备注写入人使用 `MOKA_OPERATOR_EMAIL`；未配置时，若当前成员用户名本身是邮箱，则用该邮箱。候选人保存了沟通总结或初筛报告后，系统按简历中的手机号或邮箱匹配 Moka 申请，并追加一条备注。同一份初筛内容不会重复写入。写入失败只记录在候选人的同步状态上，不影响 AceCall 保存。该操作不修改 Moka 阶段，不淘汰候选人，也不覆盖原始简历。连接状态接口为 `GET /api/integrations/moka/status`。
+Moka 接入采用服务端适配层。面试记录读取和初筛备注回写都在云函数中完成，凭据只放在 CloudBase 云函数环境变量里：`MOKA_BASE_URL`、`MOKA_API_KEY`，需要企业维度时再配置 `MOKA_ENTERPRISE_ID`。备注写入人优先使用当前成员用户名。用户名是邮箱时，就用它作为 Moka 操作人。后续会要求用户名统一为企业邮箱。在此之前，用户名还不是邮箱时，才使用云函数环境变量 `MOKA_OPERATOR_EMAIL` 兜底。候选人保存了沟通总结或初筛报告后，系统按简历中的手机号或邮箱匹配 Moka 申请，并追加一条备注。同一份初筛内容不会重复写入。写入失败只记录在候选人的同步状态上，不影响 AceCall 保存。该操作不修改 Moka 阶段，不淘汰候选人，也不覆盖原始简历。连接状态接口为 `GET /api/integrations/moka/status`。
 
 ```env
 DEEPSEEK_API_KEY=your_key

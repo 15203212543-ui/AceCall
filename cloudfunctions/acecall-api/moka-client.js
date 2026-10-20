@@ -123,6 +123,10 @@ function normalizeEmail(value) {
   return email.includes('@') ? email : '';
 }
 
+function chooseOperatorEmail(username, fallback = '') {
+  return normalizeEmail(username) || normalizeEmail(fallback);
+}
+
 function screeningFingerprint(candidate = {}) {
   const report = candidate.report || {};
   const summary = candidate.communicationSummary || {};
@@ -251,6 +255,7 @@ module.exports = {
   mokaConnectionStatus,
   maskSecret,
   screeningFingerprint,
+  chooseOperatorEmail,
   buildScreeningNote,
   chooseMokaApplication,
   syncScreeningComment
