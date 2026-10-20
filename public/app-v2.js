@@ -776,7 +776,8 @@ function renderInterviewers() {
   const status = app.mokaInterviewStatus;
   const serverAnalytics = app.mokaAnalytics || {};
   const diagnostics = app.connectionDiagnostics || {};
-  const jobSyncNote = status.mokaJobStats ? ` · QS岗位同步 ${status.mokaJobStats.matched} 个` : '';
+  const jobSyncCount = status.mokaJobStats?.matched ?? status.mokaJobStats?.fallbackMatched;
+  const jobSyncNote = Number.isFinite(jobSyncCount) ? ` · 目标岗位 ${jobSyncCount} 个` : '';
   const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}` : status.configured ? 'Moka 只读数据 · 按 13 个目标岗位名称筛选' : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
   const diagnosticRow = (label, value, tone = '') => `<div class="connection-diagnostic-row"><span>${escapeHtml(label)}</span><b class="${tone}">${escapeHtml(value || '未检查')}</b></div>`;
   const selectOptions = (values, value, empty) => `<option value="">${empty}</option>${values.map(item => `<option value="${escapeHtml(item)}"${item === value ? ' selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
@@ -1807,16 +1808,14 @@ async function loadMokaInterviews(options = {}) {
     app.mokaInterviews = Array.isArray(data.records) ? data.records : [];
     if (Array.isArray(data.syncedJobs) && data.syncedJobs.length) {
       app.jobs = mergeRecords(app.jobs, data.syncedJobs);
-      persistHydratedState();
+      try { persistHydratedState(); } catch (error) { console.warn('[AceCall jobs cache]', error); }
     }
     app.mokaAnalytics = data.analytics || null;
     app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual' };
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   } catch (error) {
     console.warn('[AceCall Moka interviews]', error);
-    app.mokaInterviews = [];
-    app.mokaAnalytics = null;
-    app.mokaInterviewStatus = { configured: false, loading: false, error: error.message, httpStatus: error.status || 0 };
+    app.mokaInterviewStatus = { ...app.mokaInterviewStatus, configured: Boolean(app.mokaInterviewStatus.configured), loading: false, error: error.message, httpStatus: error.status || 0 };
   }
   })();
   try { return await mokaRefreshInFlight; } finally { mokaRefreshInFlight = null; }
