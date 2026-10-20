@@ -1222,7 +1222,15 @@ function renderAssignmentJobs(candidate) {
   const query = ($('#assignmentJobSearch')?.value || '').trim().toLowerCase();
   const showAll = $('#assignmentJobStatus')?.value === 'all';
   const selectedId = $('#assignmentForm')?.dataset.selectedJob || candidate?.jobId || '';
-  const jobs = app.jobs.filter(job => (showAll || job.status !== 'closed') && (!query || `${job.name} ${job.department || ''} ${job.industry || ''} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
+  const filteredJobs = app.jobs.filter(job => (showAll || job.status !== 'closed') && (!query || `${job.name} ${job.department || ''} ${job.industry || ''} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
+  // Moka 回填和手工创建可能产生同名岗位；分配时只展示一条，优先在招且信息更完整的记录。
+  const jobs = [...filteredJobs.reduce((map, job) => {
+    const key = assignmentJobKey(job.name);
+    const existing = map.get(key);
+    if (!existing || Number(job.status !== 'closed') > Number(existing.status !== 'closed') || assignmentJobCompleteness(job) > assignmentJobCompleteness(existing)) map.set(key, job);
+    return map;
+  }, new Map()).values()]
+    .sort((left, right) => Number(right.status !== 'closed') - Number(left.status !== 'closed') || assignmentJobCompleteness(right) - assignmentJobCompleteness(left));
   $('#assignmentJobList').innerHTML = jobs.map(job => {
     const score = candidate ? normalizedMatchScore(candidate.matching || {}, candidate.resume || '', job) : 0;
     const selected = job.id === selectedId;
@@ -1231,6 +1239,9 @@ function renderAssignmentJobs(candidate) {
   $('#confirmAssignmentButton').disabled = !jobs.length || !selectedId;
   $$('#assignmentJobList input[name="assignmentJob"]').forEach(input => input.addEventListener('change', () => { $('#assignmentForm').dataset.selectedJob = input.value; renderAssignmentJobs(candidate); }));
 }
+
+function assignmentJobKey(name = '') { return String(name).toLowerCase().replace(/[\s\-_—·•（）()【】\[\]]/g, ''); }
+function assignmentJobCompleteness(job = {}) { return Number(Boolean(job.jd)) * 2 + (Array.isArray(job.keywords) ? job.keywords.length : 0) + Number(Boolean(job.department)); }
 
 async function confirmAssignment(event) {
   event.preventDefault();
