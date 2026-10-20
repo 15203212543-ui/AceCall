@@ -5,6 +5,7 @@ const tcb = require('@cloudbase/node-sdk');
 const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
 const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
+const { mergeTranscriptMetadata } = require('./transcript-match');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -743,7 +744,7 @@ async function loadMokaInterviews(context) {
   const syncedJobs = await syncMokaJobs(context, client, targetJobs, result);
   result.syncedJobs = syncedJobs;
   const startedAt = Date.now();
-  const lookbackDays = Math.min(30, Math.max(1, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 30)));
+  const lookbackDays = Math.min(60, Math.max(1, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 60)));
   result.filters.lookbackDays = lookbackDays;
   const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
   const windows = [];
@@ -804,6 +805,7 @@ async function loadMokaInterviews(context) {
     return { ...record, ...outcomeData, recordingUrl: record.recordingUrl || first.recordingUrl || first.recordUrl || '', feedbackUrl: record.feedbackUrl || first.interviewFeedbackUrl || '', transcriptUrl: record.transcriptUrl || first.transcriptUrl || first.transcriptionUrl || '' };
   });
   result.feedbackStats = { fetched: feedbackRecords.length, matched: result.records.filter(record => record.feedback || record.outcome).length };
+  result.records.sort((left, right) => (Date.parse(right.startedAt || '') || 0) - (Date.parse(left.startedAt || '') || 0));
   const detailLimit = Math.min(result.records.length, Math.max(0, Number(process.env.MOKA_INTERVIEW_DETAIL_LOOKUP_LIMIT || 40)));
   let detailRead = 0;
   for (let index = 0; index < detailLimit; index += 4) {
@@ -1363,7 +1365,7 @@ async function importTranscript(context, input = {}) {
   if (text.length > 2_000_000) throw serviceError('转写文本超过 200 万字限制', 413);
   const id = taskId();
   const now = new Date().toISOString();
-  const metadata = sanitizeJson(input.metadata || {});
+  const metadata = mergeTranscriptMetadata(sanitizeJson(input.metadata || {}), input.fileName, text);
   const result = { text, characters: text.length, completedAt: now, format: 'text', source: 'local-moka-download' };
   const task = {
     id, tenantId: context.tenantId, candidateId: String(input.candidateId || '').slice(0, 100),
@@ -1379,7 +1381,7 @@ async function importTranscript(context, input = {}) {
 
 async function listTranscriptImports(context) {
   const result = await getDatabase().collection(COLLECTIONS.transcriptionTasks).where({ tenantId: context.tenantId, source: 'local-moka-download' }).limit(200).get();
-  return { ok: true, records: (result.data || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).map(cleanDocument) };
+  return { ok: true, records: (result.data || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).map(task => { const clean = cleanDocument(task); return { ...clean, metadata: mergeTranscriptMetadata(clean.metadata || {}, clean.fileName, clean.result?.text || '') }; }) };
 }
 
 async function findTask(context, id) {

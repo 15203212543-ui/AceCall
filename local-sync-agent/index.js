@@ -14,7 +14,8 @@ const SUPPORTED = /\.(pdf|docx?|txt|md|rtf|vtt|srt|json|mp3|wav|pcm|amr|m4a|webm
 const AUDIO = /\.(mp3|wav|pcm|amr|m4a|webm|ogg|mp4)$/i;
 const TEMPORARY = /\.(crdownload|part|tmp|download)$/i;
 const signals = ['简历', '个人信息', '工作经历', '教育经历', '项目经历', '任职', '工作经验', '学历', '邮箱', '手机', '电话', 'resume', 'experience', 'education'];
-const transcriptSignals = ['面试转写', '面试记录', '面试录音', 'transcript', 'transcription', 'interview', 'subtitle', 'caption', 'speaker', '发言人'];
+const transcriptSignals = ['面试转写', '面试记录', '面试录音', 'transcript', 'transcription', 'interview', 'subtitle', 'caption', 'speaker', '发言人', 'webvtt'];
+const TEXT_TRANSCRIPT = /\.(txt|md|vtt|srt|json)$/i;
 
 function platformPolicy() {
   if (process.platform === 'darwin') return { platform: 'mac', label: 'Mac', defaultDirectory: path.join(os.homedir(), 'Downloads') };
@@ -56,10 +57,12 @@ function looksLikeResume(text) {
   return normalized.length >= 20 && signals.filter(signal => normalized.toLowerCase().includes(signal.toLowerCase())).length >= 2;
 }
 function looksLikeTranscript(filePath, text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length < 20) return false;
+  if (/\.(vtt|srt)$/i.test(filePath)) return true;
   const name = path.basename(filePath).toLowerCase();
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  return transcriptSignals.filter(signal => `${name} ${normalized}`.includes(signal.toLowerCase())).length >= 1
-    && normalized.length >= 20;
+  const blob = `${name} ${normalized.toLowerCase()}`;
+  return transcriptSignals.some(signal => blob.includes(signal.toLowerCase())) || /面试官\s*[:：]/.test(normalized) || /发言人\s*[:：]/.test(normalized);
 }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -149,6 +152,17 @@ class SyncAgent {
         delete this.state.failures[key];
         console.log(`[AceCall] 已上传并转写本地录音：${path.basename(filePath)}`);
         return;
+      }
+      if (TEXT_TRANSCRIPT.test(filePath)) {
+        const text = await fsp.readFile(filePath, 'utf8');
+        if (looksLikeTranscript(filePath, text)) {
+          if (!this.options.apiBase) throw new Error('转写文件需要连接 AceCall 云端服务');
+          await this.saveTranscript({ filePath, text, metadata: { fileName: path.basename(filePath) }, size: (await fsp.stat(filePath)).size });
+          this.state.imported[key] = { file: filePath, importedAt: new Date().toISOString(), type: 'transcript' };
+          delete this.state.failures[key];
+          console.log(`[AceCall] 已导入面试转写：${path.basename(filePath)}`);
+          return;
+        }
       }
       const result = await this.requestFile(filePath);
       if (looksLikeTranscript(filePath, result.text)) {

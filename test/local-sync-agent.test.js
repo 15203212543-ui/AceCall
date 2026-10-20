@@ -19,6 +19,13 @@ test('local sync agent recognizes resume-like text', () => {
   assert.equal(looksLikeResume('会议纪要：下周一开会讨论项目'), false);
 });
 
+test('local sync agent recognizes interview transcripts', () => {
+  const { looksLikeTranscript } = require('../local-sync-agent');
+  assert.equal(looksLikeTranscript('/tmp/周宁-面试转写.txt', '候选人：周宁\n面试官：魏欣欣\n请介绍项目结果？'), true);
+  assert.equal(looksLikeTranscript('/tmp/interview.vtt', 'WEBVTT\n\n00:00.000 --> 00:02.000\n请介绍一个你负责的项目。'), true);
+  assert.equal(looksLikeTranscript('/tmp/notes.txt', '会议纪要：下周一开会讨论项目进度和负责人安排'), false);
+});
+
 test('local sync agent file key changes when the file changes', () => {
   assert.notEqual(fileKey('/tmp/resume.pdf', { size: 10, mtimeMs: 1 }), fileKey('/tmp/resume.pdf', { size: 11, mtimeMs: 1 }));
 });
