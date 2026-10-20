@@ -849,15 +849,27 @@ function renderInterviewers() {
   const detailRecords = interviewerRecords({ ...filters, includeIncomplete: true }).slice().sort((a, b) => (Date.parse(b.startedAt || '') || 0) - (Date.parse(a.startedAt || '') || 0));
   const feedbackCount = detailRecords.filter(item => String(item.feedback || '').trim()).length;
   const resultCounts = detailRecords.reduce((result, item) => { const label = interviewResultLabel(item); result[label] = (result[label] || 0) + 1; return result; }, {});
-  const detailRows = detailRecords.map(item => {
+  const recordPageSize = 10;
+  const recordPageCount = Math.max(1, Math.ceil(detailRecords.length / recordPageSize));
+  const recordPage = Math.min(Math.max(1, Number(app.interviewerRecordPage || 1)), recordPageCount);
+  app.interviewerRecordPage = recordPage;
+  const pageRecords = detailRecords.slice((recordPage - 1) * recordPageSize, recordPage * recordPageSize);
+  const pageStart = detailRecords.length ? (recordPage - 1) * recordPageSize + 1 : 0;
+  const pageEnd = detailRecords.length ? pageStart + pageRecords.length - 1 : 0;
+  const detailRows = pageRecords.map(item => {
     const label = interviewResultLabel(item);
     const feedback = String(item.feedback || '').trim();
     const transcript = String(item.transcript || '').trim();
     return `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.scheduleStatus || (item.completed === false ? '未完成' : '已结束'))}</small></td><td>${escapeHtml(item.jobName || '未识别岗位')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatDate(item.startedAt))}</td><td><span class="${interviewResultClass(label)}">${escapeHtml(label)}</span></td><td><div class="interview-feedback-cell">${feedback ? escapeHtml(feedback) : '暂无评价'}</div></td><td><div class="interview-feedback-cell">${transcript ? escapeHtml(transcript) : '未抓到转写'}</div></td></tr>`;
   }).join('');
   const transcriptCount = detailRecords.filter(item => String(item.transcript || '').trim()).length;
-  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `<section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length} 场</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div></section>`);
-  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; renderInterviewers(); renderInterviewerFollowups(); }); });
+  const recordPager = detailRecords.length > recordPageSize ? `<div class="interview-record-pager"><button type="button" data-interview-page="prev"${recordPage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-interview-page-select>${Array.from({ length: recordPageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === recordPage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${recordPageCount} 页</label><span>${pageStart}–${pageEnd} / ${detailRecords.length} 场</span><button type="button" data-interview-page="next"${recordPage >= recordPageCount ? ' disabled' : ''}>下一页</button></div>` : '';
+  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `<section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
+  const keepRecordScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
+  root.querySelector('[data-interview-page="prev"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.max(1, recordPage - 1); keepRecordScroll(); });
+  root.querySelector('[data-interview-page="next"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.min(recordPageCount, recordPage + 1); keepRecordScroll(); });
+  root.querySelector('[data-interview-page-select]')?.addEventListener('change', event => { app.interviewerRecordPage = Number(event.target.value) || 1; keepRecordScroll(); });
+  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; app.interviewerRecordPage = 1; renderInterviewers(); renderInterviewerFollowups(); }); });
   root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadTranscriptImports(); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
