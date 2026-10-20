@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
 const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
+const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -469,7 +470,7 @@ async function syncMokaJobs(context, client, targetNames, result) {
     const id = `moka_${job.id}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 120);
     const existing = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
     const current = existing.data || {};
-    const stored = { ...current, id, tenantId: context.tenantId, source: 'moka', mokaJobId: job.id, name: current.name || job.name, department: current.department || job.department, jd: current.jd || job.jd, keywords: current.keywords?.length ? current.keywords : job.keywords, status: current.status || 'active', syncedFromMokaAt: now, createdAt: current.createdAt || now, updatedAt: now, updatedBy: context.uid, createdBy: current.createdBy || context.uid };
+    const stored = applyScreeningProfile({ ...current, id, tenantId: context.tenantId, source: current.source || 'moka', mokaJobId: job.id, name: current.name || job.name, department: current.department || job.department, jd: current.jd || job.jd, keywords: current.keywords?.length ? current.keywords : job.keywords, status: current.status || 'active', syncedFromMokaAt: now, createdAt: current.createdAt || now, updatedAt: now, updatedBy: context.uid, createdBy: current.createdBy || context.uid });
     await db.collection(COLLECTIONS.jobs).doc(id).set(stored);
     synced.push(cleanDocument(stored));
   }
@@ -499,11 +500,11 @@ async function syncMokaJobsFromRecords(context, records, targetNames, result) {
     const id = `moka_${job.id}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 120);
     const existing = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
     const current = existing.data || {};
-    const stored = {
+    const stored = applyScreeningProfile({
       ...current,
       id,
       tenantId: context.tenantId,
-      source: 'moka',
+      source: current.source || 'moka',
       mokaJobId: job.id,
       name: current.name || job.name,
       department: current.department || job.department,
@@ -515,7 +516,7 @@ async function syncMokaJobsFromRecords(context, records, targetNames, result) {
       updatedAt: now,
       updatedBy: context.uid,
       createdBy: current.createdBy || context.uid
-    };
+    });
     await db.collection(COLLECTIONS.jobs).doc(id).set(stored);
     synced.push(cleanDocument(stored));
   }
@@ -1119,8 +1120,8 @@ function requireRole(context, roles) { if (!roles.includes(context.role)) throw 
 
 async function loadState(context) {
   const db = getDatabase();
-  const [jobsResult, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
-    db.collection(COLLECTIONS.jobs).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(100).get(),
+  const [jobs, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
+    listTenantJobs(context.tenantId),
     db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get()
@@ -1131,7 +1132,21 @@ async function loadState(context) {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) });
   });
-  return { jobs: (jobsResult.data || []).map(cleanDocument), cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+  return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+}
+
+async function listTenantJobs(tenantId) {
+  const db = getDatabase();
+  const jobs = [];
+  for (let skip = 0; skip < 2000; skip += 500) {
+    let query = db.collection(COLLECTIONS.jobs).where({ tenantId });
+    if (skip) query = query.skip(skip);
+    const result = await query.limit(500).get();
+    const batch = result.data || [];
+    jobs.push(...batch);
+    if (batch.length < 500) break;
+  }
+  return dedupeStoredJobs(jobs).map(cleanDocument);
 }
 
 async function saveJob(context, id, input) {
