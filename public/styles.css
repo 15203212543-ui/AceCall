@@ -144,6 +144,19 @@ textarea:focus, input:focus { background: white; }
 .toast { position: fixed; right: 24px; bottom: 24px; max-width: 360px; padding: 11px 15px; border-radius: 5px; background: #1e3028; color: white; font-size: 12px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .2s; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .job-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 7px; color: var(--ink); box-shadow: 0 24px 70px rgba(14,29,22,.28); }
+.assignment-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 7px; color: var(--ink); box-shadow: 0 24px 70px rgba(14,29,22,.28); }
+.assignment-dialog::backdrop { background: rgba(11,25,19,.48); }
+.assignment-dialog form { padding: 26px 28px 22px; }
+.dialog-subtitle { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.assignment-toolbar { display: grid; grid-template-columns: 1fr 180px; gap: 9px; margin: 18px 0 12px; }
+.assignment-job-list { max-height: 330px; overflow-y: auto; display: grid; gap: 8px; padding-right: 3px; }
+.assignment-job-option { display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: start; padding: 12px; border: 1px solid var(--line); border-radius: 5px; background: #fbfcfb; cursor: pointer; }
+.assignment-job-option:hover, .assignment-job-option.selected { border-color: var(--green); background: #f1f8f4; }
+.assignment-job-option input { width: 15px; height: 15px; margin-top: 3px; }
+.assignment-job-option strong { display: block; font-size: 12px; }
+.assignment-job-option small { display: block; margin-top: 4px; color: var(--muted); line-height: 1.5; }
+.assignment-job-score { color: var(--green); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.assignment-hint { margin: 12px 0 0; }
 .job-dialog::backdrop { background: rgba(11,25,19,.48); }
 .job-dialog form { padding: 26px 28px 22px; }
 .company-display { color: var(--ink); font-size: 11px; font-weight: 700; padding-left: 12px; border-left: 1px solid var(--line); }

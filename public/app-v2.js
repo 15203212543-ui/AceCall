@@ -76,6 +76,9 @@ function bindShell() {
   $$('[data-close]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
   $('#candidateForm').addEventListener('submit', createCandidate);
   $('#jobForm').addEventListener('submit', saveJob);
+  $('#assignmentForm').addEventListener('submit', confirmAssignment);
+  $('#assignmentJobSearch').addEventListener('input', () => renderAssignmentJobs(app.cases.find(item => item.id === $('#assignmentCandidateId').value)));
+  $('#assignmentJobStatus').addEventListener('change', () => renderAssignmentJobs(app.cases.find(item => item.id === $('#assignmentCandidateId').value)));
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
@@ -1024,15 +1027,15 @@ function renderCandidatesLegacy() {
 }
 
 function renderCandidates() {
-  const counts = ['全部', '待分析', '待电话', '待确认', '推荐面试', '补充沟通', '已完成', '暂不推进'].map(status => ({ status, count: status === '全部' ? app.cases.length : app.cases.filter(item => displayStatus(item) === status).length }));
-  $('#candidatesView').innerHTML = `<div class="page candidates-page"><div class="page-title"><div><span class="eyebrow">TALENT PIPELINE</span><h1>候选人</h1><p>管理已进入招聘流程的人才，不再处理原始文件导入。</p></div><button class="primary" data-add-candidate>＋ 手动添加候选人</button></div><div class="candidate-stages">${counts.map(item => `<button class="candidate-stage ${item.status === '全部' ? 'active' : ''}" data-stage-filter="${item.status}"><b>${item.count}</b><span>${item.status}</span></button>`).join('')}</div><div class="toolbar candidate-toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司、学校或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部阶段</option>${['待分析','待电话','待确认','推荐面试','补充沟通','已完成','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select><select id="candidateTagFilter"><option value="">全部标签</option><option value="competitor">直接竞品</option><option value="major">行业前 5</option><option value="school">985/211/双一流</option><option value="quality">资料待补全</option><option value="moka">Moka待配置</option></select></div><div class="candidate-summary-line"><span>当前显示 <b id="candidateResultCount">${app.cases.length}</b> 人</span><span>统计包含已淘汰候选人 · 标签依据可在详情查看</span></div><div id="candidateTableSlot">${candidatePoolTable(app.cases)}</div></div>`;
+  const counts = ['全部', '待分配', '待分析', '待电话', '待确认', '推荐面试', '补充沟通', '已完成', '暂不推进'].map(status => ({ status, count: status === '全部' ? app.cases.length : status === '待分配' ? app.cases.filter(needsAssignmentReview).length : app.cases.filter(item => displayStatus(item) === status).length }));
+  $('#candidatesView').innerHTML = `<div class="page candidates-page"><div class="page-title"><div><span class="eyebrow">TALENT PIPELINE</span><h1>候选人</h1><p>管理已进入招聘流程的人才，不再处理原始文件导入。</p></div><button class="primary" data-add-candidate>＋ 手动添加候选人</button></div><div class="candidate-stages">${counts.map(item => `<button class="candidate-stage ${item.status === '全部' ? 'active' : ''}" data-stage-filter="${item.status}"><b>${item.count}</b><span>${item.status}</span></button>`).join('')}</div><div class="toolbar candidate-toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司、学校或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部阶段</option><option value="__assignment__">待分配岗位</option>${['待分析','待电话','待确认','推荐面试','补充沟通','已完成','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select><select id="candidateTagFilter"><option value="">全部标签</option><option value="competitor">直接竞品</option><option value="major">行业前 5</option><option value="school">985/211/双一流</option><option value="quality">资料待补全</option><option value="moka">Moka待配置</option></select></div><div class="candidate-summary-line"><span>当前显示 <b id="candidateResultCount">${app.cases.length}</b> 人</span><span>统计包含已淘汰候选人 · 标签依据可在详情查看</span></div><div id="candidateTableSlot">${candidatePoolTable(app.cases)}</div></div>`;
   bindCommonActions($('#candidatesView'));
   ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter', 'candidateTagFilter'].forEach(id => $(`#${id}`).addEventListener('input', filterCandidates));
-  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(); }));
+  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter === '待分配' ? '__assignment__' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(); }));
 }
 
 function candidatePoolTable(items) {
-  return `<div class="surface"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${items.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div>`;
+  return `<div class="surface"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${items.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); const assignment = needsAssignmentReview(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}${assignment ? `<small class="assignment-reason">${escapeHtml(item.matching?.assignmentReviewReason || '自动匹配信心不足，请人工选择岗位')}</small>` : ''}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${assignment ? 'warn' : statusClass(displayStatus(item))}">${assignment ? '待分配' : displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td>${assignment ? `<button class="primary compact-action" data-assign-candidate="${item.id}">分配岗位</button>` : ''}<button class="link-action" data-open-candidate="${item.id}">${assignment ? '查看详情' : `${nextAction(item)} →`}</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div>`;
 }
 
 function candidateTags(item) {
@@ -1060,7 +1063,7 @@ function filterCandidates() {
     return true;
   };
   const tagMatch = item => { const profile = inferTalentProfile(item); if (tag === 'competitor') return profile.competitor === true; if (tag === 'major') return profile.major === true; if (tag === 'school') return profile.school === true; if (tag === 'quality') return resumeQuality(item).level !== 'good'; if (tag === 'moka') return !item.mokaSync?.status || item.mokaSync.status !== '已同步'; return true; };
-  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''} ${(inferTalentProfile(item).competitorCompanies || []).join(' ') } ${needsAssignmentReview(item) ? '待确认岗位' : ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
+  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''} ${(inferTalentProfile(item).competitorCompanies || []).join(' ') } ${needsAssignmentReview(item) ? '待确认岗位 待分配' : ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || (status === '__assignment__' ? needsAssignmentReview(item) : displayStatus(item) === status)));
   $('#candidateResultCount').textContent = filtered.length;
   $('#candidateTableSlot').innerHTML = candidatePoolTable(filtered);
   bindCommonActions($('#candidateTableSlot'));
@@ -1103,7 +1106,7 @@ async function toggleJobStatus(id) {
 function renderCandidateDetail() {
   const item = currentCandidate();
   if (!item) { navigate('candidates'); return; }
-  $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
+  $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${needsAssignmentReview(item) ? '待分配岗位' : displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button>${needsAssignmentReview(item) ? ` <button class="primary" data-assign-candidate="${item.id}">分配岗位</button>` : ` <button class="secondary" data-assign-candidate="${item.id}">改派岗位</button>`}${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
   bindCommonActions($('#candidateDetailView'));
 }
@@ -1194,11 +1197,56 @@ async function inviteMember() {
 function bindCommonActions(root) {
   root.querySelectorAll('[data-add-candidate]').forEach(button => button.addEventListener('click', openCandidateDialog));
   root.querySelectorAll('[data-open-candidate]').forEach(button => button.addEventListener('click', () => openCandidate(button.dataset.openCandidate)));
+  root.querySelectorAll('[data-assign-candidate]').forEach(button => button.addEventListener('click', () => openAssignmentDialog(button.dataset.assignCandidate)));
   root.querySelectorAll('[data-add-job]').forEach(button => button.addEventListener('click', () => openJobDialog()));
   root.querySelectorAll('[data-edit-job]').forEach(button => button.addEventListener('click', () => openJobDialog(button.dataset.editJob)));
   bindJobActions(root);
   root.querySelectorAll('[data-back-candidates]').forEach(button => button.addEventListener('click', () => navigate('candidates')));
   root.querySelectorAll('[data-detail-tab]').forEach(button => button.addEventListener('click', () => { app.detailTab = button.dataset.detailTab; renderCandidateDetail(); }));
+}
+
+function openAssignmentDialog(candidateId) {
+  const candidate = app.cases.find(item => item.id === candidateId);
+  if (!candidate) return toast('候选人记录不存在');
+  const dialog = $('#assignmentDialog');
+  $('#assignmentCandidateId').value = candidateId;
+  $('#assignmentCandidateLabel').textContent = `${candidate.candidateName || '未命名候选人'} · 选择一个在招岗位`;
+  $('#assignmentJobSearch').value = '';
+  $('#assignmentJobStatus').value = 'active';
+  renderAssignmentJobs(candidate);
+  dialog.showModal();
+}
+
+function renderAssignmentJobs(candidate) {
+  const query = ($('#assignmentJobSearch')?.value || '').trim().toLowerCase();
+  const showAll = $('#assignmentJobStatus')?.value === 'all';
+  const selectedId = $('#assignmentForm')?.dataset.selectedJob || candidate?.jobId || '';
+  const jobs = app.jobs.filter(job => (showAll || job.status !== 'closed') && (!query || `${job.name} ${job.department || ''} ${job.industry || ''} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
+  $('#assignmentJobList').innerHTML = jobs.map(job => {
+    const score = candidate ? normalizedMatchScore(candidate.matching || {}, candidate.resume || '', job) : 0;
+    const selected = job.id === selectedId;
+    return `<label class="assignment-job-option ${selected ? 'selected' : ''}"><input type="radio" name="assignmentJob" value="${escapeHtml(job.id)}" ${selected ? 'checked' : ''}><span><strong>${escapeHtml(job.name)}${job.department ? ` · ${escapeHtml(job.department)}` : ''}</strong><small>${escapeHtml((job.jd || '').replace(/\s+/g, ' ').slice(0, 120) || '暂未填写 JD')} · 关键词：${escapeHtml((job.keywords || []).slice(0, 5).join('、') || '未设置')}</small></span><b class="assignment-job-score">${score}分</b></label>`;
+  }).join('') || '<div class="empty">没有可分配的在招岗位，请先创建或启用岗位。</div>';
+  $('#confirmAssignmentButton').disabled = !jobs.length || !selectedId;
+  $$('#assignmentJobList input[name="assignmentJob"]').forEach(input => input.addEventListener('change', () => { $('#assignmentForm').dataset.selectedJob = input.value; renderAssignmentJobs(candidate); }));
+}
+
+async function confirmAssignment(event) {
+  event.preventDefault();
+  const candidateId = $('#assignmentCandidateId').value;
+  const candidate = app.cases.find(item => item.id === candidateId);
+  const jobId = $('#assignmentForm').dataset.selectedJob || $('#assignmentJobList input[name="assignmentJob"]:checked')?.value;
+  const job = app.jobs.find(item => item.id === jobId);
+  if (!candidate || !job) return toast('请选择一个在招岗位');
+  const button = $('#confirmAssignmentButton'); button.disabled = true; button.textContent = '正在保存';
+  const previous = { ...candidate, matching: candidate.matching ? { ...candidate.matching } : candidate.matching };
+  candidate.jobId = job.id; candidate.roleName = job.name; candidate.jd = job.jd || ''; candidate.rules = job.rules || ''; candidate.keywords = job.keywords || [];
+  candidate.assignmentSource = 'manual'; candidate.assignmentStatus = 'assigned'; candidate.assignedAt = new Date().toISOString(); candidate.assignedBy = app.authUser?.email || app.authUser?.username || '当前用户';
+  candidate.matching = { ...(candidate.matching || {}), jobId: job.id, status: '已分配', assignmentReview: false, assignmentReviewReason: '', assignedAt: candidate.assignedAt, assignmentSource: 'manual' };
+  candidate.updatedAt = new Date().toISOString();
+  const saved = REMOTE_BACKEND ? await saveRemote(`/api/candidates/${candidate.id}`, candidate, true) : true;
+  if (!saved && REMOTE_BACKEND) { Object.assign(candidate, previous); button.disabled = false; button.textContent = '确认分配'; return toast('云端保存失败，岗位尚未分配，请稍后重试'); }
+  persistCases(candidate); $('#assignmentDialog').close(); renderCurrent(); toast(`已将 ${candidate.candidateName || '候选人'} 分配至 ${job.name}`);
 }
 
 function bindDetailActions(root) {

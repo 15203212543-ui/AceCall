@@ -477,6 +477,51 @@ async function syncMokaJobs(context, client, targetNames, result) {
   return synced;
 }
 
+// Some Moka tenants expose interviews and applications but return an empty
+// payload from the dedicated jobs endpoint. The interview rows still carry a
+// canonical job id/name, so use them as a bounded fallback to keep AceCall's
+// job directory in sync instead of silently dropping the job update.
+async function syncMokaJobsFromRecords(context, records, targetNames, result) {
+  const names = Array.isArray(targetNames) ? targetNames : [String(targetNames || '')];
+  const candidates = [];
+  for (const record of records || []) {
+    const raw = record?.raw && typeof record.raw === 'object' ? record.raw : record;
+    if (!raw || !matchesMokaJobNames(raw, names)) continue;
+    const normalized = normalizeMokaJob(raw);
+    if (!normalized.name) continue;
+    const id = normalized.id || `name_${normalizeJobName(normalized.name)}`;
+    candidates.push({ ...normalized, id });
+  }
+  const unique = [...new Map(candidates.map(job => [`${job.id}:${normalizeJobName(job.name)}`, job])).values()];
+  if (!unique.length) return [];
+  const db = getDatabase(); const synced = []; const now = new Date().toISOString();
+  for (const job of unique) {
+    const id = `moka_${job.id}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 120);
+    const existing = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+    const current = existing.data || {};
+    const stored = {
+      ...current,
+      id,
+      tenantId: context.tenantId,
+      source: 'moka',
+      mokaJobId: job.id,
+      name: current.name || job.name,
+      department: current.department || job.department,
+      jd: current.jd || job.jd,
+      keywords: current.keywords?.length ? current.keywords : job.keywords,
+      status: current.status || 'active',
+      syncedFromMokaAt: now,
+      createdAt: current.createdAt || now,
+      updatedAt: now,
+      updatedBy: context.uid,
+      createdBy: current.createdBy || context.uid
+    };
+    await db.collection(COLLECTIONS.jobs).doc(id).set(stored);
+    synced.push(cleanDocument(stored));
+  }
+  return synced;
+}
+
 function mergeMokaApplication(record, application = {}) {
   if (!application || typeof application !== 'object') return record;
   const raw = { ...(record.raw || {}), application };
@@ -719,6 +764,19 @@ async function loadMokaInterviews(context) {
   // canonical application object rather than an incomplete interview row.
   const recordsWithApplications = await fetchMokaApplications(records, client, result);
   const filtered = recordsWithApplications.filter(record => matchesMokaJobNames(record.raw || record, targetJobs));
+  const fallbackJobs = await syncMokaJobsFromRecords(context, recordsWithApplications, targetJobs, result);
+  if (fallbackJobs.length) {
+    result.syncedJobs = [...(result.syncedJobs || []), ...fallbackJobs];
+    result.mokaJobStats = {
+      ...(result.mokaJobStats || {}),
+      fallbackFetched: recordsWithApplications.length,
+      fallbackMatched: fallbackJobs.length,
+      fallbackSynced: fallbackJobs.length,
+      jobs: targetJobs
+    };
+    result.warnings = (result.warnings || []).filter(message => !String(message).startsWith('Moka 岗位接口未返回可用岗位列表'));
+    result.warnings.push(`Moka 职位接口未返回列表，已从面试记录回填 ${fallbackJobs.length} 个目标岗位。`);
+  }
   // Interviewer analysis is scoped by the explicit Moka job title allowlist.
   // AceCall job records and the unavailable Moka department field are not used.
   result.projectScopeFallback = false;
@@ -1099,7 +1157,7 @@ async function saveCandidate(context, id, input) {
   await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
   await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome']);
+  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'mokaSync', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome', 'assignmentSource', 'assignmentStatus', 'assignedAt', 'assignedBy']);
   candidate.id = id;
   candidate.tenantId = context.tenantId;
   candidate.createdBy = context.uid;
