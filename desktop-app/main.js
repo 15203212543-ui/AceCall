@@ -33,7 +33,7 @@ async function stopAgent() {
 async function startAgent(directory) {
   await stopAgent();
   currentDirectory = directory;
-  const options = { directory, interval: 300000, once: false, apiBase, authToken: sessionToken };
+  const options = { directory, statePath: path.join(app.getPath('userData'), 'sync-state.json'), interval: 300000, once: false, apiBase, authToken: sessionToken };
   agent = new SyncAgent(options);
   await agent.start();
   sendStatus('running', `${platformPolicy().label}正在监听`);

@@ -68,7 +68,8 @@ class SyncAgent {
     this.options = options;
     this.policy = platformPolicy();
     this.directory = path.resolve(options.directory || this.policy.defaultDirectory);
-    this.statePath = path.join(this.directory, '.acecall-sync.json');
+    this.statePath = path.resolve(options.statePath || path.join(os.homedir(), '.acecall', 'sync-state.json'));
+    this.legacyStatePath = path.join(this.directory, '.acecall-sync.json');
     this.state = { version: 1, startedAt: new Date().toISOString(), baseline: [], imported: {}, failures: {} };
     this.stability = new Map();
     this.watcher = null;
@@ -78,10 +79,23 @@ class SyncAgent {
   }
 
   async loadState() {
-    try { this.state = JSON.parse(await fsp.readFile(this.statePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try {
+      this.state = JSON.parse(await fsp.readFile(this.statePath, 'utf8'));
+      return;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    // Migrate the old per-folder state file once, without deleting it.
+    try {
+      this.state = JSON.parse(await fsp.readFile(this.legacyStatePath, 'utf8'));
+      await this.saveState();
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
   }
 
   async saveState() {
+    await fsp.mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
     const temporary = `${this.statePath}.tmp`;
     await fsp.writeFile(temporary, JSON.stringify(this.state, null, 2), { mode: 0o600 });
     await fsp.rename(temporary, this.statePath);
@@ -89,6 +103,7 @@ class SyncAgent {
 
   async start() {
     await fsp.mkdir(this.directory, { recursive: true });
+    await fsp.access(this.directory, fs.constants.R_OK);
     await this.loadState();
     const current = await listFiles(this.directory);
     if (!this.state.baseline.length) this.state.baseline = current.map(item => fileKey(item.path, item.stat));
