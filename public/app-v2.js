@@ -1086,7 +1086,16 @@ function useTeamRule(index) { const value = teamRules[index]; if (!value) return
 
 function jobCards(jobs) {
   if (!jobs.length) return '<div class="surface empty">暂无岗位，请先建立岗位标准。</div>';
-  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
+  return dedupeJobs(jobs).map(job => { const count = app.cases.filter(item => item.jobId === job.id || (item.roleName && assignmentJobKey(item.roleName) === assignmentJobKey(job.name))).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => (item.jobId === job.id || (item.roleName && assignmentJobKey(item.roleName) === assignmentJobKey(job.name))) && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
+}
+
+function dedupeJobs(jobs = []) {
+  return [...jobs.reduce((map, job) => {
+    const key = assignmentJobKey(job.name);
+    const existing = map.get(key);
+    if (!existing || Number(job.status !== 'closed') > Number(existing.status !== 'closed') || assignmentJobCompleteness(job) > assignmentJobCompleteness(existing)) map.set(key, job);
+    return map;
+  }, new Map()).values()];
 }
 
 function filterJobs() {
