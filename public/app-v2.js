@@ -1211,6 +1211,7 @@ function openAssignmentDialog(candidateId) {
   const dialog = $('#assignmentDialog');
   $('#assignmentCandidateId').value = candidateId;
   $('#assignmentCandidateLabel').textContent = `${candidate.candidateName || '未命名候选人'} · 选择一个在招岗位`;
+  delete $('#assignmentForm').dataset.selectedJob;
   $('#assignmentJobSearch').value = '';
   $('#assignmentJobStatus').value = 'active';
   renderAssignmentJobs(candidate);
