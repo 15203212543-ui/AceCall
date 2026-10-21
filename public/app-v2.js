@@ -16,7 +16,7 @@ const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const initialLocalState = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), rules: readStore(RULES_KEY) };
-const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null, mokaInterviews: [], transcriptImports: [], mokaAnalytics: null, mokaInterviewStatus: { configured: false, loading: false }, connectionDiagnostics: {} };
+const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null, mokaInterviews: [], transcriptImports: [], mokaAnalytics: null, mokaInterviewStatus: { configured: false, loading: false }, intelligenceReviewed: {}, connectionDiagnostics: {} };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
 let cloudbaseClient = null;
