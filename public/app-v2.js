@@ -807,9 +807,11 @@ function renderTranscriptReview() {
    const industryCards = industries.slice(0, 12).map(item => `<button type="button" class="intelligence-industry-card" data-intelligence-object="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}</span><strong>${item.count}</strong><small>条材料命中 · ${(item.sources || []).join(' / ') || '来源待确认'}</small></button>`).join('');
    const selectedIndustryObject = app.intelligenceIndustryDetail ? industries.find(item => item.key === app.intelligenceIndustryDetail) : null;
    const selectedIndustryName = selectedIndustryObject?.name || '';
-   const relatedCompanies = selectedIndustryName ? companies.filter(item => (item.industries || []).includes(selectedIndustryName)).slice(0, 8) : [];
-   const relatedProducts = selectedIndustryName ? products.filter(item => intelligenceSourceRecords().some(source => { const text = `${source.transcript || ''}\n${source.resume || ''}\n${source.communicationSummary?.overview || ''}`.toLowerCase(); return text.includes(selectedIndustryName.toLowerCase()) && text.includes(item.name.toLowerCase()); })).slice(0, 8) : [];
-   const relatedBusinesses = selectedIndustryName ? businesses.filter(item => intelligenceSourceRecords().some(source => { const text = `${source.transcript || ''}\n${source.resume || ''}\n${source.communicationSummary?.overview || ''}`.toLowerCase(); return text.includes(selectedIndustryName.toLowerCase()) && text.includes(item.name.toLowerCase()); })).slice(0, 8) : [];
+   const industrySourceIds = selectedIndustryName ? intelligenceSourceRecords().filter(source => !app.intelligenceSource || source.sourceType === app.intelligenceSource).map((source, index) => ({ source, id: source.id || source._id || `${source.sourceType}-${index}` })).filter(({ source }) => `${source.transcript || ''}\n${source.resume || ''}\n${source.communicationSummary?.overview || ''}`.toLowerCase().includes(selectedIndustryName.toLowerCase())).map(item => item.id) : [];
+   const industrySourceSet = new Set(industrySourceIds);
+   const relatedCompanies = selectedIndustryName ? companies.filter(item => (item.recordKeys || []).some(key => industrySourceSet.has(key))).slice(0, 8) : [];
+   const relatedProducts = selectedIndustryName ? products.filter(item => (item.recordKeys || []).some(key => industrySourceSet.has(key))).slice(0, 8) : [];
+   const relatedBusinesses = selectedIndustryName ? businesses.filter(item => (item.recordKeys || []).some(key => industrySourceSet.has(key))).slice(0, 8) : [];
    const selectedIndustryDetail = selectedIndustryObject ? `<section class="surface intelligence-selected-industry"><div class="surface-head"><div><h2>${escapeHtml(selectedIndustryName)}</h2><p class="surface-subtitle">当前行业的真实材料详情 · ${selectedIndustryObject.count} 条材料命中</p></div><button class="link-action" type="button" data-intelligence-industry-close>收起详情</button></div><div class="surface-body"><div class="intelligence-selected-evidence"><span>行业证据</span><p>${escapeHtml(selectedIndustryObject.evidence || '当前材料中已命中该行业词，暂无可展示的完整句子。')}</p><small>来源：${escapeHtml((selectedIndustryObject.sources || []).join(' / ') || '招聘材料')}</small></div><div class="intelligence-related-grid"><div><strong>关联公司</strong>${relatedCompanies.map(item => `<button type="button" data-intelligence-related-company="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}</span><small>${item.count} 条材料</small></button>`).join('') || '<em>暂无明确关联公司</em>'}</div><div><strong>关联产品 / 业务</strong>${[...relatedProducts, ...relatedBusinesses].map(item => `<span>${escapeHtml(item.name)} <small>${item.count} 条</small></span>`).join('') || '<em>暂无明确关联产品或业务</em>'}</div></div></div></section>` : '';
    const industryDetail = `<div class="intelligence-industry-page"><div class="intelligence-industry-metrics"><div><span>涉及行业</span><strong>${industries.length}</strong><small>来源数据</small></div><div><span>趋势信号</span><strong>${industries.reduce((sum, item) => sum + item.count, 0)}</strong><small>命中材料</small></div><div><span>待核实信号</span><strong>${industries.length}</strong><small>需要人工确认</small></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2>近期趋势信号</h2><p class="surface-subtitle">从真实简历、电话沟通和正式面试转写中提取</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body">${industrySignalRows || '<div class="intelligence-home-empty">暂无行业信号，请先同步转写或导入简历。</div>'}</div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2>按行业查看</h2><p class="surface-subtitle">以下行业来自真实材料命中，不是预设行业清单</p></div></div><div class="intelligence-industry-grid">${industryCards || '<div class="intelligence-home-empty">当前没有可匹配的行业。</div>'}</div></section>${selectedIndustryDetail}</div>`;
    const root = $('#intelligenceView');
@@ -867,11 +869,13 @@ function renderTranscriptReview() {
    const terms = INTELLIGENCE_LEXICON[view] || [];
    const groups = new Map();
    const source = intelligenceSourceRecords().filter(item => !filters.source || item.sourceType === filters.source);
-   source.forEach(item => {
+   source.forEach((item, index) => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}\n${item.jobName || ''} ${item.roleName || ''}`;
+     const recordKey = item.id || item._id || `${item.sourceType}-${index}`;
      terms.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(term => {
-       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [] };
+       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], recordKeys: [] };
        existing.count += 1; if (item.transcript || item.communicationSummary) existing.transcripts += 1;
+       if (!existing.recordKeys.includes(recordKey)) existing.recordKeys.push(recordKey);
        if (item.sourceType && !existing.sources.includes(item.sourceType)) existing.sources.push(item.sourceType);
        if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.toLowerCase().includes(term.toLowerCase())) || '';
        existing.summary = view === 'industry' ? `${term}相关业务线索` : view === 'product' ? `${term}相关产品线索` : view === 'business' ? `${term}相关业务活动` : `${term}相关地点线索`;
@@ -895,8 +899,9 @@ function renderTranscriptReview() {
     // Combine résumé, phone-screen, and formal interview evidence; source labels remain available for later filtering.
    const source = intelligenceSourceRecords();
    const groups = new Map();
-   source.filter(item => !filters.source || item.sourceType === filters.source).forEach(item => {
+   source.filter(item => !filters.source || item.sourceType === filters.source).forEach((item, index) => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}`.replace(/\r/g, '');
+     const recordKey = item.id || item._id || `${item.sourceType}-${index}`;
      const structuredCompanies = item.resumeMeta?.companies || item.companies || [];
      const structuredCompany = item.resumeMeta?.currentCompany || item.currentCompany || item.company || item.mokaData?.companyName || '';
      const resumeNames = [...structuredCompanies, ...extractResumeCompanyNames(item.resume || '')];
@@ -906,8 +911,9 @@ function renderTranscriptReview() {
      names.forEach(rawName => {
        const name = normalizeCompanyName(rawName);
        if (!isReliableCompanyName(name)) return;
-       const key = name.toLowerCase(); const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], industries: [], products: [], businesses: [] };
+       const key = name.toLowerCase(); const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], industries: [], products: [], businesses: [], recordKeys: [] };
        existing.count += 1; if (item.transcript) existing.transcripts += 1;
+       if (!existing.recordKeys.includes(recordKey)) existing.recordKeys.push(recordKey);
        if (item.sourceType && !existing.sources.includes(item.sourceType)) existing.sources.push(item.sourceType);
        relatedIndustries.forEach(industry => { if (!existing.industries.includes(industry)) existing.industries.push(industry); });
        INTELLIGENCE_LEXICON.product.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(product => { if (!existing.products.includes(product)) existing.products.push(product); });
