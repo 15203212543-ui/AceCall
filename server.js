@@ -243,9 +243,27 @@ function compactInterviewerReview(payload = {}) {
   return { interviewer: String(payload.interviewer || sessions[0]?.interviewer || '').slice(0, 40), job: String(payload.job || '').slice(0, 80), round: String(payload.round || '').slice(0, 40), sessions };
 }
 
+function refineInterviewQuestions(values = []) {
+  const seen = new Set();
+  const questions = [];
+  for (const value of values) {
+    const source = String(typeof value === 'string' ? value : value?.question || '').replace(/20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?/g, ' ').replace(/\d{1,2}:\d{2}(?::\d{2})?/g, ' ').replace(/^[\s]*[\u4e00-\u9fffA-Za-z0-9]{1,12}[：:]\s*/, '');
+    for (let clause of source.split(/[？?]/)) {
+      clause = (clause.split(/[。！\n]/).pop() || clause).replace(/^(?:嗯|啊|哎|哦|那个|就是|然后|好的|对|呀)+[，,\s]*/g, '').replace(/^[\u4e00-\u9fffA-Za-z0-9]{1,12}[：:]/, '').replace(/\s+/g, '').replace(/^[，,、：:]+|[。！？?]+$/g, '').trim();
+      if (clause.length < 6 || clause.length > 28 || /[：:]|面试官|候选人|转写/.test(clause)) continue;
+      const question = `${clause.replace(/[？?]+$/, '')}？`;
+      if (seen.has(question)) continue;
+      seen.add(question);
+      questions.push(question);
+      if (questions.length >= 6) return questions;
+    }
+  }
+  return questions;
+}
+
 function normalizeInterviewerReview(value = {}) {
   const themes = (Array.isArray(value.themes) ? value.themes : []).slice(0, 6).map(item => (typeof item === 'string' ? { name: item.slice(0, 40), detail: '' } : { name: String(item.name || '').slice(0, 40), detail: String(item.detail || item.evidence || '').slice(0, 240) })).filter(item => item.name || item.detail);
-  const questions = (Array.isArray(value.questions) ? value.questions : []).map(item => String(typeof item === 'string' ? item : item.question || '').trim().slice(0, 120)).filter(Boolean).slice(0, 6);
+  const questions = refineInterviewQuestions(value.questions);
   const sessions = (Array.isArray(value.sessions) ? value.sessions : []).slice(0, 6).map(item => ({ candidateName: String(item.candidateName || '').slice(0, 40), jobName: String(item.jobName || '').slice(0, 80), focus: String(item.focus || '').slice(0, 80), summary: String(item.summary || '').slice(0, 240) })).filter(item => item.summary || item.focus);
   return { summary: String(value.summary || '').slice(0, 400), themes, questions, followUpStyle: String(value.followUpStyle || '').slice(0, 300), sessions };
 }
@@ -253,7 +271,7 @@ function normalizeInterviewerReview(value = {}) {
 function demoInterviewerReview(payload) {
   const compact = compactInterviewerReview(payload);
   const interviewer = compact.interviewer || '面试官';
-  const questions = compact.sessions.flatMap(item => String(item.text).split(/[。！\n]/).map(line => line.trim()).filter(line => /[？?]$/.test(line))).slice(0, 6);
+  const questions = compact.sessions.flatMap(item => String(item.text).split(/[？?]/).slice(0, -1).map(part => `${(part.split(/[。！\n]/).pop() || part).trim()}？`).filter(item => item !== '？'));
   return normalizeInterviewerReview({
     summary: `${interviewer}当前有 ${compact.sessions.length} 场转写可分析。提问集中在职责边界、项目结果和事实核验。`,
     themes: [{ name: '职责与结果', detail: '先确认个人负责范围，再追问结果如何衡量。' }],
@@ -289,7 +307,7 @@ function getModelProvider() {
 function buildModelPrompt(payload) {
   if (payload.action === 'review-interviewer') {
     return {
-      instructions: '你是招聘面试质量分析助手。根据面试转写，总结面试官的提问重点、追问方式和判断偏好。只依据转写里的原话，不编造没有出现的问题，不判断候选人是否录用，不推断性别、年龄、婚育、籍贯。输出严格 JSON，不含 Markdown。summary 为 80 到 180 字。themes 为 3 到 6 项，每项含 name、detail。questions 为 3 到 6 条改写后的真实问题。followUpStyle 说明追问方式。sessions 与输入场次对应，每项含 candidateName、jobName、focus、summary。',
+      instructions: '你是招聘面试质量分析助手。根据面试转写，总结面试官的提问重点和追问方式。只依据转写里出现过的问点，不编造没有问过的问题，不判断候选人是否录用。输出严格 JSON，不含 Markdown。summary 为 80 到 180 字。themes 为 3 到 6 项，每项含 name、detail。questions 为 4 到 6 条短问句，每条 6 到 28 个字，以问号结尾，去掉姓名、时间和口语铺垫。followUpStyle 说明追问方式。不要输出分场转写。',
       input: JSON.stringify(compactInterviewerReview(payload))
     };
   }
