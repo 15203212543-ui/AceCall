@@ -797,8 +797,10 @@ function attachTranscriptImports(interviews, imports) {
 function syncInterviewTranscripts() {
   app.mokaInterviews = attachTranscriptImports(app.mokaInterviews, app.transcriptImports);
 }
-function transcriptCaptureEntries() {
+function transcriptCaptureEntries(filters = {}) {
   const interviews = app.mokaInterviews.filter(item => item.source !== 'acecall-local');
+  const days = Number(filters.period || 0);
+  const cutoff = days ? Date.now() - days * 86400000 : 0;
   return (app.transcriptImports || []).map(task => {
     const text = String(task.result?.text || '').trim();
     const hint = task.metadata || {};
@@ -816,7 +818,11 @@ function transcriptCaptureEntries() {
       text,
       matched: Boolean(match)
     };
-  }).filter(item => item.text).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
+  }).filter(item => {
+    if (!item.text) return false;
+    const date = Date.parse(item.startedAt || '') || 0;
+    return (!filters.interviewer || item.interviewer === filters.interviewer) && (!filters.job || item.jobName === filters.job) && (!filters.round || item.round === filters.round) && (!cutoff || date >= cutoff);
+  }).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
 }
 function interviewResultLabel(item = {}) {
   const schedule = String(item.scheduleStatus || '');
@@ -884,8 +890,8 @@ function renderInterviewers() {
     return `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.scheduleStatus || (item.completed === false ? '未完成' : '已结束'))}</small></td><td>${escapeHtml(item.jobName || '未识别岗位')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatDate(item.startedAt))}</td><td><span class="${interviewResultClass(label)}">${escapeHtml(label)}</span></td><td><div class="interview-feedback-cell">${feedback ? escapeHtml(feedback) : '暂无评价'}</div></td><td><div class="interview-feedback-cell">${transcript ? escapeHtml(transcript) : '未抓到转写'}</div></td></tr>`;
   }).join('');
   const transcriptCount = detailRecords.filter(item => String(item.transcript || '').trim()).length;
-  const captureEntries = transcriptCaptureEntries();
-  const capturePageSize = 10;
+  const captureEntries = transcriptCaptureEntries(filters);
+  const capturePageSize = 5;
   const capturePageCount = Math.max(1, Math.ceil(captureEntries.length / capturePageSize));
   const capturePage = Math.min(Math.max(1, Number(app.transcriptCapturePage || 1)), capturePageCount);
   app.transcriptCapturePage = capturePage;
@@ -897,7 +903,7 @@ function renderInterviewers() {
   const recordPager = detailRecords.length > recordPageSize ? `<div class="interview-record-pager"><button type="button" data-interview-page="prev"${recordPage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-interview-page-select>${Array.from({ length: recordPageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === recordPage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${recordPageCount} 页</label><span>${pageStart}–${pageEnd} / ${detailRecords.length} 场</span><button type="button" data-interview-page="next"${recordPage >= recordPageCount ? ' disabled' : ''}>下一页</button></div>` : '';
   const libraryNames = (app.interviewerLibrary || []).map(item => item.name).filter(Boolean);
   const libraryHtml = `<section class="surface interviewer-library"><div class="surface-head"><div><h2>面试官库</h2><p class="surface-subtitle">刷新面试后会记住 Moka 里的面试官姓名。转写正文里出现这些姓名，并且姓名后面带有面试时间时，用来匹配具体一场面试。</p></div><span>${libraryNames.length} 人</span></div><div class="interviewer-library-body">${libraryNames.map(name => `<span class="research-tag">${escapeHtml(name)}</span>`).join('') || '<span class="muted-text">还没有记住面试官。刷新 Moka 数据，或在这里手动添加。</span>'}<input data-interviewer-name placeholder="添加面试官姓名" maxlength="40"><button class="secondary" type="button" data-add-interviewer>记住</button></div></section>`;
-  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `${libraryHtml}<section class="surface transcript-capture-list"><div class="surface-head"><div><h2>转写抓取记录</h2><p class="surface-subtitle">助手抓到的转写文件会先出现在这里，再匹配到面试官、岗位和面试时间。${captureEntries.filter(item => item.matched).length} 份已匹配，${captureEntries.filter(item => !item.matched).length} 份未匹配。</p></div><span>${captureEntries.length ? `${captureStart}–${captureEnd} / ${captureEntries.length} 份` : '0 份'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>文件</th><th>抓取状态</th><th>候选人</th><th>面试官</th><th>岗位</th><th>环节</th><th>面试时间</th><th>转写正文</th></tr></thead><tbody>${captureRows || '<tr><td colspan="8"><div class="empty">还没有抓到转写文件。助手导入新文件后，点刷新 Moka 数据即可在这里确认。</div></td></tr>'}</tbody></table></div>${capturePager}</section><section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
+  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `${libraryHtml}<section class="surface transcript-capture-list"><div class="surface-head"><div><h2>转写抓取记录</h2><p class="surface-subtitle">跟随上方的面试官、岗位、环节和时间筛选。每页 5 份。${captureEntries.filter(item => item.matched).length} 份已匹配，${captureEntries.filter(item => !item.matched).length} 份未匹配。</p></div><span>${captureEntries.length ? `${captureStart}–${captureEnd} / ${captureEntries.length} 份` : '0 份'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>文件</th><th>抓取状态</th><th>候选人</th><th>面试官</th><th>岗位</th><th>环节</th><th>面试时间</th><th>转写正文</th></tr></thead><tbody>${captureRows || `<tr><td colspan="8"><div class="empty">${filters.interviewer || filters.job || filters.round || filters.period ? '当前筛选条件下没有转写记录。' : '还没有抓到转写文件。助手导入新文件后，点刷新 Moka 数据即可在这里确认。'}</div></td></tr>`}</tbody></table></div>${capturePager}</section><section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
   const keepRecordScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
   root.querySelector('[data-add-interviewer]')?.addEventListener('click', async event => {
     const name = root.querySelector('[data-interviewer-name]')?.value?.trim();
@@ -912,7 +918,7 @@ function renderInterviewers() {
   root.querySelector('[data-interview-page="prev"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.max(1, recordPage - 1); keepRecordScroll(); });
   root.querySelector('[data-interview-page="next"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.min(recordPageCount, recordPage + 1); keepRecordScroll(); });
   root.querySelector('[data-interview-page-select]')?.addEventListener('change', event => { app.interviewerRecordPage = Number(event.target.value) || 1; keepRecordScroll(); });
-  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; app.interviewerRecordPage = 1; renderInterviewers(); renderInterviewerFollowups(); }); });
+  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; app.interviewerRecordPage = 1; app.transcriptCapturePage = 1; renderInterviewers(); renderInterviewerFollowups(); }); });
   root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary(); await loadTranscriptImports(); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
@@ -927,7 +933,7 @@ function renderInterviewerFollowups() {
   const coverage = transcripts.length ? Math.min(100, Math.round(questionLines.length / transcripts.length * 12)) : 0;
   const completeness = records.length ? Math.round(records.filter(item => item.outcome || item.interviewPassed || item.hired).length / records.length * 100) : 0;
   const depth = transcripts.length ? Math.min(100, Math.round(followUpCount / transcripts.length * 8)) : 0;
-  const transcriptBriefs = transcriptCaptureEntries().slice(0, 6).map(item => `<p><b>转写输出：</b>${item.matched ? '已匹配' : '未匹配'} · ${escapeHtml(item.fileName)} · ${escapeHtml(item.candidateName || '未识别候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(item.text.replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('') || records.filter(item => item.transcript).slice(0, 6).map(item => `<p><b>转写输出：</b>${escapeHtml(item.candidateName || '未命名候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(String(item.transcript).replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('');
+  const transcriptBriefs = transcriptCaptureEntries(app.interviewerFilters || {}).slice(0, 5).map(item => `<p><b>转写输出：</b>${item.matched ? '已匹配' : '未匹配'} · ${escapeHtml(item.fileName)} · ${escapeHtml(item.candidateName || '未识别候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(item.text.replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('') || records.filter(item => item.transcript).slice(0, 5).map(item => `<p><b>转写输出：</b>${escapeHtml(item.candidateName || '未命名候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(String(item.transcript).replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('');
   const score = records.length ? Math.round(coverage * .35 + depth * .35 + completeness * .3) : 0;
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
