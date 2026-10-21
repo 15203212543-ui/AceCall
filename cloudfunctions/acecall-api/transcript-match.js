@@ -1,4 +1,5 @@
 const { SCREENING_JOBS } = require('./screening-jobs');
+const { getMokaConfig } = require('./moka-client');
 
 const FILE_NOISE = /面试转写|面试录音|面试记录|转写文本|转写稿|转写|录音文件|录音|字幕|transcript|transcription|interview/gi;
 const NAME_BLOCK = /面试官|候选人|发言人|说话人|面试|转写|录音|记录|岗位|字幕|未知|未识别/;
@@ -17,13 +18,38 @@ function parseLooseDate(value = '') {
   return `${day}T${clock[1].padStart(2, '0')}:${clock[2]}:00+08:00`;
 }
 
+function catalogJobNames() {
+  const names = [...SCREENING_JOBS.map(job => job.name), ...getMokaConfig({}).jobNames, ...getMokaConfig().jobNames];
+  return [...new Set(names.filter(Boolean))].sort((left, right) => right.length - left.length);
+}
+
+function parseStructuredFileName(fileName = '') {
+  let base = String(fileName || '').replace(/\.[^.]+$/, '').trim();
+  base = base.replace(/(?:\s*[（(]\d+[）)])+\s*$/g, '').trim();
+  const withHr = base.match(/^([^_（()]+?)_(.+?)[（(]([^（）()]*)[）)]\s*$/);
+  if (withHr) {
+    const candidateName = withHr[1].trim();
+    const jobName = withHr[2].trim();
+    const hrName = withHr[3].trim().replace(/安排\s*$/, '').trim();
+    return candidateName && jobName ? { candidateName, jobName, hrName } : null;
+  }
+  const plain = base.match(/^([^_（()]+?)_([^_（()]+)$/);
+  if (!plain) return null;
+  const candidateName = plain[1].trim();
+  const jobName = plain[2].trim();
+  return candidateName && jobName ? { candidateName, jobName, hrName: '' } : null;
+}
+
 function jobFromFileName(fileName = '') {
+  const structured = parseStructuredFileName(fileName);
+  if (structured?.jobName) return structured.jobName;
   const base = String(fileName || '');
-  const jobs = [...SCREENING_JOBS].sort((left, right) => right.name.length - left.name.length);
-  return jobs.find(job => base.includes(job.name))?.name || '';
+  return catalogJobNames().find(name => base.includes(name)) || '';
 }
 
 function candidateFromFileName(fileName = '', jobName = '') {
+  const structured = parseStructuredFileName(fileName);
+  if (structured?.candidateName) return structured.candidateName;
   let base = String(fileName || '').replace(/\.[^.]+$/, '');
   if (jobName) base = base.split(jobName).join(' ');
   base = base.replace(FILE_NOISE, ' ').replace(/[【】\[\]()（）_+\-]+/g, ' ');
@@ -72,11 +98,12 @@ function dateTimeAfter(text = '', anchor = '') {
 
 function extractTranscriptContext(fileName = '', text = '', options = {}) {
   const body = String(text || '');
-  const jobName = jobFromFileName(fileName);
-  const candidateName = candidateFromFileName(fileName, jobName);
+  const structured = parseStructuredFileName(fileName);
+  const jobName = structured?.jobName || jobFromFileName(fileName);
+  const candidateName = structured?.candidateName || candidateFromFileName(fileName, jobName);
   const interviewer = labeledInterviewer(body) || libraryInterviewer(body, options.interviewerNames || []);
   const interviewAt = dateTimeAfter(body, interviewer) || dateTimeAfter(body, candidateName);
-  return { candidateName, interviewer, jobName, interviewAt };
+  return { candidateName, interviewer, jobName, interviewAt, hrName: structured?.hrName || '' };
 }
 
 function samePerson(left, right) {
@@ -114,6 +141,7 @@ function mergeTranscriptMetadata(metadata = {}, fileName = '', text = '', interv
     ...metadata,
     candidateName: extracted.candidateName || metadata.candidateName || '',
     jobName: extracted.jobName || metadata.jobName || '',
+    hrName: extracted.hrName || metadata.hrName || '',
     interviewer: extracted.interviewer || metadata.interviewer || '',
     interviewAt: extracted.interviewAt || metadata.interviewAt || '',
     fileName: metadata.fileName || fileName
