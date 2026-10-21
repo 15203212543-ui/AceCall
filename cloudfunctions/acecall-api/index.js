@@ -5,7 +5,7 @@ const tcb = require('@cloudbase/node-sdk');
 const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
 const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
-const { mergeTranscriptMetadata } = require('./transcript-match');
+const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -1189,6 +1189,16 @@ async function saveJob(context, id, input) {
 async function saveCandidate(context, id, input) {
   requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
+  const transcriptFileName = input.resumeMeta?.fileName || '';
+  const transcriptText = String(input.resume || '').trim();
+  if (isTranscriptFileName(transcriptFileName) && transcriptText) {
+    const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+    if (!existingCandidate.data) {
+      const imported = await importTranscript(context, { fileName: transcriptFileName, text: transcriptText, size: transcriptText.length, metadata: { fileName: transcriptFileName, source: 'local-sync-agent' } });
+      await audit(context, 'candidate.redirected-transcript', id, { fileName: transcriptFileName });
+      return { ok: true, id, storedAs: 'transcript', taskId: imported.task?.id || '' };
+    }
+  }
   await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
   await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();

@@ -2,6 +2,18 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { extractTranscriptContext, matchTranscriptToInterview } = require('./transcript-match');
 
+test('speaker lines supply the interviewer and the dated interview time', () => {
+  const context = extractTranscriptContext(
+    '谢晓东_OTC交易产品经理(张明亮01安排) 20.11.00 12.58.46.docx',
+    '15:15:39 会议已开启实时转写\n谭理 2026-10-20 15:30:11\n你好。\n张明亮 2026-10-20 15:30:16\n我稍后退出。\n谭理 2026-10-20 15:30:31\n晓东自我介绍一下。\n谢晓东 2026-10-20 15:31:00\n我是谢晓东。\n谢晓东 2026-10-20 15:32:00\n面试官你好。'
+  );
+  assert.equal(context.candidateName, '谢晓东');
+  assert.equal(context.jobName, 'OTC交易产品经理');
+  assert.equal(context.hrName, '张明亮01');
+  assert.equal(context.interviewer, '谭理');
+  assert.equal(context.interviewAt, '2026-10-20T15:30:11+08:00');
+});
+
 test('default download name is candidate, job, and arranging HR', () => {
   const context = extractTranscriptContext(
     '谢晓东_OTC交易产品经理(张明亮01安排) (2).txt',

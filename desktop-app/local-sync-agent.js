@@ -56,6 +56,15 @@ function looksLikeResume(text) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
   return normalized.length >= 20 && signals.filter(signal => normalized.toLowerCase().includes(signal.toLowerCase())).length >= 2;
 }
+function isTranscriptFileName(filePath = '') {
+  let base = path.basename(filePath).replace(/\.[^.]+$/, '').trim();
+  let previous = '';
+  while (base && base !== previous) {
+    previous = base;
+    base = base.replace(/\s*[（(]\d+[）)]\s*$/g, '').replace(/\s+\d{1,2}[.:]\d{2}[.:]\d{2}\s*$/g, '').trim();
+  }
+  return /安排[）)]\s*$/.test(base) && /^[^_（()]+_.+[（(].+安排[）)]\s*$/.test(base);
+}
 function looksLikeTranscript(filePath, text) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
   if (normalized.length < 20) return false;
@@ -168,6 +177,16 @@ class SyncAgent {
         console.log(`[AceCall] 已上传并转写本地录音：${path.basename(filePath)}`);
         return;
       }
+      if (isTranscriptFileName(filePath)) {
+        if (!this.options.apiBase) throw new Error('转写文件需要连接 AceCall 云端服务');
+        const text = TEXT_TRANSCRIPT.test(filePath) ? await fsp.readFile(filePath, 'utf8') : (await this.requestFile(filePath)).text;
+        if (!String(text || '').trim()) throw new Error('转写文件内容为空');
+        await this.saveTranscript({ filePath, text, metadata: { fileName: path.basename(filePath) }, size: (await fsp.stat(filePath)).size });
+        this.state.imported[key] = { file: filePath, importedAt: new Date().toISOString(), type: 'transcript' };
+        delete this.state.failures[key];
+        console.log(`[AceCall] 已导入面试转写：${path.basename(filePath)}`);
+        return;
+      }
       if (TEXT_TRANSCRIPT.test(filePath)) {
         const text = await fsp.readFile(filePath, 'utf8');
         if (looksLikeTranscript(filePath, text)) {
@@ -264,4 +283,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(error => { console.error(`[AceCall] 启动失败：${error.message}`); process.exitCode = 1; });
-module.exports = { SyncAgent, platformPolicy, isCandidateFile, looksLikeResume, looksLikeTranscript, fileKey, AUDIO };
+module.exports = { SyncAgent, platformPolicy, isCandidateFile, isTranscriptFileName, looksLikeResume, looksLikeTranscript, fileKey, AUDIO };

@@ -23,9 +23,18 @@ function catalogJobNames() {
   return [...new Set(names.filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 
-function parseStructuredFileName(fileName = '') {
+function transcriptFileBase(fileName = '') {
   let base = String(fileName || '').replace(/\.[^.]+$/, '').trim();
-  base = base.replace(/(?:\s*[（(]\d+[）)])+\s*$/g, '').trim();
+  let previous = '';
+  while (base && base !== previous) {
+    previous = base;
+    base = base.replace(/\s*[（(]\d+[）)]\s*$/g, '').replace(/\s+\d{1,2}[.:]\d{2}[.:]\d{2}\s*$/g, '').trim();
+  }
+  return base;
+}
+
+function parseStructuredFileName(fileName = '') {
+  const base = transcriptFileBase(fileName);
   const withHr = base.match(/^([^_（()]+?)_(.+?)[（(]([^（）()]*)[）)]\s*$/);
   if (withHr) {
     const candidateName = withHr[1].trim();
@@ -59,8 +68,39 @@ function candidateFromFileName(fileName = '', jobName = '') {
   return base.match(/\b[A-Z][A-Za-z'·.]{1,20}(?:\s+[A-Z][A-Za-z'·.]{1,20}){0,2}\b/)?.[0] || '';
 }
 
+function isTranscriptFileName(fileName = '') {
+  return /安排[）)]\s*$/.test(transcriptFileBase(fileName));
+}
+
+function speakerTurns(text = '') {
+  const turns = [];
+  const pattern = /(?:^|\n)[ \t]*([A-Za-z]*[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9]{0,16})[ \t]+(?:(20\d{2}-\d{1,2}-\d{1,2})[ \t]+)?(\d{1,2}:\d{2}:\d{2})(?!\d)/g;
+  for (const match of String(text || '').matchAll(pattern)) {
+    const date = match[2] ? match[2].replace(/(\d+)-(\d+)-(\d+)/, (_, year, month, day) => `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`) : '';
+    turns.push({ speaker: match[1], date, clock: match[3].padStart(8, '0').replace(/^(\d):/, '0$1:') });
+  }
+  return turns;
+}
+
+function interviewerFromTurns(turns = [], candidateName = '', hrName = '') {
+  const counts = new Map();
+  for (const turn of turns) {
+    if (samePerson(turn.speaker, candidateName) || (hrName && samePerson(turn.speaker, hrName))) continue;
+    counts.set(turn.speaker, (counts.get(turn.speaker) || 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'zh'))[0]?.[0] || '';
+}
+
+function interviewTimeFromTurns(turns = [], interviewer = '') {
+  const own = interviewer ? turns.filter(turn => turn.speaker === interviewer && turn.date) : [];
+  const chosen = own[0] || turns.find(turn => turn.date);
+  if (!chosen?.date) return '';
+  const clock = chosen.clock || '00:00:00';
+  return `${chosen.date}T${clock.length === 5 ? `${clock}:00` : clock}+08:00`;
+}
+
 function labeledInterviewer(text = '') {
-  const match = String(text).match(/面试官(?:姓名)?\s*[:：]?\s*([\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z .'-]{1,40})/);
+  const match = String(text).match(/面试官(?:姓名)?\s*[:：]\s*([\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z .'-]{1,40})/);
   const name = match?.[1]?.trim() || '';
   return name && !NAME_BLOCK.test(name) ? name : '';
 }
@@ -101,8 +141,9 @@ function extractTranscriptContext(fileName = '', text = '', options = {}) {
   const structured = parseStructuredFileName(fileName);
   const jobName = structured?.jobName || jobFromFileName(fileName);
   const candidateName = structured?.candidateName || candidateFromFileName(fileName, jobName);
-  const interviewer = labeledInterviewer(body) || libraryInterviewer(body, options.interviewerNames || []);
-  const interviewAt = dateTimeAfter(body, interviewer) || dateTimeAfter(body, candidateName);
+  const turns = speakerTurns(body);
+  const interviewer = interviewerFromTurns(turns, candidateName, structured?.hrName || '') || labeledInterviewer(body) || libraryInterviewer(body, options.interviewerNames || []);
+  const interviewAt = interviewTimeFromTurns(turns, interviewer) || dateTimeAfter(body, interviewer) || dateTimeAfter(body, candidateName);
   return { candidateName, interviewer, jobName, interviewAt, hrName: structured?.hrName || '' };
 }
 
@@ -148,4 +189,4 @@ function mergeTranscriptMetadata(metadata = {}, fileName = '', text = '', interv
   };
 }
 
-module.exports = { extractTranscriptContext, matchTranscriptToInterview, mergeTranscriptMetadata, samePerson };
+module.exports = { extractTranscriptContext, isTranscriptFileName, matchTranscriptToInterview, mergeTranscriptMetadata, samePerson };

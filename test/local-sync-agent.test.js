@@ -19,6 +19,13 @@ test('local sync agent recognizes resume-like text', () => {
   assert.equal(looksLikeResume('会议纪要：下周一开会讨论项目'), false);
 });
 
+test('local sync agent treats arranged download names as transcripts', () => {
+  const { isTranscriptFileName } = require('../local-sync-agent');
+  assert.equal(isTranscriptFileName('/tmp/谢晓东_OTC交易产品经理(张明亮01安排) (2).docx'), true);
+  assert.equal(isTranscriptFileName('/tmp/谢晓东_OTC交易产品经理(张明亮01安排) 20.11.00 12.58.46.docx'), true);
+  assert.equal(isTranscriptFileName('/tmp/【证券产品经理】谢先生.pdf'), false);
+});
+
 test('local sync agent recognizes interview transcripts', () => {
   const { looksLikeTranscript } = require('../local-sync-agent');
   assert.equal(looksLikeTranscript('/tmp/周宁-面试转写.txt', '候选人：周宁\n面试官：魏欣欣\n请介绍项目结果？'), true);
