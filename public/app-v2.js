@@ -223,7 +223,24 @@ function isAnonymousSession(session) {
   if (scope === 'anonymous') return true;
   if (user.is_anonymous === true || user.isAnonymous === true) return true;
   // 兜底：匿名会话的 sub 固定为 anon，且没有邮箱
-  return String(user.sub || '').toLowerCase() === 'anon' && !user.email;
+  if (String(user.sub || '').toLowerCase() === 'anon' && !user.email) return true;
+  // 最可靠的判据是 access_token 自己的声明，不依赖 SDK 对象的字段形状
+  const claims = decodeJwtPayload(session?.access_token);
+  if (!claims) return false;
+  if (String(claims.scope || '').toLowerCase() === 'anonymous') return true;
+  return String(claims.sub || '').toLowerCase() === 'anon' && !claims.email;
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const part = String(token || '').split('.')[1];
+    if (!part) return null;
+    const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return JSON.parse(decodeURIComponent(escape(atob(padded))));
+  } catch {
+    return null;
+  }
 }
 
 function captureAuthUser(sessionOrUser, fallbackUsername = '') {
