@@ -202,10 +202,28 @@ async function initializeAuth() {
     return false;
   }
   if (!data?.session) return false;
+  // CloudBase 用 publishableKey 会自动生成一个匿名会话。匿名用户的 token 过不了
+  // 网关的身份认证，接口会统一返回 443（空响应体），界面上却只表现为“服务不可用”，
+  // 极易误判成后端故障。这里把匿名会话当作未登录，直接要求真实登录。
+  if (isAnonymousSession(data.session)) {
+    await cloudbaseAuth.signOut().catch(() => {});
+    showLoginMessage('请登录后使用，匿名身份无法访问云端数据', false);
+    return false;
+  }
   captureAuthUser(data.session, rememberedAccount);
   await syncDesktopSession(data.session.access_token);
   $('#loginScreen').classList.add('hidden');
   return true;
+}
+
+function isAnonymousSession(session) {
+  const user = session?.user || {};
+  const metadata = user.user_metadata || {};
+  const scope = String(user.scope || metadata.scope || '').toLowerCase();
+  if (scope === 'anonymous') return true;
+  if (user.is_anonymous === true || user.isAnonymous === true) return true;
+  // 兜底：匿名会话的 sub 固定为 anon，且没有邮箱
+  return String(user.sub || '').toLowerCase() === 'anon' && !user.email;
 }
 
 function captureAuthUser(sessionOrUser, fallbackUsername = '') {
@@ -1827,7 +1845,7 @@ function cloudError(status, body = {}) {
   const hint = [body.code, body.path].filter(Boolean).join(' · ');
   const suffix = hint ? `（${hint}）` : '';
   if (body.error) return `${body.error}${suffix}`;
-  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关或认证服务暂时不可用',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`) + suffix;
+  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'登录凭据未被网关接受，请退出后重新登录',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`) + suffix;
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
 async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();await loadMokaInterviews();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
@@ -1885,6 +1903,17 @@ async function authenticatedFetch(url, options = {}) {
     const freshToken = refreshed?.data?.session?.access_token;
     if (freshToken) response = await request(freshToken);
     else throw new Error('登录已过期，请重新登录');
+  }
+  // 网关的身份认证拒绝凭据时返回 443 且响应体为空（不是标准状态码，容易被当成
+  // 「后端挂了」）。先尝试刷新会话，仍失败则说明必须重新登录。
+  if (response.status === 443) {
+    const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
+    const freshToken = refreshed?.data?.session?.access_token;
+    if (freshToken) {
+      response = await request(freshToken);
+      if (response.status !== 443) return response;
+    }
+    throw new Error('登录凭据已失效，请退出后重新登录');
   }
   return response;
 }
