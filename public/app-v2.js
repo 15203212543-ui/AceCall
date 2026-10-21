@@ -821,6 +821,8 @@ function renderTranscriptReview() {
    const relatedCompanies = selectedIndustryName ? companies.filter(relatedInSameEvidence).slice(0, 8) : [];
    const relatedProducts = selectedIndustryName ? products.filter(relatedInSameEvidence).slice(0, 8) : [];
    const relatedBusinesses = selectedIndustryName ? businesses.filter(relatedInSameEvidence).slice(0, 8) : [];
+   const selectedSourceDetail = selectedIndustryObject?.sourceDetails?.[0];
+   const selectedSourceLabel = selectedSourceDetail ? `${selectedSourceDetail.candidateName || '未命名候选人'}${selectedSourceDetail.interviewer ? ` · 面试官：${selectedSourceDetail.interviewer}` : ''}${selectedSourceDetail.startedAt ? ` · ${formatDate(selectedSourceDetail.startedAt)}` : ''}` : '正式面试转写';
    const selectedIndustryDetail = selectedIndustryObject ? `<section class="surface intelligence-selected-industry"><div class="surface-head"><div><h2>${escapeHtml(selectedIndustryName)}</h2><p class="surface-subtitle">当前行业的真实材料详情 · ${selectedIndustryObject.count} 条材料命中</p></div><button class="link-action" type="button" data-intelligence-industry-close>收起详情</button></div><div class="surface-body"><div class="intelligence-selected-evidence"><span>行业证据</span><p>${escapeHtml(selectedIndustryObject.evidence || '当前材料中已命中该行业词，暂无可展示的完整句子。')}</p><small>来源：${escapeHtml((selectedIndustryObject.sources || []).join(' / ') || '招聘材料')}</small></div><div class="intelligence-related-grid"><div><strong>关联公司</strong>${relatedCompanies.map(item => `<button type="button" data-intelligence-related-company="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}</span><small>${item.count} 条材料</small></button>`).join('') || '<em>暂无明确关联公司</em>'}</div><div><strong>关联产品 / 业务</strong>${[...relatedProducts, ...relatedBusinesses].map(item => `<span>${escapeHtml(item.name)} <small>${item.count} 条</small></span>`).join('') || '<em>暂无明确关联产品或业务</em>'}</div></div></div></section>` : '';
    const industryDetail = `<div class="intelligence-industry-page"><div class="intelligence-industry-metrics"><div><span>涉及行业</span><strong>${industries.length}</strong><small>来源数据</small></div><div><span>趋势信号</span><strong>${industries.reduce((sum, item) => sum + item.count, 0)}</strong><small>命中材料</small></div><div><span>待核实信号</span><strong>${industries.length}</strong><small>需要人工确认</small></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2>近期趋势信号</h2><p class="surface-subtitle">从真实简历、电话沟通和正式面试转写中提取</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body">${industrySignalRows || '<div class="intelligence-home-empty">暂无行业信号，请先同步转写或导入简历。</div>'}</div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2>按行业查看</h2><p class="surface-subtitle">以下行业来自真实材料命中，不是预设行业清单</p></div></div><div class="intelligence-industry-grid">${industryCards || '<div class="intelligence-home-empty">当前没有可匹配的行业。</div>'}</div></section>${selectedIndustryDetail}</div>`;
    const companyQuery = String(app.intelligenceQuery || '').trim().toLowerCase();
@@ -863,7 +865,7 @@ function renderTranscriptReview() {
    const transcriptCount = intelligenceSourceRecords().filter(item => String(item.transcript || '').trim()).length;
    const pendingCount = filteredCompanies.filter(item => (app.intelligenceReviewed[item.key] || 'pending') === 'pending').length;
    const sourceSummary = intelligenceSourceSummary();
-   const sourceCards = `<section class="intelligence-source-cards"><div class="intelligence-source-card"><span>候选人简历</span><strong>${sourceSummary.resume}</strong><small>提取工作经历中的公司、职位、任职时间</small></div><div class="intelligence-source-card"><span>电话沟通转写</span><strong>${sourceSummary.phone}</strong><small>识别候选人主动提到的行业、产品和业务</small></div><div class="intelligence-source-card"><span>正式 Moka 面试转写</span><strong>${sourceSummary.moka}</strong><small>识别面试问答中的业务事实和关键词</small></div></section>`;
+   const sourceCards = `<section class="intelligence-source-cards"><div class="intelligence-source-card"><span>正式面试转写</span><strong>${sourceSummary.moka}</strong><small>与“面试官分析”使用同一批已同步的面试转写</small></div><div class="intelligence-source-card"><span>来源范围</span><strong>${sourceSummary.total}</strong><small>只有包含实际转写文本的面试记录才参与识别</small></div><div class="intelligence-source-card"><span>识别原则</span><strong>可追溯</strong><small>每条行业线索都保留候选人、面试官和原文证据</small></div></section>`;
    const industryPicker = view === 'company' ? `<div class="intelligence-industry-picker"><div><strong>先选行业</strong><small>公司列表只显示该行业下的公司</small></div><button type="button" class="${!selectedIndustry ? 'active' : ''}" data-intelligence-industry="">全部行业</button>${industryObjects.map(item => `<button type="button" class="${selectedIndustry === item.key ? 'active' : ''}" data-intelligence-industry="${escapeHtml(item.key)}">${escapeHtml(item.name)} <b>${item.count}</b></button>`).join('')}</div>` : '';
    const companyRows = filteredCompanies.map(item => `<button class="intelligence-list-item ${selected?.key === item.key ? 'active' : ''}" type="button" data-intelligence-select="${escapeHtml(item.key)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.count} 条线索 · ${item.transcripts} 场面试 · ${(item.sources || []).join(' / ') || '来源待确认'}</small></span><b>${escapeHtml(item.confidence)}</b></button>`).join('');
    const emptyText = `<div class="intelligence-empty"><strong>当前没有可确认的${tabsLabel(view)}数据</strong><span>已读取 ${sourceSummary.total} 条招聘材料，但当前维度没有命中设定词或结构化字段。请先完成简历解析、电话转写或 Moka 面试转写同步。</span><small>本页不会把猜测内容当成情报展示。</small></div>`;
@@ -891,9 +893,10 @@ function renderTranscriptReview() {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}\n${item.jobName || ''} ${item.roleName || ''}`;
      const recordKey = item.id || item._id || `${item.sourceType}-${index}`;
      terms.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(term => {
-       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], recordKeys: [] };
+       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], recordKeys: [], sourceDetails: [] };
        existing.count += 1; if (item.transcript || item.communicationSummary) existing.transcripts += 1;
        if (!existing.recordKeys.includes(recordKey)) existing.recordKeys.push(recordKey);
+       if (!existing.sourceDetails.some(detail => detail.recordKey === recordKey)) existing.sourceDetails.push({ recordKey, candidateName: item.candidateName || '', interviewer: item.interviewer || '', startedAt: item.startedAt || '' });
        if (item.sourceType && !existing.sources.includes(item.sourceType)) existing.sources.push(item.sourceType);
        if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.toLowerCase().includes(term.toLowerCase())) || '';
        existing.summary = view === 'industry' ? `${term}相关业务线索` : view === 'product' ? `${term}相关产品线索` : view === 'business' ? `${term}相关业务活动` : `${term}相关地点线索`;
@@ -907,10 +910,9 @@ function renderTranscriptReview() {
 
  function tabsLabel(view = 'company') { return ({ company: '公司', industry: '行业', product: '产品', business: '业务', city: '城市' }[view] || '公司'); }
  function intelligenceSourceSummary() {
-   const resume = app.cases.filter(item => String(item.resume || '').trim()).length;
-   const phone = app.cases.filter(item => String(item.transcript || '').trim()).length;
-   const moka = app.mokaInterviews.filter(item => item.transcriptStatus === 'synced' && String(item.transcript || '').trim()).length;
-   return { resume, phone, moka, total: resume + phone + moka };
+   const interviewTranscripts = intelligenceSourceRecords();
+   const moka = interviewTranscripts.filter(item => item.sourceType === '正式面试转写').length;
+   return { resume: 0, phone: 0, moka, total: interviewTranscripts.length };
  }
 
  function intelligenceRecords(filters = {}) {
@@ -947,10 +949,9 @@ function renderTranscriptReview() {
  }
 
  function intelligenceSourceRecords() {
-   return [
-     ...app.cases.map(item => ({ ...item, sourceType: item.transcript ? '电话沟通转写' : '候选人简历' })),
-     ...app.mokaInterviews.map(item => ({ ...item, sourceType: item.transcriptStatus === 'synced' ? '正式面试转写' : 'Moka面试记录' }))
-   ];
+   // Industry intelligence uses the same interview record set as interviewer analysis.
+   // Only records with an actual synced transcript are eligible as evidence.
+   return interviewerRecords({}).filter(item => String(item.transcript || '').trim()).map(item => ({ ...item, sourceType: item.source === 'moka' ? '正式面试转写' : '面试转写' }));
  }
 
  function extractCompanyEntities(text = '') {
