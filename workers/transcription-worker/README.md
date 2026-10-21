@@ -41,8 +41,9 @@ concatenated every part in memory and held the whole recording twice.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TRANSCRIPTION_AUTO_SEGMENT_SECONDS` | `900` | Auto-split threshold |
-| `TRANSCRIPTION_SEGMENT_SECONDS` | unset | Explicit slice length, overrides the threshold |
+| `TRANSCRIPTION_AUTO_SEGMENT_SECONDS` | `900` | Auto-split threshold; also the slice length |
+| `TRANSCRIPTION_AUTO_SEGMENT_BYTES` | `33554432` | Size fallback when the duration probe fails |
+| `TRANSCRIPTION_SEGMENT_SECONDS` | unset | Explicit slice length, overrides both thresholds |
 | `TRANSCRIPTION_MAX_SOURCE_BYTES` | `1073741824` | Reject oversized merges |
 | `WHISPER_UPLOAD_MODE` | `auto` | `auto` prefers `audio_url`; `file` forces multipart upload |
 | `WHISPER_LANGUAGE` | unset (`zh` recommended) | Forced language, avoids mis-detecting Mandarin |
@@ -53,6 +54,31 @@ concatenated every part in memory and held the whole recording twice.
 
 Slice timestamps are offset by `index × segmentSeconds` on merge, so
 `result.segments` always carries a global, monotonic timeline.
+
+Duration probing tries `ffprobe` first and falls back to parsing
+`ffmpeg -i` output, because some distributions (including `imageio-ffmpeg`)
+ship ffmpeg without ffprobe. If both fail, segmentation falls back to a file-size
+check — a failed probe must never turn a two-hour recording into one 230 MB
+upload.
+
+## Offline end-to-end check
+
+`tools/offline-e2e.js` runs the whole pipeline without CloudBase: it fakes the
+object store and the task collection, splits a local file into "parts", then
+exercises download → probe → slice → ASR → merge and prints the transcript.
+
+```bash
+# terminal 1: ASR service (fake backend is enough to check wiring)
+cd workers/faster-whisper-service && ASR_BACKEND=fake uvicorn server:app --port 9001
+
+# terminal 2
+cd workers/transcription-worker
+WHISPER_API_URL=http://127.0.0.1:9001/v1/audio/transcriptions \
+  node tools/offline-e2e.js /path/to/call.wav
+```
+
+Use `--segment 600` to force slicing, or point `WHISPER_API_URL` at a real
+model deployment to check Chinese accuracy and terminology.
 
 ## Known limitation: no speaker labels
 

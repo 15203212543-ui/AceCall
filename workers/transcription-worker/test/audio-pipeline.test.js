@@ -7,7 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 
-const { prepareAudio, mergeSliceResults } = require('../worker');
+const { prepareAudio, mergeSliceResults, probeDuration } = require('../worker');
 
 const FFMPEG = process.env.FFMPEG_PATH;
 
@@ -98,4 +98,68 @@ test('merging seven slices reproduces a monotonic global timeline', () => {
   assert.deepEqual(merged.segments.map(item => item.start), [1, 11, 21, 31, 41, 51, 61]);
   assert.ok(merged.segments.every((item, index, list) => index === 0 || item.start > list[index - 1].start));
   assert.equal(merged.text.split('\n').length, 7);
+});
+
+test('probeDuration falls back to parsing ffmpeg output when ffprobe is absent', { skip }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'acc-probe-'));
+  try {
+    const source = await makeSource(dir);
+    const previousProbe = process.env.FFPROBE_PATH;
+    // Point ffprobe at a missing binary to simulate images that only ship ffmpeg.
+    process.env.FFPROBE_PATH = path.join(dir, 'no-such-ffprobe');
+    try {
+      const seconds = await probeDuration(source);
+      assert.ok(seconds > 60 && seconds < 70, `应解析出约 65 秒，实际 ${seconds}`);
+    } finally {
+      if (previousProbe === undefined) delete process.env.FFPROBE_PATH;
+      else process.env.FFPROBE_PATH = previousProbe;
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('segments by size when duration probing fails', { skip }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'acc-size-'));
+  const previousSegment = process.env.TRANSCRIPTION_SEGMENT_SECONDS;
+  const previousBytes = process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES;
+  const previousAuto = process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS;
+  delete process.env.TRANSCRIPTION_SEGMENT_SECONDS;
+  try {
+    const source = await makeSource(dir);
+    // duration = 0 stands in for a failed probe. The file is ~2 MB, so with a
+    // 1 MB ceiling the size fallback must kick in and still slice the audio —
+    // otherwise the whole recording becomes one upload.
+    process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES = String(1024 * 1024);
+    process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS = '60';
+    const prepared = await prepareAudio(source, dir, { normalize: false, duration: 0 });
+    assert.equal(prepared.sliced, true, '时长未知且文件过大时必须切段');
+    assert.equal(prepared.segmentSeconds, 60);
+    assert.ok(prepared.slices.length > 1, `65s 音频按 60s 应切成多片，实际 ${prepared.slices.length} 片`);
+  } finally {
+    if (previousSegment !== undefined) process.env.TRANSCRIPTION_SEGMENT_SECONDS = previousSegment;
+    if (previousBytes === undefined) delete process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES;
+    else process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES = previousBytes;
+    if (previousAuto === undefined) delete process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS;
+    else process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS = previousAuto;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('does not segment short audio that is also small', { skip }, async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'acc-small-'));
+  const previousSegment = process.env.TRANSCRIPTION_SEGMENT_SECONDS;
+  const previousBytes = process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES;
+  delete process.env.TRANSCRIPTION_SEGMENT_SECONDS;
+  try {
+    const source = await makeSource(dir);
+    process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES = String(1024 * 1024 * 1024);
+    const prepared = await prepareAudio(source, dir, { normalize: false, duration: 0 });
+    assert.equal(prepared.sliced, false, '文件远小于阈值时不应切段');
+  } finally {
+    if (previousSegment !== undefined) process.env.TRANSCRIPTION_SEGMENT_SECONDS = previousSegment;
+    if (previousBytes === undefined) delete process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES;
+    else process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES = previousBytes;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

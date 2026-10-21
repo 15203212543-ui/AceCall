@@ -5,8 +5,7 @@ const { createWriteStream } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { Readable } = require('node:stream');
-const { pipeline } = require('node:stream/promises');
+const { once } = require('node:events');
 const { createProvider } = require('./providers');
 
 const PORT = Number(process.env.PORT || 9000);
@@ -16,11 +15,25 @@ const WORKER_ID = process.env.WORKER_ID || `worker-${crypto.randomUUID()}`;
 // CloudBase's uploadFile only accepts a Buffer, so a single uploaded slice must
 // stay well inside the worker's memory budget. 15 minutes of 16 kHz mono PCM is
 // ~28 MB, which keeps a two-hour call to eight separate uploads.
-const AUTO_SEGMENT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS || 900));
+// ~28 MB per slice, which keeps a two-hour call to eight separate uploads.
+// Read at call time (not module load) so tests and one-off runs can override.
+function autoSegmentSeconds() {
+  return Math.max(60, Number(process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS || 900));
+}
+
+// Fallback trigger when duration is unknown: 32 MB is roughly 16 minutes of
+// 16 kHz mono PCM, comfortably inside a small instance's memory budget.
+function autoSegmentBytes() {
+  return Math.max(1024 * 1024, Number(process.env.TRANSCRIPTION_AUTO_SEGMENT_BYTES || 32 * 1024 * 1024));
+}
+
 const MAX_SOURCE_BYTES = Number(process.env.TRANSCRIPTION_MAX_SOURCE_BYTES || 1024 * 1024 * 1024);
 let app;
 let sdk;
 let running = false;
+// Test seam: tools/offline-e2e.js swaps these out to run the whole pipeline
+// against local files instead of CloudBase. Unset in production.
+let dependencies = null;
 
 process.on('uncaughtException', error => console.error(`[AceCall transcription worker] uncaught exception: ${error.message}`));
 process.on('unhandledRejection', error => console.error(`[AceCall transcription worker] unhandled rejection: ${error?.message || error}`));
@@ -38,13 +51,19 @@ function cloudbase() {
   return sdk;
 }
 
+function configureDependencies(next) {
+  dependencies = next || null;
+}
+
 function database() {
+  if (dependencies?.database) return dependencies.database();
   if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 TCB_ENV 或 CLOUDBASE_APIKEY');
   app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
   return app.database();
 }
 
 function storage() {
+  if (dependencies?.storage) return dependencies.storage();
   if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 CloudBase 凭证');
   app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
   return app;
@@ -66,6 +85,10 @@ function audioExtension(value = '') {
  * Stream every part straight to disk. The previous implementation buffered all
  * parts and called Buffer.concat, so a two-hour call held the entire recording
  * in memory twice (parts + merged copy) and OOMed on small instances.
+ *
+ * Chunks are written manually rather than with pipeline({ end: false }) because
+ * pipeline attaches error/close/finish/end listeners per call, and recordings
+ * routinely have more than ten parts.
  */
 async function downloadParts(parts, directory) {
   const sorted = [...(parts || [])].sort((a, b) => a.index - b.index);
@@ -80,10 +103,11 @@ async function downloadParts(parts, directory) {
       const response = await fetch(await tempFileUrl(fileID));
       if (!response.ok) throw new Error(`录音分片下载失败（${response.status}）`);
       if (!response.body) throw new Error('录音分片响应为空');
-      // end:false keeps the sink open so parts append into one container file.
-      await pipeline(Readable.fromWeb(response.body), sink, { end: false });
-      written += Number(part.size || 0);
-      if (written > MAX_SOURCE_BYTES) throw new Error('录音超过 TRANSCRIPTION_MAX_SOURCE_BYTES 限制');
+      for await (const chunk of response.body) {
+        written += chunk.length;
+        if (written > MAX_SOURCE_BYTES) throw new Error('录音超过 TRANSCRIPTION_MAX_SOURCE_BYTES 限制');
+        if (!sink.write(chunk)) await once(sink, 'drain');
+      }
     }
   } catch (error) {
     sink.destroy();
@@ -109,6 +133,12 @@ function runFfmpeg(args, label) {
 }
 
 function probeDuration(filePath) {
+  return probeDurationWithFfprobe(filePath).then(seconds => (
+    seconds > 0 ? seconds : probeDurationWithFfmpeg(filePath)
+  ));
+}
+
+function probeDurationWithFfprobe(filePath) {
   return new Promise(resolve => {
     const child = spawn(process.env.FFPROBE_PATH || 'ffprobe', [
       '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', filePath
@@ -118,6 +148,30 @@ function probeDuration(filePath) {
     child.once('error', () => resolve(0));
     child.once('close', () => {
       const seconds = Number(output.trim());
+      resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : 0);
+    });
+  });
+}
+
+/**
+ * Fallback for images that ship ffmpeg without ffprobe (e.g. imageio-ffmpeg).
+ * ffmpeg prints "Duration: 00:25:00.00" on stderr; parse that instead of
+ * silently reporting 0, which would disable segmentation and let a 45 MB blob
+ * through as a single upload.
+ */
+function probeDurationWithFfmpeg(filePath) {
+  return new Promise(resolve => {
+    const child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', ['-hide_banner', '-i', filePath]);
+    let stderr = '';
+    child.stderr.on('data', chunk => {
+      stderr += chunk.toString();
+      if (stderr.length > 40000) stderr = stderr.slice(-20000);
+    });
+    child.once('error', () => resolve(0));
+    child.once('close', () => {
+      const match = stderr.match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/);
+      if (!match) return resolve(0);
+      const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
       resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : 0);
     });
   });
@@ -137,12 +191,19 @@ async function normalizeAudio(inputPath, directory) {
  *   approaches the worker's memory ceiling.
  * - Short audio is only transcoded when the provider demands 16 kHz mono WAV
  *   (Baidu); Whisper-compatible gateways decode the original container.
+ *
+ * Segmentation triggers on duration OR size: duration probing needs ffprobe,
+ * which some ffmpeg distributions omit, and a probe failure must not silently
+ * turn a two-hour recording into one 230 MB upload.
  */
 async function prepareAudio(sourcePath, directory, { normalize, duration }) {
   const explicit = Number(process.env.TRANSCRIPTION_SEGMENT_SECONDS || 0);
+  const threshold = autoSegmentSeconds();
+  const { size } = await fs.stat(sourcePath);
+  const tooLong = duration > threshold || (duration <= 0 && size > autoSegmentBytes());
   const segmentSeconds = explicit > 0
     ? explicit
-    : (duration > AUTO_SEGMENT_SECONDS ? AUTO_SEGMENT_SECONDS : 0);
+    : (tooLong ? threshold : 0);
 
   if (segmentSeconds > 0) {
     const pattern = path.join(directory, 'slice-%05d.wav');
@@ -303,7 +364,7 @@ const server = http.createServer((request, response) => {
       ok: true,
       service: 'acecall-transcription-worker',
       provider: process.env.TRANSCRIPTION_PROVIDER || 'baidu',
-      autoSegmentSeconds: AUTO_SEGMENT_SECONDS,
+      autoSegmentSeconds: autoSegmentSeconds(),
       busy: running
     }));
   }
@@ -317,7 +378,7 @@ server.on('error', error => { console.error(`[AceCall transcription worker] serv
 // module to exercise mergeSliceResults/processTask without stealing 9000.
 if (require.main === module) {
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[AceCall transcription worker] started on port ${PORT}; provider=${process.env.TRANSCRIPTION_PROVIDER || 'baidu'}; autoSegment=${AUTO_SEGMENT_SECONDS}s`);
+    console.log(`[AceCall transcription worker] started on port ${PORT}; provider=${process.env.TRANSCRIPTION_PROVIDER || 'baidu'}; autoSegment=${autoSegmentSeconds()}s`);
     poll();
     setInterval(poll, INTERVAL_MS);
   });
@@ -330,5 +391,6 @@ module.exports = {
   downloadParts,
   prepareAudio,
   mergeSliceResults,
-  probeDuration
+  probeDuration,
+  configureDependencies
 };
