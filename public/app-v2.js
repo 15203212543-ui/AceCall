@@ -1039,7 +1039,7 @@ function renderIntelligence() {
  }
 
  function intelligenceDimensionRecords(view, records) {
-   const terms = { industry: ['金融','互联网','企业服务','制造业','消费零售','教育','医疗','物流','游戏','新能源'], product: ['风控系统','数据服务','交易系统','招聘系统','SaaS','平台','算法','供应链','支付','CRM'], business: ['风控','衍生品','交易','招聘','销售','研发','运营','市场','客服','咨询','数据分析'], city: ['北京','上海','深圳','广州','杭州','成都','南京','武汉','苏州','香港'] }[view] || [];
+   const terms = INTELLIGENCE_LEXICON[view] || [];
    const groups = new Map();
    const source = intelligenceSourceRecords();
    source.forEach(item => {
@@ -1063,7 +1063,8 @@ function renderIntelligence() {
    const groups = new Map();
    source.forEach(item => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}`.replace(/\r/g, '');
-     const names = extractCompanyEntities(text);
+     const structuredCompany = item.resumeMeta?.currentCompany || item.currentCompany || item.company || item.mokaData?.companyName || '';
+     const names = [...new Set([structuredCompany, ...extractCompanyEntities(text)].filter(Boolean))];
      names.forEach(rawName => {
        const name = rawName.trim();
        if (!isReliableCompanyName(name)) return;
@@ -1088,7 +1089,7 @@ function renderIntelligence() {
 
  function extractCompanyEntities(text = '') {
    const result = new Set();
-   const sentencePattern = /[^。！？\n]{0,100}(?:在|于|从|就职于|任职于|供职于|来自|曾在|上一家公司是|目前在|公司名称是|任职公司为)\s*([A-Za-z0-9\u4e00-\u9fff]{2,30}(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份|有限))[^。！？\n]{0,100}/g;
+   const sentencePattern = /[^。！？\n]{0,60}(?:就职于|任职于|供职于|来自|曾在|上一家公司是|目前任职于|公司名称是|任职公司为)\s*([A-Za-z0-9\u4e00-\u9fff]{2,30}(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|软件|股份|有限))[^。！？\n]{0,60}/g;
    for (const match of text.matchAll(sentencePattern)) result.add(match[1]);
    const workLinePattern = /(?:公司|企业|单位|雇主)\s*[：:]\s*([A-Za-z0-9\u4e00-\u9fff]{2,30}(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份|有限))/g;
    for (const match of text.matchAll(workLinePattern)) result.add(match[1]);
@@ -1100,9 +1101,9 @@ function renderIntelligence() {
  function isReliableCompanyName(value = '') {
    const name = String(value).replace(/[\s,，。；;：:、]+$/g, '').trim();
    if (name.length < 3 || name.length > 36) return false;
-   if (/^(个人信息|基本信息|教育背景|工作经历|项目经历|专业技能|自我评价|求职意向|联系方式|公司名称|所在公司|目标公司|任职公司)$/i.test(name)) return false;
+   if (/^(个人信息|基本信息|教育背景|工作经历|项目经历|专业技能|自我评价|求职意向|联系方式|公司名称|所在公司|目标公司|任职公司|创业公司|这家公司|该公司|本公司|某公司)$/i.test(name)) return false;
    if (/^(信息|资料|经历|背景|情况|内容|岗位|职位|部门|业务|产品|行业)(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份)$/.test(name)) return false;
-   return /(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)$/i.test(name);
+   return /(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|软件|股份|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)$/i.test(name);
  }
 function renderConnections() { $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">初筛结果保存后，按手机号或邮箱匹配并追加备注</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。初筛结果保存到云端后，会按手机号或邮箱匹配 Moka 申请并追加备注；不会修改阶段，也不会淘汰候选人。</p></div></section></div>`; }
 
