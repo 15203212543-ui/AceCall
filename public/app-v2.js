@@ -1074,7 +1074,7 @@ function renderIntelligence() {
      const structuredCompany = item.resumeMeta?.currentCompany || item.currentCompany || item.company || item.mokaData?.companyName || '';
      const names = [...new Set([structuredCompany, ...structuredCompanies, ...extractResumeCompanyNames(item.resume || ''), ...extractCompanyEntities(text)].filter(Boolean))];
      names.forEach(rawName => {
-       const name = rawName.trim();
+       const name = normalizeCompanyName(rawName);
        if (!isReliableCompanyName(name)) return;
        const key = name.toLowerCase(); const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '' };
        existing.count += 1; if (item.transcript) existing.transcripts += 1;
@@ -1103,7 +1103,14 @@ function renderIntelligence() {
    for (const match of text.matchAll(workLinePattern)) result.add(match[1]);
    const standalonePattern = /(?<![\u4e00-\u9fffA-Za-z0-9])([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology))\b/gi;
    for (const match of text.matchAll(standalonePattern)) result.add(match[1].trim());
-   return [...result].map(value => value.replace(/^(?:目前|原|上一家|所在|目标)/, '').trim()).filter(isReliableCompanyName);
+   return [...result].map(normalizeCompanyName).filter(isReliableCompanyName);
+ }
+
+ function normalizeCompanyName(value = '') {
+   let name = String(value).replace(/^\s*\d{4}[./-]\d{1,2}(?:[./-]\d{1,2})?\s*/, '').replace(/^(?:目前|原|上一家|所在|目标)\s*/, '').trim();
+   const suffix = name.search(/(?:有限公司|股份有限公司|集团|科技|证券|银行|基金|保险|资本|传媒|教育|医疗|软件|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)/i);
+   if (suffix >= 0) name = name.slice(0, suffix + (name.slice(suffix).match(/^(?:股份有限公司|有限公司|集团|科技|证券|银行|基金|保险|资本|传媒|教育|医疗|软件|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)/i)?.[0].length || 0));
+   return name.replace(/[\s,，。；;：:、|｜·•]+$/g, '').trim();
  }
 
  function extractResumeCompanyNames(text = '') {
@@ -1115,7 +1122,7 @@ function renderIntelligence() {
    const result = [];
    section.forEach(line => {
      const match = line.match(/([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)|[\u4e00-\u9fffA-Za-z0-9（）()·&.]{2,36}(?:有限公司|股份有限公司|集团|科技|证券|银行|基金|保险|资本|传媒|教育|医疗|软件))/i);
-     const value = match?.[1]?.trim();
+     const value = normalizeCompanyName(match?.[1] || '');
      if (value && isReliableCompanyName(value) && !result.includes(value)) result.push(value);
    });
    return result.slice(0, 8);
@@ -1124,6 +1131,7 @@ function renderIntelligence() {
  function isReliableCompanyName(value = '') {
    const name = String(value).replace(/[\s,，。；;：:、]+$/g, '').trim();
    if (name.length < 3 || name.length > 36) return false;
+   if (/\d{4}[./-]\d{1,2}|包含|涉及|功能|负责|参与|搭建|提升|实现|资深|软件开发|产品功能|项目经验|工作内容/.test(name)) return false;
    if (/^(个人信息|基本信息|教育背景|工作经历|项目经历|专业技能|自我评价|求职意向|联系方式|公司名称|所在公司|目标公司|任职公司|创业公司|这家公司|该公司|本公司|某公司)$/i.test(name)) return false;
    if (/^(信息|资料|经历|背景|情况|内容|岗位|职位|部门|业务|产品|行业)(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份)$/.test(name)) return false;
    return /(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|软件|股份|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)$/i.test(name);
