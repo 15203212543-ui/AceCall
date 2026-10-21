@@ -986,7 +986,45 @@ function renderTranscriptReview() {
   const complete = records.filter(item => item.communicationSummary && item.report).length;
   $('#transcriptReviewView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">INTERVIEW TRANSCRIPT REVIEW</span><h1>面试转写复盘</h1><p>抓取并分析面试转写，提取面试官提问重点、追问深度与候选人回答中的决策信号。</p></div><span class="readonly-badge">合规留痕</span></div><div class="research-banner"><div><span>已分析记录</span><strong>${records.length}<small> 份</small></strong></div><p>录音或转写需要在取得候选人告知同意后进入分析，系统保留原始记录、总结和最终结果的关联。</p><span class="data-status">${transcripts.length ? `${transcripts.length} 份含转写` : '等待转写数据'}</span></div><div class="metrics research-metrics"><div class="metric"><b>${transcripts.length}</b><span>已抓取转写</span><small>原始文本</small></div><div class="metric"><b>${followUps}</b><span>追问信号</span><small>核实与风险词</small></div><div class="metric"><b>${complete}</b><span>完整复盘</span><small>总结与结果齐全</small></div><div class="metric"><b>${records.length ? Math.round(complete / records.length * 100) : 0}%</b><span>记录完整度</span><small>可用于规则学习</small></div></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>高频面试关注点</h2><p class="surface-subtitle">从准备问题、转写和总结中归纳</p></div></div><div class="surface-body research-tags"><span class="research-tag blue">项目结果</span><span class="research-tag blue">个人职责</span><span class="research-tag blue">业务规模</span><span class="research-tag">离职动机</span><span class="research-tag">风险核实</span></div></section><section class="surface"><div class="surface-head"><div><h2>复盘建议</h2><p class="surface-subtitle">帮助团队校准面试标准</p></div></div><div class="surface-body recommendation-list"><p><b>统一：</b>将同岗位高频问题沉淀为结构化面试清单。</p><p><b>追踪：</b>关联面试通过、Offer 和入职结果，验证问题的预测价值。</p><p><b>保护：</b>转写分析仅用于招聘质量复盘，不直接作为自动淘汰依据。</p></div></section></div></div>`;
 }
+function renderIntelligenceResearchPage() {
+   const topic = app.intelligenceTopic || '';
+   const records = intelligenceRecords({ source: app.intelligenceSource });
+   const sourceSummary = intelligenceSourceSummary();
+   const companies = intelligenceRecords({ source: app.intelligenceSource });
+   const industries = intelligenceDimensionRecords('industry', records, { source: app.intelligenceSource });
+   const products = intelligenceDimensionRecords('product', records, { source: app.intelligenceSource });
+   const businesses = intelligenceDimensionRecords('business', records, { source: app.intelligenceSource });
+   const totalObjects = new Set([...companies.map(item => item.key), ...industries.map(item => item.key), ...products.map(item => item.key), ...businesses.map(item => item.key)]).size;
+   const topicConfig = {
+     industry: { title: '行业趋势', desc: '技术方向、岗位要求与行业变化', data: industries, label: '行业' },
+     company: { title: '公司动态', desc: '企业变化、组织调整与招聘需求', data: companies, label: '公司' },
+     talent: { title: '人才趋势', desc: '热门技能、经验要求与人才供需', data: [...products, ...businesses], label: '人才主题' },
+     all: { title: '全部线索', desc: '搜索、筛选和追溯全部来源', data: [...companies, ...industries, ...products, ...businesses], label: '线索' }
+   };
+   const current = topicConfig[topic];
+   const insightRows = [
+     industries[0] ? { type: '行业趋势', title: `${industries[0].name}相关岗位关注度上升`, source: industries[0].sources?.join(' / ') || '招聘材料', status: '待核实', evidence: industries[0].evidence } : null,
+     companies[0] ? { type: '公司动态', title: `${companies[0].name}出现人才经历信号`, source: companies[0].sources?.join(' / ') || '候选人简历', status: '待核实', evidence: companies[0].evidence } : null,
+     products[0] ? { type: '人才趋势', title: `${products[0].name}成为候选人能力关键词`, source: products[0].sources?.join(' / ') || '面试转写', status: '待核实', evidence: products[0].evidence } : null
+   ].filter(Boolean);
+   const insightMarkup = insightRows.length ? insightRows.slice(0, 3).map(row => `<article class="intelligence-insight-row"><div class="intelligence-insight-top"><span class="intelligence-topic-pill">${escapeHtml(row.type)}</span><strong>${escapeHtml(row.title)}</strong><span class="intelligence-insight-status">${row.status}</span></div><p>${escapeHtml(row.evidence || '已从招聘材料中识别，等待原文核实。')}</p><small>来源：${escapeHtml(row.source)}</small></article>`).join('') : '<div class="intelligence-home-empty">暂无可展示的近期洞察。完成简历解析或转写同步后，这里会显示有证据的摘要。</div>';
+   const topicCards = [['industry','⌁','行业趋势','技术方向、岗位要求、行业变化'],['company','▥','公司动态','企业变化、组织调整、招聘需求'],['talent','♧','人才趋势','热门技能、经验要求、人才供需'],['all','⌕','全部线索','线索搜索、筛选及来源追溯']];
+   const detailRows = current ? current.data.slice(0, 60).map(item => `<button type="button" class="intelligence-detail-row" data-intelligence-object="${escapeHtml(item.key)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.count || 1} 条材料 · ${(item.sources || []).join(' / ') || '来源待确认'}</small></span><b>${escapeHtml(item.confidence || '中')}</b></button>`).join('') : '';
+   const root = $('#intelligenceView');
+   if (current) {
+     root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><button class="intelligence-back" type="button" data-intelligence-home>← 行业情报</button><h1>${current.title}</h1><p>${current.desc}</p></div><select id="intelligenceTopicSource"><option value="">全部来源</option><option>正式面试转写</option><option>电话沟通转写</option><option>候选人简历</option></select></div><div class="intelligence-detail-layout"><section class="surface"><div class="surface-head"><div><h2>${current.label}线索</h2><p class="surface-subtitle">${current.data.length} 个对象，点击查看来源和证据</p></div></div><div class="surface-body intelligence-detail-list">${detailRows || '<div class="intelligence-home-empty">当前主题暂无线索。</div>'}</div></section><section class="surface intelligence-topic-explainer"><div class="surface-head"><div><h2>这个主题怎么看</h2><p class="surface-subtitle">只展示有来源的招聘材料</p></div></div><div class="surface-body"><p>${topic === 'industry' ? '行业趋势来自简历、电话沟通和正式面试转写中出现的行业词，并按命中材料数量排序。' : topic === 'company' ? '公司动态来自候选人工作经历和沟通中明确提到的公司名称，不把普通职责描述当成公司。' : topic === 'talent' ? '人才趋势由产品、业务等能力词汇组成，用于观察岗位技能和候选人经验分布。' : '全部线索汇总公司、行业、产品和业务对象，可通过来源和关键词追溯原文。'}</p><div class="intelligence-source-mini"><b>${sourceSummary.total}</b><span>份材料已纳入分析</span></div></div></section></div></div>`;
+     const source = $('#intelligenceTopicSource'); if (source) { source.value = app.intelligenceSource || ''; source.addEventListener('change', event => { app.intelligenceSource = event.target.value; renderIntelligence(); }); }
+     $('#intelligenceView [data-intelligence-home]')?.addEventListener('click', () => { app.intelligenceTopic = ''; renderIntelligence(); });
+     $$('#intelligenceView [data-intelligence-object]').forEach(button => button.addEventListener('click', () => { app.intelligenceSelected = button.dataset.intelligenceObject; toast('已选中线索，可在对象详情中查看原文证据'); }));
+     return;
+   }
+   root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从招聘沟通中发现行业、公司与人才市场变化</p></div><select id="intelligenceHomePeriod"><option>近 30 天</option><option>近 90 天</option><option>全部时间</option></select></div><div class="intelligence-home-metrics"><div class="intelligence-home-metric"><span>新增洞察线索</span><strong>${insightRows.length || 0}</strong><small>近期新增的有效信息</small></div><div class="intelligence-home-metric"><span>涉及公司</span><strong>${companies.length}</strong><small>已关联的公司主体</small></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2>近期重点发现</h2><p class="surface-subtitle">从招聘沟通中提炼的近期有效信号</p></div><button class="link-action" type="button" data-intelligence-topic="all">查看全部 →</button></div><div class="surface-body">${insightMarkup}</div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2>按主题查看</h2><p class="surface-subtitle">选择一个主题进入详细线索页</p></div></div><div class="intelligence-topic-grid">${topicCards.map(([key,icon,title,desc]) => `<button type="button" class="intelligence-topic-card" data-intelligence-topic="${key}"><span class="intelligence-topic-icon">${icon}</span><strong>${title}</strong><small>${desc}</small></button>`).join('')}</div></section><div class="intelligence-home-footnote">数据范围：${sourceSummary.resume} 份简历 · ${sourceSummary.phone} 份电话沟通转写 · ${sourceSummary.moka} 份正式面试转写</div></div>`;
+   $$('#intelligenceView [data-intelligence-topic]').forEach(button => button.addEventListener('click', () => { app.intelligenceTopic = button.dataset.intelligenceTopic; renderIntelligence(); }));
+ }
+
+ 
  function renderIntelligence() {
+   return renderIntelligenceResearchPage();
    const records = intelligenceRecords({ source: app.intelligenceSource });
    const companies = records.filter(item => item.name).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
    const view = app.intelligenceView || 'company';
