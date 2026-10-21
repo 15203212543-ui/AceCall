@@ -8,7 +8,7 @@
   <meta http-equiv="Expires" content="0">
   <meta name="description" content="AceCall · 面向企业招聘团队的 AI 招聘协作工作台">
   <title>AceCall · AI 招聘协作工作台</title>
-  <link rel="stylesheet" href="./styles-v2.css?v=__ACE_CALL_BUILD__">
+  <link rel="stylesheet" href="./styles-v2.css?v=056a3424">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -131,19 +131,8 @@
     </form>
   </dialog>
 
-  <dialog id="assignmentDialog" class="modal assignment-dialog">
-    <form id="assignmentForm" method="dialog">
-      <header><div><small>岗位归属</small><h2>分配候选人岗位</h2><p class="dialog-subtitle" id="assignmentCandidateLabel">为候选人选择一个在招岗位</p></div><button type="button" class="icon-close" data-close="assignmentDialog">×</button></header>
-      <input type="hidden" id="assignmentCandidateId">
-      <div class="assignment-toolbar"><input id="assignmentJobSearch" placeholder="搜索岗位名称、部门或关键词"><select id="assignmentJobStatus"><option value="active">仅显示在招岗位</option><option value="all">全部岗位</option></select></div>
-      <div id="assignmentJobList" class="assignment-job-list"></div>
-      <p class="field-hint assignment-hint">关闭岗位不会作为新分配目标。确认后会保留原始简历，并重新生成该岗位的匹配信息。</p>
-      <footer><button type="button" class="secondary" data-close="assignmentDialog">取消</button><button type="submit" class="primary" id="confirmAssignmentButton" disabled>确认分配</button></footer>
-    </form>
-  </dialog>
-
   <div class="toast" id="toast" role="status"></div>
   <script src="./config.js"></script>
-  <script type="module" src="./app-v2.js?v=506663483655dd5f2e79a54c0045ff831c887fd0"></script>
+  <script type="module" src="./app-v2.js?v=056a3424"></script>
 </body>
 </html>
