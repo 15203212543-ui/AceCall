@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+httpx==0.28.1
+faster-whisper==1.1.1
+# faster-whisper 1.1.1 的 utils.py 直接 import requests，但 wheel 没有把它声明为
+# 依赖；干净环境（与 Dockerfile 一样）缺它会在模型加载阶段直接 ModuleNotFoundError。
+requests==2.32.3

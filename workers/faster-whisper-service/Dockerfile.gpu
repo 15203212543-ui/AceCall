@@ -1,0 +1,35 @@
+# GPU 版本。CUDA 12.4 + cuDNN 9 对应 ctranslate2 >= 4.x 的要求。
+# 构建：docker build -f Dockerfile.gpu -t acecall-asr:gpu .
+# 运行：docker run --gpus all -p 9001:9001 acecall-asr:gpu
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3.11 python3-pip libgomp1 ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/models \
+    WHISPER_DOWNLOAD_ROOT=/models
+
+WORKDIR /app
+COPY requirements.txt requirements-gpu.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt -r requirements-gpu.txt
+COPY transcriber.py server.py ./
+
+RUN useradd --create-home --uid 10001 asr \
+  && mkdir -p /models \
+  && chown -R asr:asr /models /app
+USER asr
+
+EXPOSE 9001
+ENV WHISPER_MODEL_SIZE=large-v3 \
+    WHISPER_DEVICE=cuda \
+    WHISPER_COMPUTE_TYPE=float16 \
+    WHISPER_MAX_CONCURRENCY=1
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=5 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=4).status==200 else 1)"
+
+CMD ["python3", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "9001", "--timeout-keep-alive", "75"]

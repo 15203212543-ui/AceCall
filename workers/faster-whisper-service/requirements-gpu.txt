@@ -1,0 +1,5 @@
+# GPU 部署时追加安装。ctranslate2 的 CUDA 12 运行时不在 wheel 里，
+# 必须显式提供，否则 device=cuda 会回退到 CPU 或直接报错。
+#   pip install -r requirements.txt -r requirements-gpu.txt
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cudnn-cu12==9.1.0.70
