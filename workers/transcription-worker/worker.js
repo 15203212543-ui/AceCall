@@ -1,31 +1,52 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
+const { createWriteStream } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const tcb = require('@cloudbase/node-sdk');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { createProvider } = require('./providers');
 
 const PORT = Number(process.env.PORT || 9000);
 const INTERVAL_MS = Math.max(5_000, Number(process.env.WORKER_INTERVAL_MS || 15_000));
 const COLLECTION = 'acecall_transcription_tasks';
 const WORKER_ID = process.env.WORKER_ID || `worker-${crypto.randomUUID()}`;
+// CloudBase's uploadFile only accepts a Buffer, so a single uploaded slice must
+// stay well inside the worker's memory budget. 15 minutes of 16 kHz mono PCM is
+// ~28 MB, which keeps a two-hour call to eight separate uploads.
+const AUTO_SEGMENT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_AUTO_SEGMENT_SECONDS || 900));
+const MAX_SOURCE_BYTES = Number(process.env.TRANSCRIPTION_MAX_SOURCE_BYTES || 1024 * 1024 * 1024);
 let app;
+let sdk;
 let running = false;
 
 process.on('uncaughtException', error => console.error(`[AceCall transcription worker] uncaught exception: ${error.message}`));
 process.on('unhandledRejection', error => console.error(`[AceCall transcription worker] unhandled rejection: ${error?.message || error}`));
 
+// Loaded lazily so the module can be required by unit tests and tooling that do
+// not have the CloudBase SDK installed.
+function cloudbase() {
+  if (!sdk) {
+    try {
+      sdk = require('@cloudbase/node-sdk');
+    } catch {
+      throw new Error('转写 worker 未安装 @cloudbase/node-sdk，请在该目录执行 npm install');
+    }
+  }
+  return sdk;
+}
+
 function database() {
   if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 TCB_ENV 或 CLOUDBASE_APIKEY');
-  app ||= tcb.init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
+  app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
   return app.database();
 }
 
 function storage() {
   if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 CloudBase 凭证');
-  app ||= tcb.init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
+  app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
   return app;
 }
 
@@ -36,42 +57,155 @@ async function tempFileUrl(fileID) {
   return item.tempFileURL;
 }
 
+function audioExtension(value = '') {
+  const extension = String(value).split('?')[0].split('.').pop()?.toLowerCase() || '';
+  return /^[a-z0-9]{1,6}$/.test(extension) ? extension : 'audio';
+}
+
+/**
+ * Stream every part straight to disk. The previous implementation buffered all
+ * parts and called Buffer.concat, so a two-hour call held the entire recording
+ * in memory twice (parts + merged copy) and OOMed on small instances.
+ */
 async function downloadParts(parts, directory) {
-  const buffers = [];
-  for (const part of [...parts].sort((a, b) => a.index - b.index)) {
-    const fileID = part.fileId || part.path;
-    if (!fileID) throw new Error('录音任务存在空分片路径');
-    const response = await fetch(await tempFileUrl(fileID));
-    if (!response.ok) throw new Error(`录音分片下载失败（${response.status}）`);
-    buffers.push(Buffer.from(await response.arrayBuffer()));
+  const sorted = [...(parts || [])].sort((a, b) => a.index - b.index);
+  if (!sorted.length) throw new Error('录音任务没有可下载的分片');
+  const inputPath = path.join(directory, `source.${audioExtension(sorted[0].fileId || sorted[0].path)}`);
+  const sink = createWriteStream(inputPath);
+  let written = 0;
+  try {
+    for (const part of sorted) {
+      const fileID = part.fileId || part.path;
+      if (!fileID) throw new Error('录音任务存在空分片路径');
+      const response = await fetch(await tempFileUrl(fileID));
+      if (!response.ok) throw new Error(`录音分片下载失败（${response.status}）`);
+      if (!response.body) throw new Error('录音分片响应为空');
+      // end:false keeps the sink open so parts append into one container file.
+      await pipeline(Readable.fromWeb(response.body), sink, { end: false });
+      written += Number(part.size || 0);
+      if (written > MAX_SOURCE_BYTES) throw new Error('录音超过 TRANSCRIPTION_MAX_SOURCE_BYTES 限制');
+    }
+  } catch (error) {
+    sink.destroy();
+    throw error;
   }
-  const inputPath = path.join(directory, 'source.audio');
-  await fs.writeFile(inputPath, Buffer.concat(buffers));
+  await new Promise((resolve, reject) => sink.end(error => (error ? reject(error) : resolve())));
+  const stat = await fs.stat(inputPath);
+  if (!stat.size) throw new Error('合并后的录音为空');
   return inputPath;
 }
 
-function runFfmpeg(inputPath, outputPath) {
+function runFfmpeg(args, label) {
   return new Promise((resolve, reject) => {
-    const process = spawn(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-i', inputPath, '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', outputPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(process.env.FFMPEG_PATH || 'ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
-    process.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    process.once('error', reject);
-    process.once('close', code => code === 0 ? resolve() : reject(new Error(`音频格式转换失败（${code}）：${stderr.slice(-500)}`)));
+    child.stderr.on('data', chunk => {
+      stderr += chunk.toString();
+      if (stderr.length > 20000) stderr = stderr.slice(-10000);
+    });
+    child.once('error', error => reject(new Error(`${label}无法启动 ffmpeg：${error.message}`)));
+    child.once('close', code => (code === 0 ? resolve() : reject(new Error(`${label}失败（${code}）：${stderr.slice(-500)}`))));
+  });
+}
+
+function probeDuration(filePath) {
+  return new Promise(resolve => {
+    const child = spawn(process.env.FFPROBE_PATH || 'ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', filePath
+    ]);
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk.toString(); });
+    child.once('error', () => resolve(0));
+    child.once('close', () => {
+      const seconds = Number(output.trim());
+      resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : 0);
+    });
   });
 }
 
 async function normalizeAudio(inputPath, directory) {
   const outputPath = path.join(directory, 'normalized.wav');
-  await runFfmpeg(inputPath, outputPath);
+  await runFfmpeg(['-y', '-i', inputPath, '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', outputPath], '音频格式转换');
   return outputPath;
 }
 
-async function uploadNormalized(filePath, task) {
+/**
+ * Decide how the recording is handed to the provider.
+ *
+ * - Explicit TRANSCRIPTION_SEGMENT_SECONDS wins.
+ * - Otherwise long audio is sliced automatically so no single upload Buffer
+ *   approaches the worker's memory ceiling.
+ * - Short audio is only transcoded when the provider demands 16 kHz mono WAV
+ *   (Baidu); Whisper-compatible gateways decode the original container.
+ */
+async function prepareAudio(sourcePath, directory, { normalize, duration }) {
+  const explicit = Number(process.env.TRANSCRIPTION_SEGMENT_SECONDS || 0);
+  const segmentSeconds = explicit > 0
+    ? explicit
+    : (duration > AUTO_SEGMENT_SECONDS ? AUTO_SEGMENT_SECONDS : 0);
+
+  if (segmentSeconds > 0) {
+    const pattern = path.join(directory, 'slice-%05d.wav');
+    await runFfmpeg([
+      '-y', '-i', sourcePath,
+      '-f', 'segment',
+      '-segment_time', String(segmentSeconds),
+      '-reset_timestamps', '1',
+      '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le',
+      pattern
+    ], '音频分段');
+    const names = (await fs.readdir(directory)).filter(name => /^slice-\d{5}\.wav$/.test(name)).sort();
+    if (!names.length) throw new Error('音频分段后没有生成可转写的片段');
+    return {
+      sliced: true,
+      segmentSeconds,
+      slices: names.map((name, index) => ({
+        path: path.join(directory, name),
+        offsetSeconds: index * segmentSeconds
+      }))
+    };
+  }
+
+  if (normalize) {
+    return {
+      sliced: false,
+      segmentSeconds: 0,
+      slices: [{ path: await normalizeAudio(sourcePath, directory), offsetSeconds: 0 }]
+    };
+  }
+
+  return { sliced: false, segmentSeconds: 0, slices: [{ path: sourcePath, offsetSeconds: 0 }] };
+}
+
+async function uploadSlice(filePath, task, index) {
   const fileContent = await fs.readFile(filePath);
-  const cloudPath = `${task.storagePrefix}/normalized.wav`;
+  const extension = path.extname(filePath).slice(1).toLowerCase() || 'wav';
+  const cloudPath = `${task.storagePrefix}/asr-${String(index).padStart(5, '0')}.${extension}`;
   const uploaded = await storage().uploadFile({ cloudPath, fileContent });
   const fileID = uploaded.fileID || cloudPath;
-  return { fileContent, fileID, url: await tempFileUrl(fileID) };
+  return { fileID, cloudPath, url: await tempFileUrl(fileID), bytes: fileContent.length };
+}
+
+function mergeSliceResults(results) {
+  const texts = [];
+  const segments = [];
+  let duration = 0;
+  for (const entry of results) {
+    const text = String(entry.result?.text || '').trim();
+    if (text) texts.push(text);
+    for (const segment of entry.result?.segments || []) {
+      const text2 = String(segment.text || '').trim();
+      if (!text2) continue;
+      segments.push({
+        start: Number((Number(segment.start || 0) + entry.offsetSeconds).toFixed(3)),
+        end: Number((Number(segment.end || 0) + entry.offsetSeconds).toFixed(3)),
+        text: text2,
+        speaker: segment.speaker || ''
+      });
+    }
+    duration += Number(entry.result?.duration || 0);
+  }
+  return { text: texts.join('\n').trim(), segments, duration: Number(duration.toFixed(3)) };
 }
 
 async function claimTask(task) {
@@ -89,15 +223,58 @@ async function processTask(task) {
   const claimed = await claimTask(task);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acecall-transcription-'));
   try {
-    const sourcePath = await downloadParts(claimed.parts || [], directory);
-    await updateTask(claimed, { status: 'converting' });
-    const normalizedPath = await normalizeAudio(sourcePath, directory);
-    const normalized = await uploadNormalized(normalizedPath, claimed);
-    await updateTask(claimed, { status: 'transcribing', normalizedPath: `${claimed.storagePrefix}/normalized.wav` });
     const provider = createProvider(claimed.engine === 'external-whisper' ? undefined : claimed.engine);
-    const result = await provider.transcribe({ audioUrl: normalized.url, audioBuffer: normalized.fileContent, fileName: 'normalized.wav', mimeType: 'audio/wav', task: claimed });
-    if (!result?.text?.trim()) throw new Error('转写引擎未返回有效文字');
-    await updateTask(claimed, { status: 'completed', engine: result.provider, result: { ...result, characters: result.text.length, completedAt: new Date().toISOString(), format: 'text' }, error: '' });
+    const sourcePath = await downloadParts(claimed.parts || [], directory);
+    const duration = await probeDuration(sourcePath);
+    await updateTask(claimed, {
+      status: 'converting',
+      sourceBytes: (await fs.stat(sourcePath)).size,
+      durationSeconds: duration
+    });
+
+    const prepared = await prepareAudio(sourcePath, directory, {
+      normalize: provider.requiresNormalizedWav === true,
+      duration
+    });
+    await updateTask(claimed, {
+      status: 'transcribing',
+      segmentSeconds: prepared.segmentSeconds,
+      segmentCount: prepared.slices.length
+    });
+
+    const results = [];
+    for (const [index, slice] of prepared.slices.entries()) {
+      const uploaded = await uploadSlice(slice.path, claimed, index);
+      const result = await provider.transcribe({
+        audioUrl: uploaded.url,
+        fileName: path.basename(slice.path),
+        mimeType: path.extname(slice.path) === '.wav' ? 'audio/wav' : 'application/octet-stream',
+        language: claimed.language || process.env.WHISPER_LANGUAGE || '',
+        prompt: claimed.hotwords || process.env.ACECALL_ASR_HOTWORDS || '',
+        task: claimed
+      });
+      results.push({ offsetSeconds: slice.offsetSeconds, result });
+    }
+
+    const merged = mergeSliceResults(results);
+    if (!merged.text) throw new Error('转写引擎未返回有效文字');
+    const engine = results[0]?.result?.provider || provider.name;
+    await updateTask(claimed, {
+      status: 'completed',
+      engine,
+      normalizedPath: prepared.sliced ? '' : `${claimed.storagePrefix}/asr-00000.${path.extname(prepared.slices[0].path).slice(1)}`,
+      result: {
+        ...(results[0]?.result || {}),
+        text: merged.text,
+        characters: merged.text.length,
+        segments: merged.segments,
+        segmentCount: results.length,
+        duration: merged.duration || duration,
+        completedAt: new Date().toISOString(),
+        format: 'text'
+      },
+      error: ''
+    });
   } catch (error) {
     await updateTask(claimed, { status: 'failed', error: error.message || '转写失败', failedAt: new Date().toISOString() });
   } finally {
@@ -122,17 +299,36 @@ async function poll() {
 const server = http.createServer((request, response) => {
   if (request.method === 'GET' && request.url === '/health') {
     response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    return response.end(JSON.stringify({ ok: true, service: 'acecall-transcription-worker' }));
+    return response.end(JSON.stringify({
+      ok: true,
+      service: 'acecall-transcription-worker',
+      provider: process.env.TRANSCRIPTION_PROVIDER || 'baidu',
+      autoSegmentSeconds: AUTO_SEGMENT_SECONDS,
+      busy: running
+    }));
   }
   response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify({ error: 'Not found' }));
 });
 
 server.on('error', error => { console.error(`[AceCall transcription worker] server error: ${error.message}`); process.exitCode = 1; });
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[AceCall transcription worker] started on port ${PORT}; provider=${process.env.TRANSCRIPTION_PROVIDER || 'baidu'}`);
-  poll();
-  setInterval(poll, INTERVAL_MS);
-});
 
-module.exports = { normalizeAudio, createProvider, processTask };
+// Only bind the port when executed directly so unit tests can require the
+// module to exercise mergeSliceResults/processTask without stealing 9000.
+if (require.main === module) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[AceCall transcription worker] started on port ${PORT}; provider=${process.env.TRANSCRIPTION_PROVIDER || 'baidu'}; autoSegment=${AUTO_SEGMENT_SECONDS}s`);
+    poll();
+    setInterval(poll, INTERVAL_MS);
+  });
+}
+
+module.exports = {
+  normalizeAudio,
+  createProvider,
+  processTask,
+  downloadParts,
+  prepareAudio,
+  mergeSliceResults,
+  probeDuration
+};
