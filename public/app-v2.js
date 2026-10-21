@@ -960,22 +960,43 @@ function renderIntelligence() {
    const companies = records.filter(item => item.name).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
    const view = app.intelligenceView || 'company';
    const query = String(app.intelligenceQuery || '').trim().toLowerCase();
-   const filteredCompanies = companies.filter(item => !query || `${item.name} ${item.summary} ${item.evidence}`.toLowerCase().includes(query));
+   const objects = view === 'company' ? companies : intelligenceDimensionRecords(view, records);
+   const filteredCompanies = objects.filter(item => !query || `${item.name} ${item.summary} ${item.evidence}`.toLowerCase().includes(query));
    const selectedKey = app.intelligenceSelected || filteredCompanies[0]?.key || '';
    const selected = filteredCompanies.find(item => item.key === selectedKey) || filteredCompanies[0];
    const themes = [...new Set(app.jobs.flatMap(job => job.keywords || []))].slice(0, 12);
    const transcriptCount = records.reduce((sum, item) => sum + item.transcripts, 0);
-   const pendingCount = companies.filter(item => (app.intelligenceReviewed[item.key] || 'pending') === 'pending').length;
+   const pendingCount = filteredCompanies.filter(item => (app.intelligenceReviewed[item.key] || 'pending') === 'pending').length;
    const companyRows = filteredCompanies.map(item => `<button class="intelligence-list-item ${selected?.key === item.key ? 'active' : ''}" type="button" data-intelligence-select="${escapeHtml(item.key)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.count} 条线索 · ${item.transcripts} 场面试</small></span><b>${escapeHtml(item.confidence)}</b></button>`).join('');
    const detail = selected ? `<div class="intelligence-detail-head"><div><span class="eyebrow">${view.toUpperCase()}</span><h2>${escapeHtml(selected.name)}</h2></div><span class="intelligence-status ${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? 'confirmed' : ''}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '已确认' : '待确认'}</span></div><p class="intelligence-summary">${escapeHtml(selected.summary || '已从面试材料中识别到该对象，业务信息待补充。')}</p><div class="intelligence-detail-grid"><div><span>线索数量</span><b>${selected.count}</b></div><div><span>关联面试</span><b>${selected.transcripts}</b></div><div><span>可信度</span><b>${escapeHtml(selected.confidence)}</b></div></div><div class="intelligence-evidence"><strong>原文证据</strong><span>${escapeHtml(selected.evidence || '暂无可展示的原文片段')}</span></div><div class="intelligence-row-actions"><button class="primary" type="button" data-intelligence-review="${escapeHtml(selected.key)}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '标记待确认' : '确认线索'}</button><button class="link-action" type="button" data-intelligence-detail="${escapeHtml(selected.key)}">查看关联面试 →</button></div>` : '<div class="empty">当前筛选条件下暂无情报。</div>';
    const tabs = [['company','公司'],['industry','行业'],['product','产品'],['business','业务'],['city','城市']];
    $('#intelligenceView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>按公司、行业、产品、业务和城市切换研究视角，所有线索保留原文依据。</p></div><div class="page-title-actions"><button class="secondary" type="button" data-refresh-intelligence>重新整理</button><button class="secondary" type="button" data-export-intelligence>导出研究草稿</button></div></div><div class="intelligence-toolbar"><input id="intelligenceSearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="搜索公司、产品或业务关键词"><select id="intelligenceSource"><option value="">全部来源</option><option>面试转写</option><option>简历</option><option>沟通总结</option></select><select id="intelligencePeriod"><option>全部时间</option><option>近 30 天</option><option>近 90 天</option></select><select id="intelligenceStatus"><option>全部状态</option><option>待确认</option><option>已确认</option></select></div><nav class="intelligence-tabs" aria-label="情报视角">${tabs.map(([key,label]) => `<button type="button" class="${view === key ? 'active' : ''}" data-intelligence-view="${key}">${label}</button>`).join('')}</nav><div class="research-banner"><div><span>待确认线索</span><strong>${pendingCount}<small> 条</small></strong></div><p>默认展示公司视角；行业、产品、业务和城市视角会基于已同步材料逐步补充。</p><span class="data-status">已关联 ${transcriptCount} 场转写</span></div><div class="metrics research-metrics"><div class="metric"><b>${companies.length}</b><span>涉及公司</span><small>去重后</small></div><div class="metric"><b>${transcriptCount}</b><span>关联面试</span><small>含转写或沟通总结</small></div><div class="metric"><b>${companies.filter(item => item.confidence === '高').length}</b><span>高可信线索</span><small>有明确原文依据</small></div><div class="metric"><b>${pendingCount}</b><span>待人工确认</span><small>不直接作为结论</small></div></div><section class="intelligence-workspace"><div class="surface intelligence-list-panel"><div class="surface-head"><div><h2>${tabs.find(item => item[0] === view)?.[1] || '公司'}列表</h2><p class="surface-subtitle">${filteredCompanies.length} 个对象</p></div></div><div class="surface-body intelligence-list">${companyRows || '<div class="empty">当前筛选条件下暂无情报。</div>'}</div></div><div class="surface intelligence-detail-panel"><div class="surface-body">${detail}</div></div></section></div>`;
    $('#intelligenceSearch')?.addEventListener('input', event => { app.intelligenceQuery = event.target.value; renderIntelligence(); });
+   $$('#intelligenceView [data-intelligence-select]').forEach(button => button.addEventListener('click', () => { app.intelligenceSelected = button.dataset.intelligenceSelect; renderIntelligence(); }));
    $$('#intelligenceView [data-intelligence-view]').forEach(button => button.addEventListener('click', () => { app.intelligenceView = button.dataset.intelligenceView; renderIntelligence(); }));
    $('#intelligenceView [data-refresh-intelligence]')?.addEventListener('click', () => { renderIntelligence(); toast('已重新整理面试与简历线索'); });
    $('#intelligenceView [data-export-intelligence]')?.addEventListener('click', () => toast('研究草稿已生成，导出功能将在确认线索后开放'));
    $$('#intelligenceView [data-intelligence-review]').forEach(button => button.addEventListener('click', () => { const key = button.dataset.intelligenceReview; app.intelligenceReviewed[key] = app.intelligenceReviewed[key] === 'confirmed' ? 'pending' : 'confirmed'; renderIntelligence(); }));
    $$('#intelligenceView [data-intelligence-detail]').forEach(button => button.addEventListener('click', () => toast('关联面试详情将在下一步展开')));
+ }
+
+ function intelligenceDimensionRecords(view, records) {
+   const terms = { industry: ['金融','互联网','企业服务','制造业','消费零售','教育','医疗','物流','游戏','新能源'], product: ['风控系统','数据服务','交易系统','招聘系统','SaaS','平台','算法','供应链','支付','CRM'], business: ['风控','衍生品','交易','招聘','销售','研发','运营','市场','客服','咨询','数据分析'], city: ['北京','上海','深圳','广州','杭州','成都','南京','武汉','苏州','香港'] }[view] || [];
+   const groups = new Map();
+   const source = [...app.cases, ...app.mokaInterviews];
+   source.forEach(item => {
+     const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}\n${item.jobName || ''} ${item.roleName || ''}`;
+     terms.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(term => {
+       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '' };
+       existing.count += 1; if (item.transcript || item.communicationSummary) existing.transcripts += 1;
+       if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.toLowerCase().includes(term.toLowerCase())) || '';
+       existing.summary = view === 'industry' ? `${term}相关业务线索` : view === 'product' ? `${term}相关产品线索` : view === 'business' ? `${term}相关业务活动` : `${term}相关地点线索`;
+       existing.confidence = existing.evidence.length > 15 ? '高' : '中';
+       existing.latest = item.interviewAt || item.startedAt || item.updatedAt || item.createdAt || existing.latest;
+       groups.set(key, existing);
+     });
+   });
+   return [...groups.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
  }
 
  function intelligenceRecords() {
