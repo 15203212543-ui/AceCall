@@ -185,6 +185,25 @@ WHISPER_API_URL=http://127.0.0.1:9001/v1/audio/transcriptions \
 成员 / 工作区更新、Moka 岗位同步，以及 **worker 的 `claimTask` / `updateTask`**。
 最后两处意味着即使分片上传成功，转写状态也永远写不回数据库。
 
+### 所有接口一起 404「Not found」
+
+**先检查 `public/config.js` 的 `apiBaseUrl` 用的是哪条路由。**
+
+同一个环境里有两个 HTTP 函数，代码完全相同（`cloudbaserc.json` 里 `dir` 都指向
+`acecall-api`），但**网关的路由配置不一样**：
+
+| 路由 | 行为 |
+|---|---|
+| `.../acecall-api-v2` | 透传子路径，`/api/state` 能正确到达函数 ✅ |
+| `.../acecall-api` | **不透传子路径**，函数收到的路径是 `/`，所有接口一律 404 ❌ |
+
+判断方法：如果响应体是函数自己的 `{"error":"Not found","route":"unmatched"}`，
+说明请求到了函数、只是路径没匹配（而非网关 404）。此时看响应里的 `path` 字段，
+若是 `/` 就证实了网关没透传。
+
+修复只需把 `apiBaseUrl` 指回 `acecall-api-v2`。**注意这只影响路由，与部署代码无关**，
+重新部署 `acecall-api` 也改变不了这个行为。
+
 修复方式是统一用 `persistable()` 剥掉 `_id` / `_openid`，并加了静态检查防止回退。
 部署后如果仍报 500，把响应里的 `code` 字段发出来——现在错误提示和云函数日志都会带上它。
 
