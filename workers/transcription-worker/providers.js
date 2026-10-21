@@ -28,7 +28,7 @@ async function getBaiduToken() {
 }
 
 class BaiduProvider {
-  constructor() { this.name = 'baidu'; }
+  constructor() { this.name = 'baidu'; this.requiresNormalizedWav = true; }
 
   async transcribe({ audioUrl, fileName }) {
     if (!audioUrl) throw providerError('百度长音频识别需要可访问的音频 URL', 422);
@@ -64,25 +64,85 @@ class BaiduProvider {
   }
 }
 
+/**
+ * OpenAI-compatible ASR endpoint. Runs against a self-hosted faster-whisper
+ * gateway (workers/faster-whisper-service) or any service that speaks
+ * /v1/audio/transcriptions.
+ *
+ * Prefers `audio_url` over a raw body: Cloud Run caps request payloads at
+ * ~32 MB while long recordings are far larger, so the gateway downloads from
+ * the time-limited CloudBase URL instead.
+ */
 class WhisperProvider {
-  constructor() { this.name = 'whisper'; }
+  constructor() {
+    this.name = 'whisper';
+    this.requiresNormalizedWav = false;
+  }
 
-  async transcribe({ audioBuffer, fileName, mimeType }) {
+  async transcribe({ audioUrl, audioBuffer, fileName, mimeType, language, prompt }) {
     const endpoint = process.env.WHISPER_API_URL;
     if (!endpoint) throw providerError('Whisper 服务未配置 WHISPER_API_URL', 503);
+    const uploadMode = String(process.env.WHISPER_UPLOAD_MODE || 'auto').toLowerCase();
+    const useUrl = Boolean(audioUrl) && uploadMode !== 'file';
     const form = new FormData();
-    form.append('file', new Blob([audioBuffer], { type: mimeType || 'audio/wav' }), fileName || 'recording.wav');
+    if (useUrl) {
+      form.append('audio_url', audioUrl);
+    } else if (audioBuffer?.length) {
+      form.append('file', new Blob([audioBuffer], { type: mimeType || 'audio/wav' }), fileName || 'recording.wav');
+    } else {
+      throw providerError('Whisper 需要可访问的音频 URL 或音频内容', 422);
+    }
     form.append('model', process.env.WHISPER_MODEL || 'whisper-1');
+    const targetLanguage = String(language || process.env.WHISPER_LANGUAGE || '').trim();
+    if (targetLanguage) form.append('language', targetLanguage);
+    const promptText = String(prompt || process.env.ACECALL_ASR_HOTWORDS || '').trim();
+    if (promptText) form.append('prompt', promptText);
+    const wantSegments = process.env.WHISPER_RETURN_SEGMENTS !== '0';
+    form.append('response_format', wantSegments ? 'verbose_json' : 'json');
+
     const headers = process.env.WHISPER_API_KEY ? { Authorization: `Bearer ${process.env.WHISPER_API_KEY}` } : {};
-    const body = await jsonResponse(await fetch(assertUrl(endpoint, 'WHISPER_API_URL'), { method: 'POST', headers, body: form }), 'Whisper');
+    const timeoutMs = Number(process.env.WHISPER_TIMEOUT_MS || 45 * 60 * 1000);
+    let response;
+    try {
+      response = await fetch(assertUrl(endpoint, 'WHISPER_API_URL'), {
+        method: 'POST',
+        headers,
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+    } catch (error) {
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        throw providerError(`Whisper 转写超时（${Math.round(timeoutMs / 60000)} 分钟）`, 504);
+      }
+      throw providerError(`Whisper 请求失败：${error.message}`, 502);
+    }
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      // The gateway returns a readable Chinese detail for decode/auth failures.
+      throw providerError(`Whisper 转写失败（${response.status}）${body.detail ? `：${body.detail}` : ''}`, 422);
+    }
     const text = body.text || body.result?.text || body.transcript || '';
     if (!String(text).trim()) throw providerError('Whisper 未返回有效文字', 422);
-    return { text: String(text).trim(), provider: this.name, providerTaskId: body.id || '' };
+    return {
+      text: String(text).trim(),
+      provider: this.name,
+      providerTaskId: body.id || '',
+      language: body.language || '',
+      duration: Number(body.duration || 0),
+      segments: Array.isArray(body.segments)
+        ? body.segments.map(item => ({
+          start: Number(item.start || 0),
+          end: Number(item.end || 0),
+          text: String(item.text || '').trim(),
+          speaker: item.speaker || ''
+        })).filter(item => item.text)
+        : []
+    };
   }
 }
 
 class FunASRProvider {
-  constructor() { this.name = 'funasr'; }
+  constructor() { this.name = 'funasr'; this.requiresNormalizedWav = false; }
 
   async transcribe({ audioUrl, audioBuffer, fileName, mimeType }) {
     const endpoint = process.env.FUNASR_API_URL;

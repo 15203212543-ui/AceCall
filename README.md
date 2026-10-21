@@ -47,6 +47,14 @@ CloudBase 环境 ID 不可修改；环境别名可以修改，但当前环境仍
 
 worker 已完成代码和本地测试，但要在云端实际运行，还需要单独部署 CloudRun/容器并配置 `TCB_ENV`、`CLOUDBASE_APIKEY`、`TRANSCRIPTION_PROVIDER` 以及所选引擎的服务密钥。密钥只配置在 CloudRun 环境变量中，不进入前端或 GitHub。
 
+长录音有两个硬约束，实现上已分别处理：Cloud Run 的 HTTP 请求体上限约 32MB，而两小时 16 kHz 单声道 PCM 约 230MB，因此 Whisper 路径改为把 CloudBase 临时链接（`audio_url`）交给转写服务自行下载；CloudBase `uploadFile` 只接受 `Buffer`，因此超过 `TRANSCRIPTION_AUTO_SEGMENT_SECONDS`（默认 900 秒）的录音会由 ffmpeg 切段后逐段转写，合并时按 `index × segmentSeconds` 偏移时间戳，`result.segments` 始终是全局单调时间轴。分片下载已改为流式落盘，不再把整段录音堆在内存里。
+
+### 自建 faster-whisper 转写服务
+
+`workers/faster-whisper-service` 是一个 Python/FastAPI 服务，把 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) 包装成 OpenAI 兼容的 `/v1/audio/transcriptions` 接口。它与原版 `openai/whisper` 使用同一套模型权重，但基于 CTranslate2 重写推理，约为原版 4 倍速、支持 int8 量化、内置 Silero VAD，并且从文件路径流式解码，适合长录音。
+
+启用方式：部署该服务后，把 worker 的 `TRANSCRIPTION_PROVIDER` 设为 `whisper`、`WHISPER_API_URL` 指向该服务的 `/v1/audio/transcriptions`。`ACECALL_ASR_HOTWORDS` 用于注入券商术语（CCASS、清结算、场外期权等），降低 Whisper 在同音词上的误写。也可以用 `ASR_BACKEND=fake` 在不下载模型的情况下先验证链路。详见该目录的 README，其中也说明了尚不支持说话人分离带来的限制。
+
 ## 第一阶段页面
 
 - **工作台**：展示待电话、待确认、补充沟通和已推荐候选人。
