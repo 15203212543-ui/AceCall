@@ -1120,10 +1120,14 @@ function renderIntelligence() {
    const end = lines.findIndex((line, index) => index > start && /^(?:教育经历|教育背景|项目经历|专业技能|自我评价|证书|荣誉)/i.test(line.replace(/[：: ].*$/, '')));
    const section = lines.slice(start + 1, end > start ? end : Math.min(lines.length, start + 40));
    const result = [];
-   section.forEach(line => {
-     const match = line.match(/([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)|[\u4e00-\u9fffA-Za-z0-9（）()·&.]{2,36}(?:有限公司|股份有限公司|集团|科技|证券|银行|基金|保险|资本|传媒|教育|医疗|软件))/i);
-     const value = normalizeCompanyName(match?.[1] || '');
-     if (value && isReliableCompanyName(value) && !result.includes(value)) result.push(value);
+   const datePattern = /(?:19|20)\d{2}[./年-]\s*\d{1,2}\s*(?:月)?\s*(?:[-至到]|年)?\s*(?:(?:19|20)\d{2}[./年-]\s*\d{1,2}\s*(?:月)?|至今|现在)?/i;
+   section.forEach((line, index) => {
+     const date = line.match(datePattern);
+     if (!date) return;
+     const left = line.slice(0, date.index).replace(/[|｜·•,，、:：]+$/g, '').trim();
+     const previous = index > 0 ? section[index - 1].replace(datePattern, '').trim() : '';
+     const candidate = normalizeCompanyName(left || previous);
+     if (candidate && isReliableCompanyName(candidate) && !result.includes(candidate)) result.push(candidate);
    });
    return result.slice(0, 8);
  }
