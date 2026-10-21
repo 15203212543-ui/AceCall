@@ -156,7 +156,8 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/generate') {
       const payload = await readJson(request);
       validatePayload(payload);
-      const result = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
+      const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
+      const result = payload.action === 'review-interviewer' ? normalizeInterviewerReview(generated) : generated;
       return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
@@ -1638,14 +1639,40 @@ function chooseCandidateName(...values) {
 }
 
 function validatePayload(payload) {
-  if (!['prepare', 'summarize', 'synthesize', 'match'].includes(payload.action)) throw serviceError('未知工作流步骤', 400);
+  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer'].includes(payload.action)) throw serviceError('未知工作流步骤', 400);
   if (payload.action === 'match' && (!payload.resume?.trim() || !Array.isArray(payload.jobs))) throw serviceError('请提供简历和岗位列表', 400);
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) throw serviceError('请填写 JD 和候选人简历', 400);
   if (payload.action === 'summarize' && !payload.transcript?.trim()) throw serviceError('请填写电话转写内容', 400);
   if (payload.action === 'synthesize' && (!payload.preparation || !payload.communicationSummary)) throw serviceError('请先生成初筛方案和沟通总结', 400);
+  if (payload.action === 'review-interviewer' && !compactInterviewerReview(payload).sessions.length) throw serviceError('没有可分析的面试转写', 400);
+}
+
+function compactInterviewerReview(payload = {}) {
+  const sessions = (Array.isArray(payload.sessions) ? payload.sessions : []).slice(0, 6).map(item => ({
+    candidateName: String(item.candidateName || '').slice(0, 40),
+    jobName: String(item.jobName || '').slice(0, 80),
+    interviewer: String(item.interviewer || payload.interviewer || '').slice(0, 40),
+    round: String(item.round || '').slice(0, 40),
+    startedAt: String(item.startedAt || '').slice(0, 40),
+    text: String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
+  })).filter(item => item.text.length >= 40);
+  return { interviewer: String(payload.interviewer || sessions[0]?.interviewer || '').slice(0, 40), job: String(payload.job || '').slice(0, 80), round: String(payload.round || '').slice(0, 40), sessions };
+}
+
+function normalizeInterviewerReview(value = {}) {
+  const themes = (Array.isArray(value.themes) ? value.themes : []).slice(0, 6).map(item => (typeof item === 'string' ? { name: item.slice(0, 40), detail: '' } : { name: String(item.name || '').slice(0, 40), detail: String(item.detail || item.evidence || '').slice(0, 240) })).filter(item => item.name || item.detail);
+  const questions = (Array.isArray(value.questions) ? value.questions : []).map(item => String(typeof item === 'string' ? item : item.question || '').trim().slice(0, 120)).filter(Boolean).slice(0, 6);
+  const sessions = (Array.isArray(value.sessions) ? value.sessions : []).slice(0, 6).map(item => ({ candidateName: String(item.candidateName || '').slice(0, 40), jobName: String(item.jobName || '').slice(0, 80), focus: String(item.focus || '').slice(0, 80), summary: String(item.summary || '').slice(0, 240) })).filter(item => item.summary || item.focus);
+  return { summary: String(value.summary || '').slice(0, 400), themes, questions, followUpStyle: String(value.followUpStyle || '').slice(0, 300), sessions };
 }
 
 function buildModelPrompt(payload) {
+  if (payload.action === 'review-interviewer') {
+    return {
+      instructions: '你是招聘面试质量分析助手。根据面试转写，总结面试官的提问重点、追问方式和判断偏好。只依据转写里的原话，不编造没有出现的问题，不判断候选人是否录用，不推断性别、年龄、婚育、籍贯。输出严格 JSON，不含 Markdown。summary 为 80 到 180 字，概括提问偏好。themes 为 3 到 6 项，每项含 name、detail，detail 用一句话说明他如何追问。questions 为 3 到 6 条字符串，改写自转写中的真实问题并保留原意。followUpStyle 为 60 到 120 字，说明追问是顺着回答展开还是按清单提问。sessions 与输入场次一一对应，每项含 candidateName、jobName、focus、summary，summary 为 60 到 120 字，写这场问了什么、答到什么程度，不粘贴原文。',
+      input: JSON.stringify(compactInterviewerReview(payload))
+    };
+  }
   const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : payload.action === 'synthesize' ? synthesisSchema() : matchSchema();
   return {
     instructions: `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`,
@@ -1684,7 +1711,21 @@ function generateDemo(payload) {
   if (payload.action === 'match') return generateDemoMatch(payload);
   if (payload.action === 'prepare') return { summary: { headline: `${payload.candidateName || '候选人'}正在评估${payload.roleName || '目标岗位'}`, experience: '演示模式不进行事实推断', relevantBackground: '请配置DeepSeek密钥启用语义分析', openFacts: '职责、项目结果和基本条件待确认' }, matches: [], risks: [{ risk: '当前为演示模式', evidence: '未配置DeepSeek密钥', impact: '结果不能用于招聘判断' }], verification: [], questions: defaultQuestions() };
   if (payload.action === 'summarize') return { overview: '演示模式仅保存电话文本。', confirmed: [], contradicted: [], missing: [], questionCoverage: { covered: 0, total: payload.preparation?.questions?.length || 0, unanswered: [] }, keyFacts: {}, candidateSignals: [], followUps: [] };
+  if (payload.action === 'review-interviewer') return demoInterviewerReview(payload);
   return { basicInfo: {}, capabilities: [], evidence: [], conflicts: [], risks: ['当前为演示模式'], conclusion: '信息不足', conclusionReason: '未启用AI服务。', recommendationReason: '请启用AI服务后，根据已核实的简历与沟通事实补充推荐理由。', nextStep: '补充电话沟通', followUps: [] };
+}
+
+function demoInterviewerReview(payload) {
+  const compact = compactInterviewerReview(payload);
+  const interviewer = compact.interviewer || '面试官';
+  const questions = compact.sessions.flatMap(item => String(item.text).split(/[。！\n]/).map(line => line.trim()).filter(line => /[？?]$/.test(line))).slice(0, 6);
+  return {
+    summary: `${interviewer}当前有 ${compact.sessions.length} 场转写可分析。提问集中在职责边界、项目结果和事实核验。`,
+    themes: [{ name: '职责与结果', detail: '先确认个人负责范围，再追问结果如何衡量。' }],
+    questions: questions.length ? questions : ['请说明个人负责范围和项目结果。'],
+    followUpStyle: '未启用 AI 时只按问句摘取。启用后会根据回答内容总结追问方式。',
+    sessions: compact.sessions.map(item => ({ candidateName: item.candidateName, jobName: item.jobName, focus: '职责与结果', summary: `${item.candidateName || '这场面试'}的转写已纳入分析，提问集中在职责边界和结果核实。` }))
+  };
 }
 function generateDemoMatch(payload) {
   const ranked = payload.jobs.map(job => { const terms = findSharedTerms(`${job.name} ${job.jd}`, payload.resume, job.keywords); const score = Math.min(99, Math.round((terms.length / Math.max((job.keywords || []).length, 4)) * 70 + (payload.resume.includes(job.industry || '') ? 15 : 0) + (terms.length ? 10 : 0))); return { job, score, terms }; }).sort((a, b) => b.score - a.score);
@@ -1713,4 +1754,4 @@ function sendJson(response, statusCode, body) {
 
 if (require.main === module) server.listen(PORT, '0.0.0.0', () => console.log(`AceCall API listening on ${PORT}`));
 
-module.exports = { server, validatePayload, deriveStatus, cleanDocument, sanitizeJson };
+module.exports = { server, validatePayload, deriveStatus, cleanDocument, sanitizeJson, normalizeInterviewerReview, generateDemo };

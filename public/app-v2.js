@@ -933,23 +933,70 @@ function renderInterviewers() {
   root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary(); await loadTranscriptImports(); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
+function interviewerInsightSessions() {
+  const filters = app.interviewerFilters || {};
+  const captured = transcriptCaptureEntries(filters).slice(0, 6).map(item => ({
+    candidateName: item.candidateName || '',
+    jobName: item.jobName || '',
+    interviewer: item.interviewer || '',
+    round: item.round || '',
+    startedAt: item.startedAt || '',
+    text: String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
+  })).filter(item => item.text.length >= 40);
+  if (captured.length) return captured;
+  return interviewerRecords(filters).filter(item => String(item.transcript || '').trim().length >= 40).slice(0, 6).map(item => ({
+    candidateName: item.candidateName || '',
+    jobName: item.jobName || '',
+    interviewer: item.interviewer || '',
+    round: item.round || '',
+    startedAt: item.startedAt || '',
+    text: String(item.transcript || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
+  }));
+}
+function interviewerInsightKey(sessions) {
+  const filters = app.interviewerFilters || {};
+  return JSON.stringify({ interviewer: filters.interviewer || '', job: filters.job || '', round: filters.round || '', period: filters.period || '', sessions: sessions.map(item => [item.candidateName, item.jobName, item.interviewer, item.startedAt, item.text.length, item.text.slice(0, 24)]) });
+}
+function interviewerInsightHtml(result = {}) {
+  const questions = (result.questions || []).map(item => escapeHtml(item)).filter(Boolean);
+  const themes = (result.themes || []).map(item => `<p><b>${escapeHtml(item.name || '主题')}：</b>${escapeHtml(item.detail || '')}</p>`).join('');
+  const sessions = (result.sessions || []).map(item => `<p><b>${escapeHtml([item.candidateName || '候选人', item.jobName || '岗位'].filter(Boolean).join(' · '))}：</b>${escapeHtml(item.focus ? `${item.focus}。` : '')}${escapeHtml(item.summary || '')}</p>`).join('');
+  if (!result.summary && !questions.length && !themes && !sessions) return '<p>这次没有形成可展示的分析。</p>';
+  return `<p><b>提问偏好：</b>${escapeHtml(result.summary || '暂无总结')}</p><p><b>高频问题：</b>${questions.join(' · ') || '转写里没有形成稳定的问题清单。'}</p>${themes}<p><b>追问方式：</b>${escapeHtml(result.followUpStyle || '暂无')}</p>${sessions}`;
+}
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
   const selected = app.interviewerFilters?.interviewer || '';
-  const records = interviewerRecords({ ...app.interviewerFilters, interviewer: selected });
+  const filters = app.interviewerFilters || {};
+  const records = interviewerRecords({ ...filters, interviewer: selected });
   const transcripts = records.map(item => String(item.transcript || '')).filter(Boolean);
   const questionLines = transcripts.flatMap(text => text.split(/\n+/).map(line => line.trim()).filter(line => /[？?]$/.test(line) && line.length >= 6));
-  const questionTopics = ['项目结果', '个人职责', '业务规模', '离职动机', '团队协作', '风险核验'].map(topic => ({ topic, count: transcripts.filter(text => new RegExp(topic.replace('风险核验', '风险|核实')).test(text)).length })).filter(item => item.count).sort((a, b) => b.count - a.count);
   const followUpCount = transcripts.reduce((sum, text) => sum + (text.match(/为什么|如何|具体|负责|结果|核实|确认|追问/g) || []).length, 0);
   const coverage = transcripts.length ? Math.min(100, Math.round(questionLines.length / transcripts.length * 12)) : 0;
   const completeness = records.length ? Math.round(records.filter(item => item.outcome || item.interviewPassed || item.hired).length / records.length * 100) : 0;
   const depth = transcripts.length ? Math.min(100, Math.round(followUpCount / transcripts.length * 8)) : 0;
-  const transcriptBriefs = transcriptCaptureEntries(app.interviewerFilters || {}).slice(0, 5).map(item => `<p><b>转写输出：</b>${item.matched ? '已匹配' : '未匹配'} · ${escapeHtml(item.fileName)} · ${escapeHtml(item.candidateName || '未识别候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(item.text.replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('') || records.filter(item => item.transcript).slice(0, 5).map(item => `<p><b>转写输出：</b>${escapeHtml(item.candidateName || '未命名候选人')} · ${escapeHtml(item.jobName || '未识别岗位')} · ${escapeHtml(item.interviewer || '未识别面试官')} · ${escapeHtml(formatDate(item.startedAt))}<br>${escapeHtml(String(item.transcript).replace(/\s+/g, ' ').slice(0, 240))}</p>`).join('');
+  const sessions = interviewerInsightSessions();
+  const insightKey = interviewerInsightKey(sessions);
+  const cached = app.interviewerInsight?.key === insightKey ? app.interviewerInsight.result : null;
+  const insightHtml = cached ? interviewerInsightHtml(cached) : (sessions.length ? '<p>正在根据当前筛选的转写分析提问偏好…</p>' : '<p>当前筛选下还没有可分析的转写。</p>');
   const score = records.length ? Math.round(coverage * .35 + depth * .35 + completeness * .3) : 0;
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
-  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">第二阶段：从当前面试官的真实转写中提取问题主题和追问方式</p></div><span>${transcripts.length} 份转写</span></div><div class="surface-body recommendation-list"><p><b>高频问题：</b>${questionLines.slice(0, 5).map(item => escapeHtml(item)).join(' · ') || '暂无可识别的问题句。'}</p><p><b>关注主题：</b>${questionTopics.map(item => `${escapeHtml(item.topic)}（${item.count}）`).join(' · ') || '等待 Moka 转写数据。'}</p><p><b>追问信号：</b>${followUpCount ? `${followUpCount} 个，主要用于判断项目结果、职责边界和风险信息。` : '暂无追问信号。'}</p>${transcriptBriefs || '<p><b>转写输出：</b>助手抓到转写并匹配到面试官、岗位和面试时间后，会在这里显示对应场次和内容摘要。</p>'}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${score || '—'}${score ? '/100' : ''}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverage || '—'}</b></div><div><span>追问深度</span><b>${depth || '—'}</b></div><div><span>结论完整</span><b>${completeness || '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">第四阶段：以面试官为主语比较工作量和结果，不做岗位招聘总览</p></div><span>${comparison.length} 位面试官</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${comparison.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count ? `${row.passRate}%` : '—'}</td><td>${row.hired}</td><td>${selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div></section>`;
+  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">按上方筛选，用 AI 总结面试官的提问重点和追问方式</p></div><span>${sessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${score || '—'}${score ? '/100' : ''}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverage || '—'}</b></div><div><span>追问深度</span><b>${depth || '—'}</b></div><div><span>结论完整</span><b>${completeness || '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">第四阶段：以面试官为主语比较工作量和结果，不做岗位招聘总览</p></div><span>${comparison.length} 位面试官</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${comparison.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count ? `${row.passRate}%` : '—'}</td><td>${row.hired}</td><td>${selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div></section>`;
   page.append(section);
+  if (!cached && sessions.length && app.interviewerInsightLoading !== insightKey) {
+    app.interviewerInsightLoading = insightKey;
+    generate({ action: 'review-interviewer', interviewer: selected, job: filters.job || '', round: filters.round || '', sessions }).then(result => {
+      if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
+      app.interviewerInsight = { key: insightKey, result };
+      const box = document.querySelector('[data-interviewer-insight]');
+      if (box) box.innerHTML = interviewerInsightHtml(result);
+    }).catch(error => {
+      if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
+      const box = document.querySelector('[data-interviewer-insight]');
+      if (box) box.innerHTML = `<p>分析没有完成：${escapeHtml(error.message || 'AI 服务暂时不可用')}</p>`;
+    }).finally(() => { if (app.interviewerInsightLoading === insightKey) app.interviewerInsightLoading = ''; });
+  }
 }
 
 function renderScreeningRules() {
@@ -1890,6 +1937,11 @@ async function resolveResumePreview(item) {
 
 function localGenerate(payload) {
   if (payload.action === 'match') return localMatch(payload);
+  if (payload.action === 'review-interviewer') {
+    const sessions = (payload.sessions || []).filter(item => String(item.text || '').trim().length >= 40).slice(0, 6);
+    const interviewer = payload.interviewer || sessions[0]?.interviewer || '面试官';
+    return { summary: `${interviewer}当前有 ${sessions.length} 场转写。本地演示只保留结构，在线环境会由 AI 总结提问偏好。`, themes: [{ name: '职责与结果', detail: '关注个人负责范围和结果如何衡量。' }], questions: ['请说明个人负责范围和项目结果。'], followUpStyle: '本地演示不调用 AI。', sessions: sessions.map(item => ({ candidateName: item.candidateName, jobName: item.jobName, focus: '职责与结果', summary: '这场转写已纳入当前筛选，在线环境会生成这场的提问摘要。' })) };
+  }
   if (payload.action === 'prepare') { const terms = [...new Set([...(payload.keywords || []),'证券','交易','产品','研发','风险','管理'])].filter(term => payload.resume.includes(term)); return { summary:{ headline:`${payload.candidateName}具备与${payload.roleName}相关的经历，核心职责和项目结果需要电话核实。`,experience:'简历信息已完成结构化，具体年限以原始简历为准。',relevantBackground:terms.length ? `相关关键词：${terms.join('、')}` : '相关经验需要电话补充。' }, matches:(terms.length?terms:['相关经验']).map(term=>({requirement:term,evidence:`简历提及“${term}”`,confidence:'中'})), risks:[{risk:'个人职责边界待确认',evidence:'简历描述无法区分参与和主导'},{risk:'项目结果待量化',evidence:'缺少上线效果或业务指标'}], questions:defaultQuestions() }; }
   if (payload.action === 'summarize') { const lines=payload.transcript.split(/[。！？\n]/).map(v=>v.trim()).filter(v=>v.length>8); return { overview:`已识别${lines.length}条候选人陈述。`,confirmed:lines.slice(0,4).map(v=>({item:'候选人陈述',evidence:v})),missing:[{item:'量化业务结果',evidence:'未识别到明确数据'}],contradicted:[],keyFacts:{location:readField(payload.transcript,'地点'),expectedSalary:readField(payload.transcript,'期望薪资'),availability:readField(payload.transcript,'到岗'),nonCompete:readField(payload.transcript,'竞业')},followUps:['补充项目结果和个人职责边界'] }; }
   return { basicInfo:payload.communicationSummary.keyFacts || {}, capabilities:(payload.preparation.matches || []).map(point=>({item:point.requirement,evidence:point.evidence,assessment:'部分匹配'})), risks:(payload.communicationSummary.missing || []).map(point=>point.item), conclusion:'部分匹配', conclusionReason:'候选人具备相关经历，但项目结果与职责边界仍需业务面试进一步验证。', recommendationReason:'候选人具备岗位相关经历，且沟通中体现出一定匹配基础；但项目结果和职责边界仍需业务面试进一步确认。', nextStep:'推荐业务面试', followUps:payload.communicationSummary.followUps || [] };

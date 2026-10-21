@@ -45,6 +45,11 @@ test('communication summary requires transcript', () => {
 
 test('synthesis requires preparation and communication summary', () => {
   assert.throws(() => validatePayload({ action: 'synthesize', preparation: {} }), /初筛方案和沟通总结/);
+  assert.throws(() => validatePayload({ action: 'review-interviewer', sessions: [{ text: '太短' }] }), /面试转写/);
+  const review = generateDemo({ action: 'review-interviewer', interviewer: '胡亚辉', sessions: [{ candidateName: '黄元', jobName: '券商服务端开发工程师（长沙）', interviewer: '胡亚辉', text: '胡亚辉：你在上一家具体负责哪一块？黄元：我负责交易链路。胡亚辉：结果怎么衡量？黄元：看成交稳定性。' }] });
+  assert.match(review.summary, /胡亚辉/);
+  assert.equal(review.sessions[0].candidateName, '黄元');
+  assert.ok(review.questions.length);
 });
 
 test('normalizes and parses resume basics', () => {
