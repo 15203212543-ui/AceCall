@@ -53,6 +53,20 @@ test('normalizes and parses resume basics', () => {
   assert.deepEqual(parseResumeBasics(text), { candidateName: '张三', phone: '13800138000', email: 'zhang@example.com', age: '', experienceYears: '8', education: '本科' });
 });
 
+test('keeps a repeated interview date while cleaning resume text', () => {
+  const text = normalizeResumeText([
+    '2026-10-20 14:59:15 会议已开启实时转写，机器识别结果仅供参考',
+    '谭理 2026-10-20 15:30:11',
+    '你好',
+    '谭理 2026-10-20 15:30:31',
+    '开始',
+    '谢晓东 2026-10-20 15:31:00',
+    '介绍'
+  ].join('\n'));
+  assert.match(text, /2026-10-20 14:59:15/);
+  assert.match(text, /谭理 2026-10-20 15:30:11/);
+});
+
 test('cleans repeated PDF watermark noise and extracts labeled identity fields', () => {
   const text = normalizeResumeText('姓名：李四\n年龄：29岁\n电话：138-0013-8000\n邮箱：li@example.com。\n水印 AceCall\n水印 AceCall\n水印 AceCall');
   assert.equal(text.includes('水印 AceCall'), false);

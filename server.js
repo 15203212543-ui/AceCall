@@ -134,6 +134,7 @@ function normalizeResumeText(text = '') {
 function isResumeNoiseLine(line = '') {
   const value = String(line).trim();
   if (!value || value.length > 100) return false;
+  if (/20\d{2}-\d{1,2}-\d{1,2}/.test(value) && /\d{1,2}:\d{2}/.test(value)) return false;
   if (/(水印|仅供|内部资料|机密|严禁|勿传|招聘平台|简历编号|候选人编号)[^\n]{0,30}[A-Za-z0-9_-]{2,}/i.test(value)) return true;
   if (/1[3-9]\d{9}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|[\u4e00-\u9fff]{2,}/.test(value)) return false;
   if (/^(?:第\s*)?\d{1,3}(?:\s*[|/\\-]\s*\d{1,3})?[.]?$/.test(value)) return true;
@@ -147,9 +148,11 @@ function isResumeNoiseLine(line = '') {
 
 function removeRepeatedWatermarkFragments(lines = []) {
   const tokenCounts = new Map();
-  lines.forEach(line => { const tokens = line.match(/(?<![\u4e00-\u9fff])[A-Za-z0-9][A-Za-z0-9._-]{3,}(?![\u4e00-\u9fff])/g) || []; [...new Set(tokens)].forEach(token => tokenCounts.set(token.toLowerCase(), (tokenCounts.get(token.toLowerCase()) || 0) + 1)); });
+  const tokensIn = line => line.match(/(?<![\u4e00-\u9fff])[A-Za-z0-9][A-Za-z0-9._-]{3,}(?![\u4e00-\u9fff])/g) || [];
+  const isCalendarDate = token => /^20\d{2}-\d{1,2}-\d{1,2}$/.test(token);
+  lines.forEach(line => { [...new Set(tokensIn(line))].forEach(token => { if (isCalendarDate(token)) return; tokenCounts.set(token.toLowerCase(), (tokenCounts.get(token.toLowerCase()) || 0) + 1); }); });
   const watermarkTokens = new Set([...tokenCounts.entries()].filter(([token, count]) => count >= 3 && /\d|[A-F]{4,}/i.test(token) && !/@/.test(token)).map(([token]) => token));
-  return lines.map(line => line.replace(/(?<![\u4e00-\u9fff])[A-Za-z0-9][A-Za-z0-9._-]{3,}(?![\u4e00-\u9fff])/g, token => watermarkTokens.has(token.toLowerCase()) ? '' : token).replace(/[ \t]{2,}/g, ' ').trim()).filter(Boolean);
+  return lines.map(line => line.replace(/(?<![\u4e00-\u9fff])[A-Za-z0-9][A-Za-z0-9._-]{3,}(?![\u4e00-\u9fff])/g, token => isCalendarDate(token) || !watermarkTokens.has(token.toLowerCase()) ? token : '').replace(/[ \t]{2,}/g, ' ').trim()).filter(Boolean);
 }
 
 function parseResumeBasics(text = '') {

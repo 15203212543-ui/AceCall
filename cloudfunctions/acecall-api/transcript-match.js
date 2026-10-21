@@ -91,6 +91,12 @@ function interviewerFromTurns(turns = [], candidateName = '', hrName = '') {
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'zh'))[0]?.[0] || '';
 }
 
+function openingInterviewTime(text = '') {
+  const match = String(text || '').match(/(?:^|\n)\s*(20\d{2})-(\d{1,2})-(\d{1,2})[ \t]+(\d{1,2}):(\d{2}):(\d{2})/);
+  if (!match) return '';
+  return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}T${match[4].padStart(2, '0')}:${match[5]}:${match[6]}+08:00`;
+}
+
 function interviewTimeFromTurns(turns = [], interviewer = '') {
   const own = interviewer ? turns.filter(turn => turn.speaker === interviewer && turn.date) : [];
   const chosen = own[0] || turns.find(turn => turn.date);
@@ -143,7 +149,7 @@ function extractTranscriptContext(fileName = '', text = '', options = {}) {
   const candidateName = structured?.candidateName || candidateFromFileName(fileName, jobName);
   const turns = speakerTurns(body);
   const interviewer = interviewerFromTurns(turns, candidateName, structured?.hrName || '') || labeledInterviewer(body) || libraryInterviewer(body, options.interviewerNames || []);
-  const interviewAt = interviewTimeFromTurns(turns, interviewer) || dateTimeAfter(body, interviewer) || dateTimeAfter(body, candidateName);
+  const interviewAt = interviewTimeFromTurns(turns, interviewer) || openingInterviewTime(body) || dateTimeAfter(body, interviewer) || dateTimeAfter(body, candidateName);
   return { candidateName, interviewer, jobName, interviewAt, hrName: structured?.hrName || '' };
 }
 
