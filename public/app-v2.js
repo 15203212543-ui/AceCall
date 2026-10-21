@@ -797,10 +797,23 @@ function attachTranscriptImports(interviews, imports) {
 function syncInterviewTranscripts() {
   app.mokaInterviews = attachTranscriptImports(app.mokaInterviews, app.transcriptImports);
 }
-function transcriptCaptureEntries(filters = {}) {
-  const interviews = app.mokaInterviews.filter(item => item.source !== 'acecall-local');
+function sameInterviewJob(left, right) {
+  const a = String(left || '').replace(/\s+/g, '');
+  const b = String(right || '').replace(/\s+/g, '');
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+function captureMatchesFilters(item, filters = {}) {
   const days = Number(filters.period || 0);
   const cutoff = days ? Date.now() - days * 86400000 : 0;
+  const date = Date.parse(item.startedAt || '') || 0;
+  const interviewerOk = !filters.interviewer || sameInterviewPerson(item.interviewer, filters.interviewer);
+  const jobOk = !filters.job || sameInterviewJob(item.jobName, filters.job);
+  const roundOk = !filters.round || item.round === filters.round;
+  const timeOk = !cutoff || date >= cutoff;
+  return interviewerOk && jobOk && roundOk && timeOk;
+}
+function transcriptCaptureEntries(filters = {}) {
+  const interviews = app.mokaInterviews.filter(item => item.source !== 'acecall-local');
   return (app.transcriptImports || []).map(task => {
     const text = String(task.result?.text || '').trim();
     const hint = task.metadata || {};
@@ -818,11 +831,7 @@ function transcriptCaptureEntries(filters = {}) {
       text,
       matched: Boolean(match)
     };
-  }).filter(item => {
-    if (!item.text) return false;
-    const date = Date.parse(item.startedAt || '') || 0;
-    return (!filters.interviewer || item.interviewer === filters.interviewer) && (!filters.job || item.jobName === filters.job) && (!filters.round || item.round === filters.round) && (!cutoff || date >= cutoff);
-  }).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
+  }).filter(item => item.text && captureMatchesFilters(item, filters)).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
 }
 function interviewResultLabel(item = {}) {
   const schedule = String(item.scheduleStatus || '');
@@ -844,13 +853,15 @@ function renderInterviewers() {
   const root = $('#interviewersView'); if (!root) return;
   const stored = app.interviewerFilters || {};
   const sourceRecords = [...app.mokaInterviews, ...app.cases.map(item => ({ interviewer: interviewerNameOf(item) }))].filter(item => item.interviewer);
-  const interviewers = [...new Set(sourceRecords.map(item => item.interviewer).filter(Boolean))];
+  const capturePool = transcriptCaptureEntries({});
+  const interviewers = [...new Set([...sourceRecords.map(item => item.interviewer), ...capturePool.map(item => item.interviewer)].filter(Boolean))];
   const selected = stored.interviewer || '';
   const filters = { interviewer: selected, job: stored.job || '', round: stored.round || '', period: stored.period || '' };
   const allRecords = interviewerRecords({ ...filters, interviewer: '' });
   const records = interviewerRecords(filters);
-  const jobs = [...new Set(allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.jobName).filter(Boolean))];
-  const rounds = [...new Set(allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.round).filter(Boolean))];
+  const captureForOptions = capturePool.filter(item => !selected || sameInterviewPerson(item.interviewer, selected));
+  const jobs = [...new Set([...allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.jobName), ...captureForOptions.map(item => item.jobName)].filter(Boolean))];
+  const rounds = [...new Set([...allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.round), ...captureForOptions.map(item => item.round)].filter(Boolean))];
   const outcomes = records.reduce((result, item) => { result.completed += 1; result.passed += item.interviewPassed === true ? 1 : 0; result.rejected += item.interviewRejected === true || item.interviewFailed === true ? 1 : 0; result.pending += item.interviewPassed !== true && item.interviewRejected !== true && item.interviewFailed !== true ? 1 : 0; result.offers += item.offerAccepted || item.hired ? 1 : 0; result.hired += item.hired ? 1 : 0; result.duration += item.durationMinutes || 0; result.evaluated += item.outcome || item.interviewPassed !== null || item.interviewRejected !== null || item.hired ? 1 : 0; return result; }, { completed: 0, passed: 0, rejected: 0, pending: 0, offers: 0, hired: 0, duration: 0, evaluated: 0 });
   const pct = (value, denominator) => denominator ? `${Math.round(value / denominator * 100)}%` : '—';
   const rate = (value, denominator) => denominator ? Math.round(value / denominator * 100) : 0;

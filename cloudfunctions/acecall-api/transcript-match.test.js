@@ -59,6 +59,18 @@ test('labeled interviewer still matches and the following clock is the interview
   assert.equal(context.interviewAt, '2026-09-18T14:30:00+08:00');
 });
 
+test('a surname-only speaker is the candidate, and the other speaker is the interviewer', () => {
+  const context = extractTranscriptContext(
+    '黄元_券商服务端开发工程师（长沙）(刘冰南安排).docx',
+    '2026-10-19 18:54:48 会议已开启实时转写，机器识别结果仅供参考\n胡亚辉 2026-10-19 18:59:10\n你好。\n黄 2026-10-19 18:59:13\n我是黄元。\n黄 2026-10-19 18:59:20\n继续说。'
+  );
+  assert.equal(context.candidateName, '黄元');
+  assert.equal(context.jobName, '券商服务端开发工程师（长沙）');
+  assert.equal(context.hrName, '刘冰南');
+  assert.equal(context.interviewer, '胡亚辉');
+  assert.equal(context.interviewAt, '2026-10-19T18:59:10+08:00');
+});
+
 test('transcript matches the interview with the same candidate, job and time', () => {
   const interviews = [
     { source: 'moka', candidateName: '周宁', jobName: '法务BP', interviewer: '魏欣欣', startedAt: '2026-08-01T10:00:00+08:00', id: 'old' },

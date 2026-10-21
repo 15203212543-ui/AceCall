@@ -82,10 +82,18 @@ function speakerTurns(text = '') {
   return turns;
 }
 
+function isSpeaker(speaker, name) {
+  if (samePerson(speaker, name)) return true;
+  const spoken = personKey(speaker);
+  const target = personKey(name);
+  return spoken.length === 1 && target.length >= 2 && target.length <= 4 && target.startsWith(spoken);
+}
+
 function interviewerFromTurns(turns = [], candidateName = '', hrName = '') {
   const counts = new Map();
   for (const turn of turns) {
-    if (samePerson(turn.speaker, candidateName) || (hrName && samePerson(turn.speaker, hrName))) continue;
+    if (isSpeaker(turn.speaker, candidateName) || (hrName && isSpeaker(turn.speaker, hrName))) continue;
+    if (personKey(turn.speaker).length < 2) continue;
     counts.set(turn.speaker, (counts.get(turn.speaker) || 0) + 1);
   }
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'zh'))[0]?.[0] || '';
