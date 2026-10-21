@@ -1023,7 +1023,7 @@ function renderIntelligence() {
    const selectedKey = app.intelligenceSelected || filteredCompanies[0]?.key || '';
    const selected = filteredCompanies.find(item => item.key === selectedKey) || filteredCompanies[0];
    const themes = [...new Set(app.jobs.flatMap(job => job.keywords || []))].slice(0, 12);
-   const transcriptCount = records.reduce((sum, item) => sum + item.transcripts, 0);
+   const transcriptCount = app.mokaInterviews.filter(item => item.transcriptStatus === 'synced' && String(item.transcript || '').trim()).length;
    const pendingCount = filteredCompanies.filter(item => (app.intelligenceReviewed[item.key] || 'pending') === 'pending').length;
    const companyRows = filteredCompanies.map(item => `<button class="intelligence-list-item ${selected?.key === item.key ? 'active' : ''}" type="button" data-intelligence-select="${escapeHtml(item.key)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.count} 条线索 · ${item.transcripts} 场面试</small></span><b>${escapeHtml(item.confidence)}</b></button>`).join('');
    const detail = selected ? `<div class="intelligence-detail-head"><div><span class="eyebrow">${view.toUpperCase()}</span><h2>${escapeHtml(selected.name)}</h2></div><span class="intelligence-status ${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? 'confirmed' : ''}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '已确认' : '待确认'}</span></div><p class="intelligence-summary">${escapeHtml(selected.summary || '已从面试材料中识别到该对象，业务信息待补充。')}</p><div class="intelligence-detail-grid"><div><span>线索数量</span><b>${selected.count}</b></div><div><span>关联面试</span><b>${selected.transcripts}</b></div><div><span>可信度</span><b>${escapeHtml(selected.confidence)}</b></div></div><div class="intelligence-evidence"><strong>原文证据</strong><span>${escapeHtml(selected.evidence || '暂无可展示的原文片段')}</span></div><div class="intelligence-row-actions"><button class="primary" type="button" data-intelligence-review="${escapeHtml(selected.key)}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '标记待确认' : '确认线索'}</button><button class="link-action" type="button" data-intelligence-detail="${escapeHtml(selected.key)}">查看关联面试 →</button></div>` : '<div class="empty">当前筛选条件下暂无情报。</div>';
@@ -1041,7 +1041,7 @@ function renderIntelligence() {
  function intelligenceDimensionRecords(view, records) {
    const terms = { industry: ['金融','互联网','企业服务','制造业','消费零售','教育','医疗','物流','游戏','新能源'], product: ['风控系统','数据服务','交易系统','招聘系统','SaaS','平台','算法','供应链','支付','CRM'], business: ['风控','衍生品','交易','招聘','销售','研发','运营','市场','客服','咨询','数据分析'], city: ['北京','上海','深圳','广州','杭州','成都','南京','武汉','苏州','香港'] }[view] || [];
    const groups = new Map();
-   const source = [...app.cases, ...app.mokaInterviews];
+   const source = app.mokaInterviews.filter(item => item.transcriptStatus === 'synced' && String(item.transcript || '').trim());
    source.forEach(item => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}\n${item.jobName || ''} ${item.roleName || ''}`;
      terms.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(term => {
@@ -1058,24 +1058,42 @@ function renderIntelligence() {
  }
 
  function intelligenceRecords() {
-   const source = [...app.cases.map(item => ({ ...item, sourceType: 'candidate' })), ...app.mokaInterviews.map(item => ({ ...item, sourceType: 'moka' }))];
+   // Industry intelligence is intentionally limited to verified formal Moka interview transcripts.
+   const source = app.mokaInterviews.filter(item => item.transcriptStatus === 'synced' && String(item.transcript || '').trim());
    const groups = new Map();
    source.forEach(item => {
-     const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}`;
-     const names = [...new Set(text.match(/[\u4e00-\u9fa5A-Za-z]{2,20}(?:证券|银行|科技|集团|互联网|教育|传媒|视频|信息|资本|基金|保险|公司)/g) || [])];
+     const text = String(item.transcript || '').replace(/\r/g, '');
+     const names = extractInterviewCompanies(text);
      names.forEach(rawName => {
-       const name = rawName.replace(/[，。；：:、].*$/, '').trim();
-       if (name.length < 3) return;
+       const name = rawName.trim();
+       if (!isReliableCompanyName(name)) return;
        const key = name.toLowerCase(); const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '' };
-       existing.count += 1; if (item.transcript || item.communicationSummary) existing.transcripts += 1;
+       existing.count += 1; existing.transcripts += 1;
        if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.includes(name)) || '';
-       existing.summary ||= item.communicationSummary?.overview || '';
+       existing.summary ||= '来自正式面试问答转写，待人工确认业务含义。';
        existing.latest = item.interviewAt || item.startedAt || item.updatedAt || item.createdAt || existing.latest;
        if (existing.evidence.length > 15) existing.confidence = '高';
        groups.set(key, existing);
      });
    });
    return [...groups.values()];
+ }
+
+ function extractInterviewCompanies(text = '') {
+   const result = new Set();
+   const sentencePattern = /[^。！？\n]{0,80}(?:在|于|从|就职于|任职于|供职于|来自|曾在|上一家公司是|目前在)\s*([A-Za-z0-9\u4e00-\u9fff]{2,30}(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份))[^。！？\n]{0,80}/g;
+   for (const match of text.matchAll(sentencePattern)) result.add(match[1]);
+   const standalonePattern = /(?<![\u4e00-\u9fffA-Za-z0-9])([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology))\b/gi;
+   for (const match of text.matchAll(standalonePattern)) result.add(match[1].trim());
+   return [...result].filter(isReliableCompanyName);
+ }
+
+ function isReliableCompanyName(value = '') {
+   const name = String(value).replace(/[\s,，。；;：:、]+$/g, '').trim();
+   if (name.length < 3 || name.length > 36) return false;
+   if (/^(个人信息|基本信息|教育背景|工作经历|项目经历|专业技能|自我评价|求职意向|联系方式|公司名称|所在公司|目标公司|任职公司)$/i.test(name)) return false;
+   if (/^(信息|资料|经历|背景|情况|内容|岗位|职位|部门|业务|产品|行业)(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份)$/.test(name)) return false;
+   return /(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)$/i.test(name);
  }
 function renderConnections() { $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">初筛结果保存后，按手机号或邮箱匹配并追加备注</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。初筛结果保存到云端后，会按手机号或邮箱匹配 Moka 申请并追加备注；不会修改阶段，也不会淘汰候选人。</p></div></section></div>`; }
 
