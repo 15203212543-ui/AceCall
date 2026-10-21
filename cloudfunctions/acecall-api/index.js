@@ -1006,15 +1006,16 @@ async function readGatewayUser(request) {
     return { uid: String(scalarUid).trim(), isAnonymous: false };
   }
 
-  // CDN-backed routes may validate the bearer token without forwarding the
-  // gateway context. Ask CloudBase Auth for the verified user instead of
-  // decoding JWT claims locally. The Web SDK's canonical API is /v1/auth/user;
-  // the legacy introspection path remains a compatibility fallback.
+  // CDN-backed or unauthenticated-gateway routes may forward the bearer token
+  // without the gateway identity context. Ask CloudBase Auth to verify it.
+  // /auth/v1/token/introspect is the endpoint that actually exists (verified:
+  // returns {sub, scope}); /v1/auth/user answers 404 and only wastes a round trip,
+  // so it stays last as a forward-compatibility fallback.
   const authorization = String(request?.headers?.authorization || request?.headers?.['x-acecall-token'] || '');
   if (!/^Bearer\s+\S+/i.test(authorization) || !process.env.TCB_ENV) return {};
   const endpoints = [
-    `https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/v1/auth/user`,
-    `https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/auth/v1/token/introspect`
+    `https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/auth/v1/token/introspect`,
+    `https://${process.env.TCB_ENV}.api.tcloudbasegateway.com/v1/auth/user`
   ];
   for (const endpoint of endpoints) {
     try {
