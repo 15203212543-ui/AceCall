@@ -2,11 +2,23 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { extractTranscriptContext, matchTranscriptToInterview } = require('./transcript-match');
 
-test('transcript file keeps interviewer, job and interview time', () => {
-  const context = extractTranscriptContext('周宁-法务BP-面试转写.txt', '候选人：周宁\n面试官：魏欣欣\n应聘岗位：法务BP\n面试时间：2026-09-18 14:30\n发言人：请介绍一个项目结果？');
+test('filename supplies candidate and job, body supplies interviewer and the time after the names', () => {
+  const context = extractTranscriptContext(
+    '周宁-法务BP-面试转写.txt',
+    '魏欣欣 周宁 2026-09-18 14:30\n请介绍一个项目结果？',
+    { interviewerNames: ['魏欣欣', '李明'] }
+  );
   assert.equal(context.candidateName, '周宁');
-  assert.equal(context.interviewer, '魏欣欣');
   assert.equal(context.jobName, '法务BP');
+  assert.equal(context.interviewer, '魏欣欣');
+  assert.equal(context.interviewAt, '2026-09-18T14:30:00+08:00');
+});
+
+test('labeled interviewer still matches and the following clock is the interview time', () => {
+  const context = extractTranscriptContext('周宁-交易产品经理.txt', '面试官：魏欣欣\n2026-09-18 14:30 开始\n周宁介绍项目。');
+  assert.equal(context.candidateName, '周宁');
+  assert.equal(context.jobName, '交易产品经理');
+  assert.equal(context.interviewer, '魏欣欣');
   assert.equal(context.interviewAt, '2026-09-18T14:30:00+08:00');
 });
 

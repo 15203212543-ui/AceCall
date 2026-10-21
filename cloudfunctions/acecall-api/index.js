@@ -16,7 +16,8 @@ const COLLECTIONS = {
   screenings: 'acecall_screenings',
   audit: 'acecall_audit_logs',
   rules: 'acecall_team_rules',
-  transcriptionTasks: 'acecall_transcription_tasks'
+  transcriptionTasks: 'acecall_transcription_tasks',
+  interviewers: 'acecall_interviewers'
 };
 let cloudbaseApp;
 
@@ -189,6 +190,14 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'GET' && url.pathname === '/api/transcript-imports') {
       return sendJson(response, 200, await listTranscriptImports(await getRequestContext(request)));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/interviewers') {
+      return sendJson(response, 200, await listInterviewers(await getRequestContext(request)));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/interviewers') {
+      const context = await getRequestContext(request);
+      const input = await readJson(request);
+      return sendJson(response, 200, await rememberInterviewers(context, input.names || input.name, input.source || 'manual'));
     }
     if (request.method === 'GET' && url.pathname.match(/^\/api\/transcription-tasks\/[^/]+$/)) {
       const id = validateId(url.pathname.split('/')[3]);
@@ -825,6 +834,8 @@ async function loadMokaInterviews(context) {
   result.totalFetched = records.length; result.totalMatched = result.records.length;
   result.transcriptStats = result.records.reduce((stats, record) => { stats.total += 1; if (record.transcriptStatus === 'completed') stats.completed += 1; else if (record.transcriptStatus === 'pending' || record.transcriptStatus === 'audio-ready') stats.pending += 1; else stats.missing += 1; stats.characters += Number(record.transcriptCharacters || 0); return stats; }, { total: 0, completed: 0, pending: 0, missing: 0, characters: 0 });
   result.analytics = buildMokaAnalytics(result.records);
+  try { await rememberInterviewers(context, result.records.map(record => record.interviewer), 'moka'); }
+  catch { result.warnings.push('面试官库更新未完成，转写仍会按已记住的姓名匹配。'); }
   return result;
 }
 
@@ -1365,7 +1376,8 @@ async function importTranscript(context, input = {}) {
   if (text.length > 2_000_000) throw serviceError('转写文本超过 200 万字限制', 413);
   const id = taskId();
   const now = new Date().toISOString();
-  const metadata = mergeTranscriptMetadata(sanitizeJson(input.metadata || {}), input.fileName, text);
+  const library = await listInterviewerNames(context);
+  const metadata = mergeTranscriptMetadata(sanitizeJson(input.metadata || {}), input.fileName, text, library);
   const result = { text, characters: text.length, completedAt: now, format: 'text', source: 'local-moka-download' };
   const task = {
     id, tenantId: context.tenantId, candidateId: String(input.candidateId || '').slice(0, 100),
@@ -1380,8 +1392,56 @@ async function importTranscript(context, input = {}) {
 }
 
 async function listTranscriptImports(context) {
+  const library = await listInterviewerNames(context);
   const result = await getDatabase().collection(COLLECTIONS.transcriptionTasks).where({ tenantId: context.tenantId, source: 'local-moka-download' }).limit(200).get();
-  return { ok: true, records: (result.data || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).map(task => { const clean = cleanDocument(task); return { ...clean, metadata: mergeTranscriptMetadata(clean.metadata || {}, clean.fileName, clean.result?.text || '') }; }) };
+  return { ok: true, records: (result.data || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).map(task => { const clean = cleanDocument(task); return { ...clean, metadata: mergeTranscriptMetadata(clean.metadata || {}, clean.fileName, clean.result?.text || '', library) }; }) };
+}
+
+function interviewerRecordId(tenantId, name) {
+  return `iv_${crypto.createHash('sha1').update(`${tenantId}\n${name}`).digest('hex').slice(0, 24)}`;
+}
+
+function cleanInterviewerName(value = '') {
+  const name = String(value || '').trim();
+  if (!/^[\u4e00-\u9fff]{2,8}$/.test(name) && !/^[A-Za-z][A-Za-z .'-]{1,40}$/.test(name)) return '';
+  if (/面试官|候选人|发言人|说话人|未知|未识别/.test(name)) return '';
+  return name;
+}
+
+async function listInterviewers(context) {
+  try {
+    const result = await getDatabase().collection(COLLECTIONS.interviewers).where({ tenantId: context.tenantId }).limit(200).get();
+    const records = (result.data || []).map(cleanDocument).filter(item => item.name).sort((left, right) => String(left.name).localeCompare(String(right.name), 'zh'));
+    return { ok: true, records };
+  } catch {
+    return { ok: true, records: [] };
+  }
+}
+
+async function listInterviewerNames(context) {
+  try { return (await listInterviewers(context)).records.map(item => item.name); }
+  catch { return []; }
+}
+
+async function rememberInterviewers(context, names = [], source = 'moka') {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const incoming = (Array.isArray(names) ? names : [names]).map(cleanInterviewerName).filter(Boolean);
+  const accepted = [...new Set(incoming)].slice(0, 40);
+  if (!accepted.length) return listInterviewers(context);
+  const db = getDatabase();
+  let existing = { data: [] };
+  try { existing = await db.collection(COLLECTIONS.interviewers).where({ tenantId: context.tenantId }).limit(200).get(); }
+  catch { existing = { data: [] }; }
+  const have = new Set((existing.data || []).map(item => item.name));
+  const now = new Date().toISOString();
+  const origin = source === 'manual' ? 'manual' : 'moka';
+  for (const name of accepted) {
+    if (have.has(name)) continue;
+    const id = interviewerRecordId(context.tenantId, name);
+    await db.collection(COLLECTIONS.interviewers).doc(id).set({ id, tenantId: context.tenantId, name, source: origin, createdAt: now, updatedAt: now, createdBy: context.uid });
+    have.add(name);
+  }
+  return listInterviewers(context);
 }
 
 async function findTask(context, id) {

@@ -1,14 +1,10 @@
 const { SCREENING_JOBS } = require('./screening-jobs');
 
+const FILE_NOISE = /面试转写|面试录音|面试记录|转写文本|转写稿|转写|录音文件|录音|字幕|transcript|transcription|interview/gi;
+const NAME_BLOCK = /面试官|候选人|发言人|说话人|面试|转写|录音|记录|岗位|字幕|未知|未识别/;
+
 function personKey(value = '') {
   return String(value || '').replace(/\s+/g, '').toLowerCase();
-}
-
-function labeledValue(text, labels) {
-  const pattern = new RegExp(`(?:${labels.join('|')})\\s*[:：]\\s*([^\\n\\r]{1,80})`);
-  const match = String(text || '').match(pattern);
-  if (!match) return '';
-  return match[1].trim().replace(/[，,。；;].*$/, '').trim();
 }
 
 function parseLooseDate(value = '') {
@@ -21,19 +17,66 @@ function parseLooseDate(value = '') {
   return `${day}T${clock[1].padStart(2, '0')}:${clock[2]}:00+08:00`;
 }
 
-function extractTranscriptContext(fileName = '', text = '') {
-  const head = String(text || '').slice(0, 4000);
-  const candidateName = labeledValue(head, ['候选人姓名', '候选人', '姓名']);
-  const interviewer = labeledValue(head, ['面试官姓名', '面试官']);
-  const labeledJob = labeledValue(head, ['应聘岗位', '面试岗位', '岗位名称', '岗位']);
-  const catalogJob = SCREENING_JOBS.find(job => head.includes(job.name) || String(fileName).includes(job.name));
-  const interviewAt = parseLooseDate(labeledValue(head, ['面试时间', '面试日期', '开始时间']) || fileName);
-  return {
-    candidateName,
-    interviewer,
-    jobName: labeledJob || catalogJob?.name || '',
-    interviewAt
-  };
+function jobFromFileName(fileName = '') {
+  const base = String(fileName || '');
+  const jobs = [...SCREENING_JOBS].sort((left, right) => right.name.length - left.name.length);
+  return jobs.find(job => base.includes(job.name))?.name || '';
+}
+
+function candidateFromFileName(fileName = '', jobName = '') {
+  let base = String(fileName || '').replace(/\.[^.]+$/, '');
+  if (jobName) base = base.split(jobName).join(' ');
+  base = base.replace(FILE_NOISE, ' ').replace(/[【】\[\]()（）_+\-]+/g, ' ');
+  const chinese = [...base.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(item => item[0]);
+  const name = chinese.find(item => !NAME_BLOCK.test(item));
+  if (name) return name;
+  return base.match(/\b[A-Z][A-Za-z'·.]{1,20}(?:\s+[A-Z][A-Za-z'·.]{1,20}){0,2}\b/)?.[0] || '';
+}
+
+function labeledInterviewer(text = '') {
+  const match = String(text).match(/面试官(?:姓名)?\s*[:：]?\s*([\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z .'-]{1,40})/);
+  const name = match?.[1]?.trim() || '';
+  return name && !NAME_BLOCK.test(name) ? name : '';
+}
+
+function libraryInterviewer(text = '', interviewerNames = []) {
+  const names = [...new Set(interviewerNames.map(name => String(name || '').trim()).filter(name => name && !NAME_BLOCK.test(name)))];
+  names.sort((left, right) => right.length - left.length);
+  let found = '';
+  let index = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const pattern = new RegExp(`(?<![\\u4e00-\\u9fffA-Za-z])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\u4e00-\\u9fffA-Za-z])`);
+    const match = pattern.exec(text);
+    if (match && match.index < index) {
+      found = name;
+      index = match.index;
+    }
+  }
+  return found;
+}
+
+function dateTimeAfter(text = '', anchor = '') {
+  const name = String(anchor || '').trim();
+  if (!name) return '';
+  let from = 0;
+  while (from < text.length) {
+    const index = text.indexOf(name, from);
+    if (index < 0) return '';
+    const window = text.slice(index + name.length, index + name.length + 80);
+    const parsed = parseLooseDate(window);
+    if (parsed) return parsed;
+    from = index + name.length;
+  }
+  return '';
+}
+
+function extractTranscriptContext(fileName = '', text = '', options = {}) {
+  const body = String(text || '');
+  const jobName = jobFromFileName(fileName);
+  const candidateName = candidateFromFileName(fileName, jobName);
+  const interviewer = labeledInterviewer(body) || libraryInterviewer(body, options.interviewerNames || []);
+  const interviewAt = dateTimeAfter(body, interviewer) || dateTimeAfter(body, candidateName);
+  return { candidateName, interviewer, jobName, interviewAt };
 }
 
 function samePerson(left, right) {
@@ -65,13 +108,16 @@ function matchTranscriptToInterview(hint = {}, interviews = []) {
   return scored[0]?.item || null;
 }
 
-function mergeTranscriptMetadata(metadata = {}, fileName = '', text = '') {
-  const extracted = extractTranscriptContext(fileName, text);
-  const merged = { ...extracted, ...metadata };
-  for (const key of ['candidateName', 'interviewer', 'jobName', 'interviewAt']) {
-    if (!merged[key]) merged[key] = extracted[key] || '';
-  }
-  return merged;
+function mergeTranscriptMetadata(metadata = {}, fileName = '', text = '', interviewerNames = []) {
+  const extracted = extractTranscriptContext(fileName, text, { interviewerNames });
+  return {
+    ...metadata,
+    candidateName: extracted.candidateName || metadata.candidateName || '',
+    jobName: extracted.jobName || metadata.jobName || '',
+    interviewer: extracted.interviewer || metadata.interviewer || '',
+    interviewAt: extracted.interviewAt || metadata.interviewAt || '',
+    fileName: metadata.fileName || fileName
+  };
 }
 
 module.exports = { extractTranscriptContext, matchTranscriptToInterview, mergeTranscriptMetadata, samePerson };
