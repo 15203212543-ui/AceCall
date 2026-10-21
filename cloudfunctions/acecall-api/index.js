@@ -208,7 +208,22 @@ const server = http.createServer(async (request, response) => {
       const id = validateId(url.pathname.split('/')[3]);
       return sendJson(response, 200, await analyzeTranscriptionTask(await getRequestContext(request), id, await readJson(request)));
     }
-    return sendJson(response, 404, { error: 'Not found', route: 'unmatched' });
+    // 路由没匹配时把实际收到的路径带回去。网关是否透传子路径会随路由配置变化，
+    // 曾经因为 /acecall-api 路由不透传子路径，前端所有接口一起 404 却看不出原因。
+    console.error(JSON.stringify({
+      level: 'warn',
+      message: 'route unmatched',
+      method: request.method,
+      rawUrl: request.url,
+      normalizedPath: url.pathname,
+      originalPath: request.originalUrl || ''
+    }));
+    return sendJson(response, 404, {
+      error: 'Not found',
+      route: 'unmatched',
+      method: request.method,
+      path: url.pathname
+    });
   } catch (error) {
     // `code` is what makes CloudBase SDK failures diagnosable: an INVALID_PARAM
     // ("不能更新_id的值") carries no statusCode, so without it the client only

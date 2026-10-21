@@ -1,5 +1,5 @@
 window.ACECALL_CONFIG = {
-  apiBaseUrl: 'https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api',
+  apiBaseUrl: 'https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api-v2',
   cloudbase: {
     env: 'yuxiaomiaochongwu-d2dsk55ef4b392',
     region: 'ap-shanghai',
