@@ -185,6 +185,45 @@ WHISPER_API_URL=http://127.0.0.1:9001/v1/audio/transcriptions \
 成员 / 工作区更新、Moka 岗位同步，以及 **worker 的 `claimTask` / `updateTask`**。
 最后两处意味着即使分片上传成功，转写状态也永远写不回数据库。
 
+### 接口返回 443「Unknown」，响应体为空
+
+**这不是后端故障，是网关拒绝了请求携带的登录凭据。** 443 不是标准 HTTP 状态码，
+Chrome 会显示成 `status of 443 (Unknown)`，很容易被误判成「服务挂了」。
+
+实测特征（可用来确认是这一类问题）：
+
+```
+HTTP/1.1 443 Unknown
+content-length: 0                     ← 响应体完全为空
+server: tcbgw
+x-cloudbase-upstream-status-code: 443
+```
+
+判别方法（一条命令即可复现）：
+
+```bash
+KEY=$(curl -s https://15203212543-ui.github.io/AceCall/config.js | grep -o "publishableKey: '[^']*'" | sed "s/publishableKey: '//;s/'$//")
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $KEY" \
+  "https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api-v2/api/health"
+# 输出 443 即证实：匿名凭据被网关拒绝
+```
+
+原因：`publishableKey` 是**匿名凭据**（JWT 里 `scope: anonymous`），而 `acecall-api-v2`
+这条路由开启了网关「身份认证」，匿名 token 过不去。
+
+常见触发场景：**登录会话过期后，前端拿到的是 CloudBase 自动生成的匿名会话**，
+于是所有接口一起 443。此时重新登录即可恢复。
+
+注意区分两种网关拒绝：
+
+| 状态码 | 响应体 | 含义 |
+|---|---|---|
+| 401 | `{"code":"INVALID_CREDENTIALS"}` | token 格式非法 |
+| **443** | **空** | token 合法但**身份不被接受**（典型是匿名身份） |
+
+前端已做的防护：`initializeAuth` 会识别匿名会话并直接要求登录；
+`authenticatedFetch` 遇到 443 会先尝试刷新会话，失败则提示「登录凭据已失效，请退出后重新登录」。
+
 ### 所有接口一起 404「Not found」
 
 **先检查 `public/config.js` 的 `apiBaseUrl` 用的是哪条路由。**
