@@ -7,7 +7,6 @@ const INTERNAL_TEST_COMPANY = 'AceCall招聘团队';
 const LOCAL_MIGRATION_KEY_PREFIX = 'acecall-local-migration-v2:';
 const REMEMBERED_ACCOUNT_KEY = 'acecall-remembered-account-v1';
 const WORKSPACE_NAME_KEY = 'acecall-workspace-name-v1';
-const REMOTE_CACHE_META_KEY = 'acecall-remote-cache-meta-v1';
 const API_BASE = String(window.ACECALL_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
 const REMOTE_BACKEND = Boolean(API_BASE);
 const STATIC_DEMO = (location.protocol === 'file:' || location.hostname.endsWith('.github.io')) && !REMOTE_BACKEND;
@@ -16,7 +15,13 @@ const CLOUD_CONFIG = window.ACECALL_CONFIG?.cloudbase || {};
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const initialLocalState = { cases: readStore(CASES_KEY), jobs: readStore(JOBS_KEY), rules: readStore(RULES_KEY) };
-const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null, mokaInterviews: [], mokaInterviewStatus: { configured: false, loading: false }, intelligenceReviewed: {} };
+const INTELLIGENCE_LEXICON = {
+  industry: ['证券', '基金', '银行', '保险', '信托', '资管', '私募', '金融科技', '互联网', '企业服务', 'SaaS', '消费', '制造', '医疗', '教育'],
+  product: ['场外期权', 'RFQ', '交易系统', '风控系统', '清算系统', '估值系统', '订单管理', '投研平台', '数据服务', '招聘系统', 'CRM', 'SaaS平台'],
+  business: ['机构业务', '资产管理', '做市', '自营交易', '量化交易', '风险管理', '合规', '清算', '产品研发', '销售获客', '客户成功', '招聘运营'],
+  city: ['北京', '上海', '深圳', '广州', '杭州', '成都', '南京', '武汉', '苏州', '香港']
+};
+const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null, mokaInterviews: [], mokaInterviewStatus: { configured: false, loading: false }, intelligenceReviewed: {}, intelligenceView: 'company', intelligenceSelected: '', intelligenceQuery: '', intelligenceSource: '', intelligenceIndustry: '' };
 app.dashboardFilter = '';
 let cloudbaseAuth = null;
 let cloudbaseClient = null;
@@ -32,7 +37,6 @@ let folderWatchSeenKeys = new Set();
 let inboxQueueFilter = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
-const MOKA_AUTO_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
 let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
@@ -40,23 +44,16 @@ const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 let desktopAgentAvailable = false;
-let stateRefreshTimer = null;
-let stateRefreshInFlight = null;
-let lastStateRefreshAt = 0;
-let remoteStateFingerprint = '';
-let mokaRefreshTimer = null;
-let mokaRefreshInFlight = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
   bindShell();
   updateUserHeader();
-  navigate(location.hash.replace('#', '') || 'dashboard');
-  await Promise.all([hydrateWorkspace(), hydrateState()]);
+  await hydrateWorkspace();
+  await hydrateState();
   seedJobs();
-  renderCurrent();
-  void checkService();
-  startMokaAutoRefresh();
+  await checkService();
+  navigate(location.hash.replace('#', '') || 'dashboard');
 });
 
 let shellBound = false;
@@ -76,35 +73,13 @@ function bindShell() {
   $$('[data-close]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
   $('#candidateForm').addEventListener('submit', createCandidate);
   $('#jobForm').addEventListener('submit', saveJob);
-  $('#assignmentForm').addEventListener('submit', confirmAssignment);
-  $('#assignmentJobSearch').addEventListener('input', () => renderAssignmentJobs(app.cases.find(item => item.id === $('#assignmentCandidateId').value)));
-  $('#assignmentJobStatus').addEventListener('change', () => renderAssignmentJobs(app.cases.find(item => item.id === $('#assignmentCandidateId').value)));
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
   bindAccountMenu();
   bindGlobalCandidateSearch();
-  startRemoteStateRefresh();
   $('#applyJobRuleLibrary').addEventListener('click', applySelectedTeamRule);
   $('#saveJobRuleLibrary').addEventListener('click', saveCurrentRuleToLibrary);
-}
-
-function startRemoteStateRefresh() {
-  if (!REMOTE_BACKEND || stateRefreshTimer) return;
-  const refresh = () => {
-    if (!document.hidden) refreshRemoteState();
-  };
-  window.addEventListener('focus', refresh);
-  document.addEventListener('visibilitychange', refresh);
-  stateRefreshTimer = setInterval(refresh, 30000);
-}
-
-function refreshRemoteState(force = false) {
-  if (!REMOTE_BACKEND || !app.authUser) return;
-  const now = Date.now();
-  if (!force && now - lastStateRefreshAt < 8000) return;
-  lastStateRefreshAt = now;
-  void hydrateState({ background: true });
 }
 
 function toggleNavGroup(groupName) {
@@ -226,17 +201,10 @@ async function initializeAuth() {
     showLoginMessage('登录状态已重置，请重新输入账号密码', false);
     return false;
   }
-  // The publishable key can expose an anonymous session. It is not a valid
-  // business login and must never unlock the workspace or protected APIs.
-  if (!data?.session || isAnonymousSession(data.session)) {
-    if (data?.session) await cloudbaseAuth.signOut().catch(() => {});
-    showLoginMessage('请先使用账号密码登录后再进入工作台', false);
-    return false;
-  }
+  if (!data?.session) return false;
   captureAuthUser(data.session, rememberedAccount);
-  restoreRemoteCache();
+  await syncDesktopSession(data.session.access_token);
   $('#loginScreen').classList.add('hidden');
-  void syncDesktopSession(data.session.access_token);
   return true;
 }
 
@@ -496,7 +464,7 @@ async function signIn(event) {
     }
     if (error || !data?.session) throw new Error(error?.message || '账号或密码错误');
     captureAuthUser(data.session, username);
-    void syncDesktopSession(data.session.access_token);
+    await syncDesktopSession(data.session.access_token);
     persistRememberedAccount(username);
     await enterWorkspace($('#loginUsername').value.trim());
   } catch (error) {
@@ -522,16 +490,14 @@ async function enterWorkspace(username = '', companyName = '') {
   bindShell();
   $('#loginScreen').classList.add('hidden');
   captureAuthUser(null, username);
-  restoreRemoteCache();
-  navigate('dashboard');
-  await Promise.all([hydrateWorkspace(username, companyName), hydrateState()]);
+  await hydrateWorkspace(username, companyName);
+  await hydrateState();
   seedJobs();
-  renderCurrent();
-  void checkService();
+  await checkService();
+  navigate(location.hash.replace('#', '') || 'dashboard');
 }
 
 async function signOut() {
-  if (mokaRefreshTimer) { clearInterval(mokaRefreshTimer); mokaRefreshTimer = null; }
   await cloudbaseAuth?.signOut();
   await syncDesktopSession('');
   location.reload();
@@ -577,7 +543,6 @@ function renderCurrent() {
   if (app.view === 'connections') renderConnections();
   if (app.view === 'settings') renderSettings();
   if (app.view === 'candidate') renderCandidateDetail();
-  $$('a[href="downloads/AceCall-Sync-Mac.dmg"]').forEach(link => link.setAttribute('href', 'downloads/AceCall-Sync-Mac.zip'));
 }
 
 function analysisDecisionCounts(items) { const counts = new Map(); items.forEach(item => { const decision = finalAction(item) || '未决策'; counts.set(decision, (counts.get(decision) || 0) + 1); }); return [...counts.entries()].sort((a, b) => b[1] - a[1]); }
@@ -587,12 +552,12 @@ function outcomeSignals(item) {
   const interview = String(item.interviewOutcome || source.interviewOutcome || source.interviewStatus || '').toLowerCase();
   const offer = String(item.offerOutcome || source.offerOutcome || source.offerStatus || '').toLowerCase();
   const hired = item.hired === true || source.hired === true || ['已入职', '入职', 'hired', 'joined'].includes(offer);
-  const interviewPassed = item.interviewPassed === true || source.interviewPassed === true || item.outcomeStatus === 'passed' || source.outcomeStatus === 'passed' || /通过|pass|passed|通过面试/.test(interview);
-  const interviewFailed = item.interviewRejected === true || item.interviewFailed === true || source.interviewRejected === true || source.interviewFailed === true || item.outcomeStatus === 'rejected' || source.outcomeStatus === 'rejected' || /未通过|不通过|淘汰|拒绝|reject|failed|fail/.test(interview);
+  const interviewPassed = item.interviewPassed === true || source.interviewPassed === true || /通过|pass|passed|通过面试/.test(interview);
+  const interviewFailed = item.interviewPassed === false || source.interviewPassed === false || /未通过|不通过|reject|failed|fail/.test(interview);
   const offerDeclined = item.offerDeclined === true || source.offerDeclined === true || /拒绝|拒offer|declined|rejected|放弃/.test(offer);
   const offerAccepted = item.offerAccepted === true || source.offerAccepted === true || hired || /接受|accept|accepted/.test(offer);
   const offerSent = item.offerSent === true || source.offerSent === true || offerAccepted || offerDeclined || /offer已发|sent|已发放/.test(offer);
-  return { interviewPassed, interviewFailed, outcomeStatus: item.outcomeStatus || source.outcomeStatus || (interviewPassed ? 'passed' : interviewFailed ? 'rejected' : 'unknown'), offerSent, offerDeclined, offerAccepted, hired, declineReason: item.offerDeclineReason || source.offerDeclineReason || source.declineReason || '' };
+  return { interviewPassed, interviewFailed, offerSent, offerDeclined, offerAccepted, hired, declineReason: item.offerDeclineReason || source.offerDeclineReason || source.declineReason || '' };
 }
 function outcomeBreakdown(items) { const signals = items.map(outcomeSignals); return { interviewPassed: signals.filter(item => item.interviewPassed).length, interviewFailed: signals.filter(item => item.interviewFailed).length, interviewUnknown: signals.filter(item => !item.interviewPassed && !item.interviewFailed).length, offerSent: signals.filter(item => item.offerSent).length, offerDeclined: signals.filter(item => item.offerDeclined).length, offerAccepted: signals.filter(item => item.offerAccepted).length, hired: signals.filter(item => item.hired).length, declineReasons: signals.map(item => item.declineReason).filter(Boolean) }; }
 function jobAnalyticsValue(job, field, fallback) { const value = String(job?.[field] || '').trim(); return value || fallback; }
@@ -626,10 +591,8 @@ function renderInsights(rootSelector = '#talentOrganizationView') {
 function renderInternalTalentAnalysis(rootSelector = '#talentOrganizationView') {
   const root = $(rootSelector); if (!root) return;
   const empty = (text) => `<div class="talent-empty"><strong>暂无员工数据</strong><span>${text}</span></div>`;
-  root.innerHTML = `<div class="page research-page internal-talent-page"><div class="page-title"><div><span class="eyebrow">INTERNAL TALENT</span><h1>内部人才分析</h1><p>从人才总量、结构、表现、能力和流动风险，了解现有团队并明确下一步行动。</p></div><button class="secondary" data-talent-connect>接入员工数据</button></div><div class="talent-filters"><select aria-label="部门"><option>全部部门</option></select><select aria-label="团队"><option>全部团队</option></select><select aria-label="地区"><option>全部地区</option></select><select aria-label="岗位"><option>全部岗位</option></select><select aria-label="工作年限"><option>全部工作年限</option><option>1 年以内</option><option>1-3 年</option><option>3-5 年</option><option>5 年以上</option></select><select aria-label="学历"><option>全部学历</option><option>博士</option><option>硕士</option><option>本科</option><option>大专及以下</option></select><select aria-label="员工状态"><option>全部员工状态</option><option>在职</option><option>试用期</option><option>已离职</option></select><span class="data-status">数据源：未接入</span></div><p class="talent-filter-note">按组织、岗位、工作年限、学历和员工状态筛选，查看对应人员结构。</p><div class="research-banner"><div><span>员工数据状态</span><strong>待接入</strong></div><p>接入员工花名册、HRIS、绩效和流动记录后，以下指标与人员明细将按筛选条件生成。</p><span class="data-status">不使用候选人数据</span></div><section class="talent-overview"><div class="section-kicker">人才总览</div><div class="research-metrics talent-metrics talent-overview-metrics"><div class="metric"><b>—</b><span>人才总量</span><small>较上月 —</small></div><div class="metric"><b>—</b><span>核心人才</span><small>占比 —</small></div><div class="metric"><b>—</b><span>高潜人才</span><small>新增 — 人</small></div><div class="metric"><b>—</b><span>关键岗位覆盖率</span><small>继任数据</small></div><div class="metric"><b>—</b><span>人才流失率</span><small>近 12 个月</small></div><div class="metric"><b>—</b><span>高风险人才</span><small>需要重点关注</small></div></div></section><section class="surface internal-talent-section"><div class="surface-head"><div><h2>人才结构分析</h2><p class="surface-subtitle">按组织和人员维度查看团队组成</p></div><button class="link-action" data-talent-employees>查看员工明细</button></div><div class="surface-body talent-structure-body"><div class="talent-chip-list"><span>部门</span><span>团队</span><span>地区</span><span>职级</span><span>岗位</span><span>工作年限</span><span>年龄段</span><span>学历</span></div>${empty('接入员工花名册后查看各维度人数、占比及对应人员。')}</div></section><div class="research-grid internal-talent-grid"><section class="surface"><div class="surface-head"><div><h2>人才表现与发展</h2><p class="surface-subtitle">绩效、潜力、贡献与发展准备度</p></div><span>绩效与发展</span></div><div class="surface-body">${empty('接入绩效、能力和晋升记录后查看高绩效、高潜及晋升候选人。')}</div></section><section class="surface"><div class="surface-head"><div><h2>能力与人才缺口</h2><p class="surface-subtitle">能力标签、岗位要求与团队缺口</p></div><span>能力地图</span></div><div class="surface-body">${empty('接入能力标签和岗位要求后查看核心能力排名、能力缺口和人才缺口。')}</div></section></div><section class="surface internal-talent-section"><div class="surface-head"><div><h2>人才流动与风险</h2><p class="surface-subtitle">入职、晋升、转岗、离职和风险变化</p></div><span>流动监测</span></div><div class="surface-body talent-flow-body"><div class="talent-flow-labels"><span>入职</span><span>晋升</span><span>转岗</span><span>离职</span></div>${empty('接入入离职、转岗和绩效记录后查看趋势及重点关注人员。')}</div></section><section class="surface internal-talent-section"><div class="surface-head"><div><h2>人才决策建议</h2><p class="surface-subtitle">基于数据明确下一步行动</p></div><span>待生成</span></div><div class="surface-body talent-decision-list"><div class="talent-decision-row"><b>培养</b><span>识别能力缺口，形成培训或辅导计划</span><i>待接入数据</i></div><div class="talent-decision-row"><b>晋升</b><span>识别已达到岗位要求的员工</span><i>待接入数据</i></div><div class="talent-decision-row"><b>转岗 / 内部推荐</b><span>匹配员工能力与内部岗位机会</span><i>待接入数据</i></div><div class="talent-decision-row"><b>外部招聘</b><span>确认内部无法满足的岗位与能力缺口</span><i>待接入数据</i></div></div></section><section class="surface internal-talent-section"><div class="surface-head"><div><h2>员工明细</h2><p class="surface-subtitle">按上方筛选条件查看对应人员</p></div><button class="link-action" data-talent-employees>查看员工明细</button></div><div class="surface-body">${empty('接入员工数据后显示姓名、部门、岗位、职级、员工状态和最近一次绩效记录。')}</div></section><section class="surface connector-note"><div class="surface-head"><div><h2>数据接入要求</h2><p class="surface-subtitle">完成配置后开始生成内部人才分析</p></div><span class="readonly-badge">待配置</span></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 员工花名册或 HRIS 数据</label><label><input type="checkbox" disabled> 部门、团队、地区、岗位与职级</label><label><input type="checkbox" disabled> 绩效、能力、司龄与流动记录</label><label><input type="checkbox" disabled> 数据权限范围与更新周期</label></div></section></div>`;
+  root.innerHTML = `<div class="page research-page internal-talent-page"><div class="page-title"><div><span class="eyebrow">INTERNAL TALENT</span><h1>内部人才分析</h1><p>从人才总量、结构、表现、能力和流动风险，了解现有团队并明确下一步行动。</p></div><button class="secondary" data-talent-connect>接入员工数据</button></div><div class="talent-filters"><select aria-label="部门"><option>全部部门</option></select><select aria-label="团队"><option>全部团队</option></select><select aria-label="地区"><option>全部地区</option></select><select aria-label="岗位"><option>全部岗位</option></select><select aria-label="工作年限"><option>全部工作年限</option><option>1 年以内</option><option>1-3 年</option><option>3-5 年</option><option>5 年以上</option></select><select aria-label="学历"><option>全部学历</option><option>博士</option><option>硕士</option><option>本科</option><option>大专及以下</option></select><select aria-label="员工状态"><option>全部员工状态</option><option>在职</option><option>试用期</option><option>已离职</option></select><span class="data-status">数据源：未接入</span></div><p class="talent-filter-note">按组织、岗位、工作年限、学历和员工状态筛选，查看对应人员结构。</p><div class="research-banner"><div><span>员工数据状态</span><strong>待接入</strong></div><p>接入员工花名册、HRIS、绩效和流动记录后，以下指标与人员明细将按筛选条件生成。</p><span class="data-status">不使用候选人数据</span></div><section class="talent-overview"><div class="section-kicker">人才总览</div><div class="research-metrics talent-metrics talent-overview-metrics"><div class="metric"><b>—</b><span>人才总量</span><small>较上月 —</small></div><div class="metric"><b>—</b><span>核心人才</span><small>占比 —</small></div><div class="metric"><b>—</b><span>高潜人才</span><small>新增 — 人</small></div><div class="metric"><b>—</b><span>关键岗位覆盖率</span><small>继任数据</small></div><div class="metric"><b>—</b><span>人才流失率</span><small>流动记录</small></div><div class="metric"><b>—</b><span>高风险人才</span><small>需要重点关注</small></div></div></section><section class="surface internal-talent-section"><div class="surface-head"><div><h2>人才结构分析</h2><p class="surface-subtitle">按组织和人员维度查看团队组成</p></div><button class="link-action" data-talent-employees>查看员工明细</button></div><div class="surface-body talent-structure-body"><div class="talent-chip-list"><span>部门</span><span>团队</span><span>地区</span><span>职级</span><span>岗位</span><span>工作年限</span><span>年龄段</span><span>学历</span></div>${empty('接入员工花名册后查看各维度人数、占比及对应人员。')}</div></section><div class="research-grid internal-talent-grid"><section class="surface"><div class="surface-head"><div><h2>人才表现与发展</h2><p class="surface-subtitle">绩效、潜力、贡献与发展准备度</p></div><span>绩效与发展</span></div><div class="surface-body">${empty('接入绩效、能力和晋升记录后查看高绩效、高潜及晋升候选人。')}</div></section><section class="surface"><div class="surface-head"><div><h2>能力与人才缺口</h2><p class="surface-subtitle">能力标签、岗位要求与团队缺口</p></div><span>能力地图</span></div><div class="surface-body">${empty('接入能力标签和岗位要求后查看核心能力排名、能力缺口和人才缺口。')}</div></section></div><section class="surface internal-talent-section"><div class="surface-head"><div><h2>人才流动与风险</h2><p class="surface-subtitle">入职、晋升、转岗、离职和风险变化</p></div><span>流动监测</span></div><div class="surface-body talent-flow-body"><div class="talent-flow-labels"><span>入职</span><span>晋升</span><span>转岗</span><span>离职</span></div>${empty('接入入离职、转岗和绩效记录后查看趋势及重点关注人员。')}</div></section><section class="surface internal-talent-section"><div class="surface-head"><div><h2>人才决策建议</h2><p class="surface-subtitle">基于数据明确下一步行动</p></div><span>待生成</span></div><div class="surface-body talent-decision-list"><div class="talent-decision-row"><b>培养</b><span>识别能力缺口，形成培训或辅导计划</span><i>待接入数据</i></div><div class="talent-decision-row"><b>晋升</b><span>识别已达到岗位要求的员工</span><i>待接入数据</i></div><div class="talent-decision-row"><b>转岗 / 内部推荐</b><span>匹配员工能力与内部岗位机会</span><i>待接入数据</i></div><div class="talent-decision-row"><b>外部招聘</b><span>确认内部无法满足的岗位与能力缺口</span><i>待接入数据</i></div></div></section><section class="surface internal-talent-section"><div class="surface-head"><div><h2>员工明细</h2><p class="surface-subtitle">按上方筛选条件查看对应人员</p></div><button class="link-action" data-talent-employees>查看员工明细</button></div><div class="surface-body">${empty('接入员工数据后显示姓名、部门、岗位、员工状态和最近一次绩效记录。')}</div></section><section class="surface connector-note"><div class="surface-head"><div><h2>数据接入要求</h2><p class="surface-subtitle">完成配置后开始生成内部人才分析</p></div><span class="readonly-badge">待配置</span></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 员工花名册或 HRIS 数据</label><label><input type="checkbox" disabled> 部门、团队、地区、岗位与员工状态</label><label><input type="checkbox" disabled> 绩效、能力、司龄与流动记录</label><label><input type="checkbox" disabled> 数据权限范围与更新周期</label></div></section></div>`;
   root.innerHTML = root.innerHTML.replaceAll('員工', '员工');
-  root.innerHTML = root.innerHTML.replace('人才流失率</span><small>近 12 个月', '人才流失率</span><small>流动记录');
-  root.innerHTML = root.innerHTML.replace('部门、团队、地区、岗位与职级', '部门、团队、地区、岗位与员工状态');
   const structureSection = [...root.querySelectorAll('.surface')].find(section => section.querySelector('h2')?.textContent === '人才结构分析');
   const structureBody = structureSection?.querySelector('.surface-body');
   const talentFilters = root.querySelector('.talent-filters');
@@ -736,274 +699,70 @@ function interviewerNameOf(item = {}) {
   return Array.isArray(value) ? String(value[0] || '') : String(value || '').trim();
 }
 function interviewerRecords(filters = {}) {
-  const moka = app.mokaInterviews.map(item => ({ ...item, source: 'moka', transcriptStatus: item.transcriptStatus || (item.transcript ? 'completed' : 'missing'), transcriptCharacters: Number(item.transcriptCharacters || item.transcript?.length || 0) }));
+  const moka = app.mokaInterviews.map(item => ({ ...item, source: 'moka' }));
   const local = app.cases.map(item => ({
     id: item.id, source: 'acecall', candidateName: item.candidateName || '',
     jobName: item.roleName || app.jobs.find(job => job.id === item.jobId)?.name || '未分配岗位',
     jobCategory: app.jobs.find(job => job.id === item.jobId)?.category || '', location: app.jobs.find(job => job.id === item.jobId)?.location || '',
     interviewer: interviewerNameOf(item), round: item.interviewRound || item.interview?.round || item.interviewRecord?.round || '',
-    outcome: item.interviewOutcome || item.outcome?.interviewOutcome || item.outcome || '', outcomeStatus: item.outcomeStatus || '', completed: Boolean(item.interviewOutcome || item.interviewPassed !== undefined || item.interviewRejected !== undefined || item.communicationSummary || item.report || item.transcript), interviewPassed: item.interviewPassed === true, interviewRejected: item.interviewRejected === true || item.interviewFailed === true,
+    outcome: item.interviewOutcome || item.outcome?.interviewOutcome || '', completed: Boolean(item.interviewOutcome || item.interviewPassed !== undefined || item.communicationSummary || item.report || item.transcript), interviewPassed: item.interviewPassed === true,
     offerAccepted: item.offerAccepted === true, hired: item.hired === true, durationMinutes: Number(item.interviewDuration || item.callDuration || 0) || 0,
-    startedAt: item.interviewAt || item.updatedAt || item.createdAt || '', transcript: item.transcript || '', transcriptStatus: item.transcript ? 'completed' : 'missing', transcriptCharacters: item.transcript?.length || 0
+    startedAt: item.interviewAt || item.updatedAt || item.createdAt || '', transcript: item.transcript || ''
   })).filter(item => item.interviewer);
   const records = [...moka, ...local].filter(item => {
     const date = Date.parse(item.startedAt || '') || 0; const days = Number(filters.period || 0); const cutoff = days ? Date.now() - days * 86400000 : 0;
-    return (filters.includeIncomplete === true || item.completed !== false) && (!filters.interviewer || item.interviewer === filters.interviewer) && (!filters.job || item.jobName === filters.job) && (!filters.round || item.round === filters.round) && (!cutoff || date >= cutoff);
+    return item.completed !== false && (!filters.interviewer || item.interviewer === filters.interviewer) && (!filters.job || item.jobName === filters.job) && (!filters.round || item.round === filters.round) && (!cutoff || date >= cutoff);
   });
   return records;
-}
-function sameInterviewPerson(left, right) {
-  const a = String(left || '').replace(/\s+/g, '').toLowerCase();
-  const b = String(right || '').replace(/\s+/g, '').toLowerCase();
-  return a.length >= 2 && b.length >= 2 && (a === b || a.includes(b) || b.includes(a));
-}
-function matchImportedTranscript(task, interviews) {
-  const hint = task.metadata || {};
-  const hintTime = Date.parse(hint.interviewAt || '') || 0;
-  const scored = interviews.filter(item => item.source !== 'acecall-local').map(item => {
-    const nameMatched = sameInterviewPerson(hint.candidateName, item.candidateName);
-    const jobMatched = hint.jobName && item.jobName && (String(item.jobName).includes(hint.jobName) || String(hint.jobName).includes(item.jobName));
-    const interviewerMatched = sameInterviewPerson(hint.interviewer, item.interviewer);
-    const time = Date.parse(item.startedAt || '') || 0;
-    const gap = hintTime && time ? Math.abs(hintTime - time) : 0;
-    const timeScore = hintTime && time ? (gap <= 36 * 60 * 60 * 1000 ? 6 : gap <= 7 * 86400000 ? 2 : -4) : 0;
-    return { item, score: (nameMatched ? 10 : 0) + (jobMatched ? 4 : 0) + (interviewerMatched ? 4 : 0) + timeScore, time, nameMatched };
-  }).filter(entry => entry.nameMatched && entry.score >= 10);
-  scored.sort((left, right) => right.score - left.score || (hintTime ? Math.abs((Date.parse(left.item.startedAt || '') || 0) - hintTime) - Math.abs((Date.parse(right.item.startedAt || '') || 0) - hintTime) : right.time - left.time));
-  return scored[0]?.item || null;
-}
-function attachTranscriptImports(interviews, imports) {
-  const base = (interviews || []).filter(item => item.source !== 'acecall-local').map(item => ({ ...item }));
-  const unmatched = [];
-  for (const task of imports || []) {
-    const text = String(task.result?.text || '').trim();
-    if (!text) continue;
-    const hint = task.metadata || {};
-    const match = matchImportedTranscript(task, base);
-    if (!match) {
-      unmatched.push({ id: `local_${task.id}`, source: 'acecall-local', candidateName: hint.candidateName || '', jobName: hint.jobName || '', interviewer: hint.interviewer || '', round: hint.round || '', transcript: text, transcriptStatus: 'completed', transcriptCharacters: text.length, startedAt: hint.interviewAt || task.createdAt || '', fileName: task.fileName, transcriptSource: 'local-moka-download', completed: Boolean(hint.interviewer), outcome: '', interviewPassed: null, interviewRejected: null });
-      continue;
-    }
-    if (!match.transcript || String(match.transcript).length < text.length) {
-      match.transcript = text;
-      match.transcriptStatus = 'completed';
-      match.transcriptCharacters = text.length;
-      match.transcriptSource = 'local-moka-download';
-      match.transcriptFileName = task.fileName || '';
-    }
-  }
-  return [...base, ...unmatched];
-}
-function syncInterviewTranscripts() {
-  app.mokaInterviews = attachTranscriptImports(app.mokaInterviews, app.transcriptImports);
-}
-function sameInterviewJob(left, right) {
-  const a = String(left || '').replace(/\s+/g, '');
-  const b = String(right || '').replace(/\s+/g, '');
-  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
-}
-function captureMatchesFilters(item, filters = {}) {
-  const days = Number(filters.period || 0);
-  const cutoff = days ? Date.now() - days * 86400000 : 0;
-  const date = Date.parse(item.startedAt || '') || 0;
-  const interviewerOk = !filters.interviewer || sameInterviewPerson(item.interviewer, filters.interviewer);
-  const jobOk = !filters.job || sameInterviewJob(item.jobName, filters.job);
-  const roundOk = !filters.round || item.round === filters.round;
-  const timeOk = !cutoff || date >= cutoff;
-  return interviewerOk && jobOk && roundOk && timeOk;
-}
-function transcriptCaptureEntries(filters = {}) {
-  const interviews = app.mokaInterviews.filter(item => item.source !== 'acecall-local');
-  return (app.transcriptImports || []).map(task => {
-    const text = String(task.result?.text || '').trim();
-    const hint = task.metadata || {};
-    const match = matchImportedTranscript(task, interviews);
-    return {
-      id: task.id,
-      fileName: task.fileName || hint.fileName || '转写文件',
-      capturedAt: task.createdAt || task.updatedAt || '',
-      candidateName: match?.candidateName || hint.candidateName || '',
-      jobName: match?.jobName || hint.jobName || '',
-      hrName: hint.hrName || '',
-      interviewer: match?.interviewer || hint.interviewer || '',
-      startedAt: match?.startedAt || hint.interviewAt || '',
-      round: match?.round || hint.round || '',
-      text,
-      matched: Boolean(match)
-    };
-  }).filter(item => item.text && captureMatchesFilters(item, filters)).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
-}
-function interviewResultLabel(item = {}) {
-  const schedule = String(item.scheduleStatus || '');
-  if (item.interviewPassed === true && item.interviewRejected === true) return '结果冲突';
-  if (item.interviewPassed === true) return '通过';
-  if (item.interviewRejected === true) return '淘汰';
-  if (String(item.outcome || '').includes('待定')) return '待定';
-  if (/取消/.test(schedule)) return '已取消';
-  if (/未结束|未进行/.test(schedule) || item.completed === false) return '未完成';
-  return item.feedback ? '未给结论' : '未评价';
-}
-function interviewResultClass(label) {
-  if (label === '通过') return 'quality quality-good';
-  if (label === '淘汰') return 'quality quality-error';
-  if (label === '待定' || label === '结果冲突') return 'quality quality-warn';
-  return 'quality';
 }
 function renderInterviewers() {
   const root = $('#interviewersView'); if (!root) return;
   const stored = app.interviewerFilters || {};
   const sourceRecords = [...app.mokaInterviews, ...app.cases.map(item => ({ interviewer: interviewerNameOf(item) }))].filter(item => item.interviewer);
-  const capturePool = transcriptCaptureEntries({});
-  const interviewers = [...new Set([...sourceRecords.map(item => item.interviewer), ...capturePool.map(item => item.interviewer)].filter(Boolean))];
-  const selected = stored.interviewer || '';
+  const interviewers = [...new Set(sourceRecords.map(item => item.interviewer).filter(Boolean))];
+  const selected = stored.interviewer || interviewers[0] || '';
   const filters = { interviewer: selected, job: stored.job || '', round: stored.round || '', period: stored.period || '' };
   const allRecords = interviewerRecords({ ...filters, interviewer: '' });
   const records = interviewerRecords(filters);
-  const captureForOptions = capturePool.filter(item => !selected || sameInterviewPerson(item.interviewer, selected));
-  const jobs = [...new Set([...allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.jobName), ...captureForOptions.map(item => item.jobName)].filter(Boolean))];
-  const rounds = [...new Set([...allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.round), ...captureForOptions.map(item => item.round)].filter(Boolean))];
-  const outcomes = records.reduce((result, item) => { result.completed += 1; result.passed += item.interviewPassed === true ? 1 : 0; result.rejected += item.interviewRejected === true || item.interviewFailed === true ? 1 : 0; result.pending += item.interviewPassed !== true && item.interviewRejected !== true && item.interviewFailed !== true ? 1 : 0; result.offers += item.offerAccepted || item.hired ? 1 : 0; result.hired += item.hired ? 1 : 0; result.duration += item.durationMinutes || 0; result.evaluated += item.outcome || item.interviewPassed !== null || item.interviewRejected !== null || item.hired ? 1 : 0; return result; }, { completed: 0, passed: 0, rejected: 0, pending: 0, offers: 0, hired: 0, duration: 0, evaluated: 0 });
+  const jobs = [...new Set(allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.jobName).filter(Boolean))];
+  const rounds = [...new Set(allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.round).filter(Boolean))];
+  const outcomes = records.reduce((result, item) => { result.completed += 1; result.passed += item.interviewPassed ? 1 : 0; result.offers += item.offerAccepted || item.hired ? 1 : 0; result.hired += item.hired ? 1 : 0; result.duration += item.durationMinutes || 0; result.evaluated += item.outcome || item.interviewPassed || item.hired ? 1 : 0; return result; }, { completed: 0, passed: 0, offers: 0, hired: 0, duration: 0, evaluated: 0 });
   const pct = (value, denominator) => denominator ? `${Math.round(value / denominator * 100)}%` : '—';
   const rate = (value, denominator) => denominator ? Math.round(value / denominator * 100) : 0;
-  const jobRows = [...new Set(records.map(item => item.jobName).filter(Boolean))].map(job => { const items = records.filter(item => item.jobName === job); return { job, count: items.length, passed: items.filter(item => item.interviewPassed === true).length, rejected: items.filter(item => item.interviewRejected === true || item.interviewFailed === true).length, offers: items.filter(item => item.offerAccepted || item.hired).length, hired: items.filter(item => item.hired).length }; }).sort((a, b) => b.count - a.count);
-  const roundRows = [...new Set(records.map(item => item.round).filter(Boolean))].map(round => { const items = records.filter(item => item.round === round); return { round, count: items.length, passed: items.filter(item => item.interviewPassed === true).length, rejected: items.filter(item => item.interviewRejected === true || item.interviewFailed === true).length, evaluated: items.filter(item => item.outcome || item.interviewPassed !== null || item.interviewRejected !== null || item.hired).length }; }).sort((a, b) => b.count - a.count);
+  const jobRows = [...new Set(records.map(item => item.jobName).filter(Boolean))].map(job => { const items = records.filter(item => item.jobName === job); return { job, count: items.length, passed: items.filter(item => item.interviewPassed).length, offers: items.filter(item => item.offerAccepted || item.hired).length, hired: items.filter(item => item.hired).length }; }).sort((a, b) => b.count - a.count);
+  const roundRows = [...new Set(records.map(item => item.round).filter(Boolean))].map(round => { const items = records.filter(item => item.round === round); return { round, count: items.length, passed: items.filter(item => item.interviewPassed).length, evaluated: items.filter(item => item.outcome || item.interviewPassed || item.hired).length }; }).sort((a, b) => b.count - a.count);
   const monthRows = [...new Set(records.map(item => String(item.startedAt || '').slice(0, 7)).filter(value => /^\d{4}-\d{2}$/.test(value)))].sort().slice(-6).map(month => ({ month, count: records.filter(item => String(item.startedAt || '').startsWith(month)).length }));
-  const transcriptCoverage = records.length ? rate(records.filter(item => item.transcript).length, records.length) : 0;
-  const pendingTranscript = records.filter(item => !item.transcript).length;
-  const questionCount = records.reduce((sum, item) => sum + String(item.transcript || '').split(/\n+/).filter(line => /[？?]$/.test(line.trim())).length, 0);
-  const followUpSignals = records.reduce((sum, item) => sum + (String(item.transcript || '').match(/为什么|如何|具体|负责|结果|核实|确认|追问/g) || []).length, 0);
   const status = app.mokaInterviewStatus;
-  const serverAnalytics = app.mokaAnalytics || {};
-  const diagnostics = app.connectionDiagnostics || {};
-  const jobSyncCount = status.mokaJobStats?.matched ?? status.mokaJobStats?.fallbackMatched;
-  const jobSyncNote = Number.isFinite(jobSyncCount) ? ` · 目标岗位 ${jobSyncCount} 个` : '';
-  const lookbackNote = status.filters?.lookbackDays ? `近 ${status.filters.lookbackDays} 天 · ` : '';
-  const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}` : status.configured ? `${lookbackNote}Moka 只读数据 · 按 13 个目标岗位名称筛选` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
-  const diagnosticRow = (label, value, tone = '') => `<div class="connection-diagnostic-row"><span>${escapeHtml(label)}</span><b class="${tone}">${escapeHtml(value || '未检查')}</b></div>`;
+  const transcriptNote = status.transcript ? `转写已同步 ${status.transcript.synced || 0} 份` : '转写等待同步';
+  const dataNote = status.loading ? '正在读取 Moka 面试数据' : status.configured ? `Moka 面试数据 · ${transcriptNote}` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据';
   const selectOptions = (values, value, empty) => `<option value="">${empty}</option>${values.map(item => `<option value="${escapeHtml(item)}"${item === value ? ' selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
-  root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和参与结构；岗位与环节仅用于解释面试官表现。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${outcomes.passed || '—'}</b><span>面试通过</span><small>明确通过结论</small></div><div class="metric"><b>${outcomes.rejected || '—'}</b><span>面试淘汰</span><small>明确淘汰/不通过结论</small></div><div class="metric"><b>${outcomes.pending || '—'}</b><span>待评价</span><small>尚未形成结果</small></div><div class="metric"><b>${pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${outcomes.passed} 人通过</small></div><div class="metric"><b>${pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>有明确结论的面试</small></div></div><div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>${escapeHtml(selected || '面试官')}的岗位参与</h2><p class="surface-subtitle">按面试官参与过的岗位拆解判断结果</p></div><span>${jobRows.length} 个岗位</span></div><div class="surface-body table-wrap"><table><thead><tr><th>岗位</th><th>面试数</th><th>通过</th><th>淘汰</th><th>待评价</th><th>入职</th></tr></thead><tbody>${jobRows.map(row => `<tr><td><strong>${escapeHtml(row.job)}</strong></td><td>${row.count}</td><td>${row.passed} <small>${pct(row.passed, row.count)}</small></td><td>${row.rejected}</td><td>${Math.max(0, row.count - row.passed - row.rejected)}</td><td>${row.hired}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">暂无该面试官的岗位面试数据。接入 Moka 后将从面试安排和结果生成。</div></td></tr>'}</tbody></table></div></section><section class="surface"><div class="surface-head"><div><h2>${escapeHtml(selected || '面试官')}的面试环节</h2><p class="surface-subtitle">区分初面、复面和专业面，避免混淆不同判断任务</p></div></div><div class="surface-body interviewer-round-list">${roundRows.map(row => `<div class="analytics-rank-row"><span>${escapeHtml(row.round)}</span><b>${row.count} 场</b><small>通过 ${row.passed} · 淘汰 ${row.rejected} · 评价完成 ${pct(row.evaluated, row.count)}</small></div>`).join('') || '<div class="empty">暂无面试环节字段，等待 Moka 面试数据同步。</div>'}</div></section></div><div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><span>${escapeHtml(row.month)}</span><i style="height:${Math.max(8, row.count * 16)}px"></i><b>${row.count}</b></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>团队对比</h2><p class="surface-subtitle">后续接入更多面试官后展示相对位置</p></div><span class="readonly-badge">阶段一</span></div><div class="surface-body recommendation-list"><p><b>当前口径：</b>通过率、淘汰率和评价完成率均基于当前面试官的面试记录；待评价不计入结果分母。</p><p><b>数据边界：</b>取消、未进行不计入已完成；已淘汰候选人保留在明细中。</p><p><b>结果来源：</b>近 ${status.filters?.lookbackDays || 60} 天面试记录，并按申请、轮次和面试官匹配 Moka 面试反馈中的通过、淘汰、待定和评价原文。</p></div></section></div></div>`;
-  root.querySelector('.interviewer-filters')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-data-quality"><div class="surface-head"><div><h2>分析数据质量</h2><p class="surface-subtitle">先区分已完成分析与等待转写，避免把缺失数据当成面试官表现</p></div><span>${records.length ? `${transcriptCoverage}% 已有转写` : '暂无记录'}</span></div><div class="interviewer-quality-grid"><div><b>${records.filter(item => item.source === 'moka').length}</b><span>Moka 面试</span><small>只读来源 · 已抓取 ${status.totalFetched || 0} 条</small></div><div><b>${records.filter(item => item.source === 'acecall').length}</b><span>AceCall 沟通</span><small>本地记录</small></div><div><b>${questionCount || '—'}</b><span>可识别问题</span><small>以问号结尾的句子</small></div><div><b>${followUpSignals || '—'}</b><span>追问信号</span><small>项目、职责与风险核验</small></div><div><b>${pendingTranscript || '—'}</b><span>待处理转写</span><small>${pendingTranscript ? '需要先获取转写' : '当前无缺口'}${status.warnings?.length ? ` · ${status.warnings.length} 项来源提醒` : ''}</small></div></div></section>`);
-  root.querySelector('.interviewer-data-quality')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-server-analysis"><div class="surface-head"><div><h2>云端结构化分析</h2><p class="surface-subtitle">由 AceCall 云函数基于 Moka 转写统一计算，便于后续月度复盘</p></div><span>${serverAnalytics.interviewer ? '已生成' : '等待数据'}</span></div><div class="server-analysis-grid"><div><b>${serverAnalytics.interviewer?.score ?? '—'}</b><span>面试表现分</span><small>问题覆盖、追问深度、记录完整度</small></div><div><b>${serverAnalytics.dimensions?.questionCoverage ?? '—'}%</b><span>问题覆盖</span><small>${serverAnalytics.questions?.length || 0} 条问题句</small></div><div><b>${serverAnalytics.dimensions?.followUpDepth ?? '—'}%</b><span>追问深度</span><small>${serverAnalytics.followUpSignals || 0} 个追问信号</small></div><div><b>${serverAnalytics.interviewer?.evaluationRate ?? '—'}%</b><span>评价完成</span><small>${serverAnalytics.interviewer?.evaluated || 0} / ${serverAnalytics.interviewer?.completed || 0} 场</small></div></div><div class="recommendation-list server-analysis-recommendations">${(serverAnalytics.recommendations || ['同步 Moka 后生成面试官改进建议。']).map(item => `<p><b>建议：</b>${escapeHtml(item)}</p>`).join('')}</div><div class="research-tags server-analysis-topics">${(serverAnalytics.topics || []).map(item => `<span class="research-tag blue">${escapeHtml(item.name)} · ${item.mentions}</span>`).join('') || '<span class="muted-text">暂无可识别主题</span>'}</div></section>`);
-  const detailRecords = interviewerRecords({ ...filters, includeIncomplete: true }).slice().sort((a, b) => (Date.parse(b.startedAt || '') || 0) - (Date.parse(a.startedAt || '') || 0));
-  const feedbackCount = detailRecords.filter(item => String(item.feedback || '').trim()).length;
-  const resultCounts = detailRecords.reduce((result, item) => { const label = interviewResultLabel(item); result[label] = (result[label] || 0) + 1; return result; }, {});
-  const recordPageSize = 3;
-  const recordPageCount = Math.max(1, Math.ceil(detailRecords.length / recordPageSize));
-  const recordPage = Math.min(Math.max(1, Number(app.interviewerRecordPage || 1)), recordPageCount);
-  app.interviewerRecordPage = recordPage;
-  const pageRecords = detailRecords.slice((recordPage - 1) * recordPageSize, recordPage * recordPageSize);
-  const pageStart = detailRecords.length ? (recordPage - 1) * recordPageSize + 1 : 0;
-  const pageEnd = detailRecords.length ? pageStart + pageRecords.length - 1 : 0;
-  const detailRows = pageRecords.map(item => {
-    const label = interviewResultLabel(item);
-    const feedback = String(item.feedback || '').trim();
-    const transcript = String(item.transcript || '').trim();
-    return `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.scheduleStatus || (item.completed === false ? '未完成' : '已结束'))}</small></td><td>${escapeHtml(item.jobName || '未识别岗位')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatDate(item.startedAt))}</td><td><span class="${interviewResultClass(label)}">${escapeHtml(label)}</span></td><td><div class="interview-feedback-cell">${feedback ? escapeHtml(feedback) : '暂无评价'}</div></td><td><div class="interview-feedback-cell">${transcript ? escapeHtml(transcript) : '未抓到转写'}</div></td></tr>`;
-  }).join('');
-  const transcriptCount = detailRecords.filter(item => String(item.transcript || '').trim()).length;
-  const captureEntries = transcriptCaptureEntries(filters);
-  const capturePageSize = 3;
-  const capturePageCount = Math.max(1, Math.ceil(captureEntries.length / capturePageSize));
-  const capturePage = Math.min(Math.max(1, Number(app.transcriptCapturePage || 1)), capturePageCount);
-  app.transcriptCapturePage = capturePage;
-  const captureVisible = captureEntries.slice((capturePage - 1) * capturePageSize, capturePage * capturePageSize);
-  const captureStart = captureEntries.length ? (capturePage - 1) * capturePageSize + 1 : 0;
-  const captureEnd = captureEntries.length ? captureStart + captureVisible.length - 1 : 0;
-  const captureRows = captureVisible.map(item => `<tr><td><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml([formatDate(item.capturedAt), item.hrName ? `安排人 ${item.hrName}` : ''].filter(Boolean).join(' · '))}</small></td><td><span class="${item.matched ? 'quality quality-good' : 'quality quality-warn'}">${item.matched ? '已匹配' : '未匹配'}</span></td><td>${escapeHtml(item.candidateName || '未识别')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.jobName || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatInterviewMoment(item.startedAt))}</td><td><div class="interview-feedback-cell">${escapeHtml(item.text)}</div></td></tr>`).join('');
-  const capturePager = captureEntries.length > capturePageSize ? `<div class="interview-record-pager"><button type="button" data-capture-page="prev"${capturePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-capture-page-select>${Array.from({ length: capturePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === capturePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${capturePageCount} 页</label><span>${captureStart}–${captureEnd} / ${captureEntries.length} 份</span><button type="button" data-capture-page="next"${capturePage >= capturePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
-  const recordPager = detailRecords.length > recordPageSize ? `<div class="interview-record-pager"><button type="button" data-interview-page="prev"${recordPage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-interview-page-select>${Array.from({ length: recordPageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === recordPage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${recordPageCount} 页</label><span>${pageStart}–${pageEnd} / ${detailRecords.length} 场</span><button type="button" data-interview-page="next"${recordPage >= recordPageCount ? ' disabled' : ''}>下一页</button></div>` : '';
-  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `<section class="surface transcript-capture-list"><div class="surface-head"><div><h2>转写抓取记录</h2><p class="surface-subtitle">跟随上方的面试官、岗位、环节和时间筛选。每页 3 份，其余分页查看。${captureEntries.filter(item => item.matched).length} 份已匹配，${captureEntries.filter(item => !item.matched).length} 份未匹配。</p></div><span>${captureEntries.length ? `${captureStart}–${captureEnd} / ${captureEntries.length} 份` : '0 份'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>文件</th><th>抓取状态</th><th>候选人</th><th>面试官</th><th>岗位</th><th>环节</th><th>面试时间</th><th>转写正文</th></tr></thead><tbody>${captureRows || `<tr><td colspan="8"><div class="empty">${filters.interviewer || filters.job || filters.round || filters.period ? '当前筛选条件下没有转写记录。' : '还没有抓到转写文件。助手导入新文件后，点刷新 Moka 数据即可在这里确认。'}</div></td></tr>`}</tbody></table></div>${capturePager}</section><section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
-  const keepRecordScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
-  root.querySelector('[data-capture-page="prev"]')?.addEventListener('click', () => { app.transcriptCapturePage = Math.max(1, capturePage - 1); keepRecordScroll(); });
-  root.querySelector('[data-capture-page="next"]')?.addEventListener('click', () => { app.transcriptCapturePage = Math.min(capturePageCount, capturePage + 1); keepRecordScroll(); });
-  root.querySelector('[data-capture-page-select]')?.addEventListener('change', event => { app.transcriptCapturePage = Number(event.target.value) || 1; keepRecordScroll(); });
-  root.querySelector('[data-interview-page="prev"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.max(1, recordPage - 1); keepRecordScroll(); });
-  root.querySelector('[data-interview-page="next"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.min(recordPageCount, recordPage + 1); keepRecordScroll(); });
-  root.querySelector('[data-interview-page-select]')?.addEventListener('change', event => { app.interviewerRecordPage = Number(event.target.value) || 1; keepRecordScroll(); });
-  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; app.interviewerRecordPage = 1; app.transcriptCapturePage = 1; renderInterviewers(); renderInterviewerFollowups(); }); });
-  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary(); await loadTranscriptImports(); renderInterviewers(); renderInterviewerFollowups(); });
+  root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和参与结构；岗位与环节仅用于解释面试官表现。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${outcomes.passed} 人通过</small></div><div class="metric"><b>${pct(outcomes.offers, outcomes.passed)}</b><span>Offer / 通过转化</span><small>${outcomes.offers} 人接受 Offer</small></div><div class="metric"><b>${pct(outcomes.hired, outcomes.completed)}</b><span>最终入职率</span><small>${outcomes.hired} 人已入职</small></div><div class="metric"><b>${outcomes.duration ? `${Math.round(outcomes.duration / outcomes.completed)} 分钟` : '—'}</b><span>平均面试时长</span><small>仅统计有时长记录</small></div><div class="metric"><b>${pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>有结论的面试记录</small></div></div><div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>${escapeHtml(selected || '面试官')}的岗位参与</h2><p class="surface-subtitle">按面试官参与过的岗位拆解判断结果</p></div><span>${jobRows.length} 个岗位</span></div><div class="surface-body table-wrap"><table><thead><tr><th>岗位</th><th>面试数</th><th>通过率</th><th>Offer 转化</th><th>入职</th></tr></thead><tbody>${jobRows.map(row => `<tr><td><strong>${escapeHtml(row.job)}</strong></td><td>${row.count}</td><td>${pct(row.passed, row.count)}</td><td>${pct(row.offers, row.passed)}</td><td>${row.hired}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">暂无该面试官的岗位面试数据。接入 Moka 后将从面试安排和结果生成。</div></td></tr>'}</tbody></table></div></section><section class="surface"><div class="surface-head"><div><h2>${escapeHtml(selected || '面试官')}的面试环节</h2><p class="surface-subtitle">区分初面、复面和专业面，避免混淆不同判断任务</p></div></div><div class="surface-body interviewer-round-list">${roundRows.map(row => `<div class="analytics-rank-row"><span>${escapeHtml(row.round)}</span><b>${row.count} 场</b><small>通过 ${pct(row.passed, row.count)} · 评价完成 ${pct(row.evaluated, row.count)}</small></div>`).join('') || '<div class="empty">暂无面试环节字段，等待 Moka 面试数据同步。</div>'}</div></section></div><div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><span>${escapeHtml(row.month)}</span><i style="height:${Math.max(8, row.count * 16)}px"></i><b>${row.count}</b></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>团队对比</h2><p class="surface-subtitle">后续接入更多面试官后展示相对位置</p></div><span class="readonly-badge">阶段一</span></div><div class="surface-body recommendation-list"><p><b>当前口径：</b>通过率、Offer 转化、入职率均基于当前面试官完成的面试，不用岗位总人数作分母。</p><p><b>数据边界：</b>取消、未进行和待定不计入通过率；已淘汰候选人仍保留在明细中。</p><p><b>下一阶段：</b>转写文档同步后，分析问题覆盖、追问深度、候选人体验和面试官评分。</p></div></section></div></div>`;
+  const mokaRows = records.filter(item => item.source === 'moka');
+  const transcriptPanel = document.createElement('section'); transcriptPanel.className = 'surface moka-transcript-panel';
+  const transcriptStatus = item => item.transcriptStatus === 'synced' ? '已同步转写' : item.transcriptStatus === 'download_failed' ? '下载失败' : item.transcriptStatus === 'pending' ? '待同步' : '暂无转写';
+  const transcriptLink = item => /^https?:\/\//i.test(String(item.transcriptDocumentUrl || '')) ? `<a class="link-action" href="${escapeHtml(item.transcriptDocumentUrl)}" target="_blank" rel="noopener">下载 Word</a>` : '—';
+  transcriptPanel.innerHTML = `<div class="surface-head"><div><h2>面试转写记录</h2><p class="surface-subtitle">Moka 自动下载并解析的 Word 转写，直接用于面试官偏好分析</p></div><span>${mokaRows.length} 场</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>面试时间</th><th>面试官</th><th>转写状态</th><th>文档</th></tr></thead><tbody>${mokaRows.map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.jobName || '未分配岗位')}</small></td><td>${escapeHtml(formatDate(item.startedAt))}</td><td>${escapeHtml(item.interviewer || '—')}</td><td>${transcriptStatus(item)}${item.transcriptError ? `<small>${escapeHtml(item.transcriptError)}</small>` : ''}</td><td>${transcriptLink(item)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">暂无 Moka 面试记录。</div></td></tr>'}</tbody></table></div>`;
+  root.querySelector('.interviewer-analysis-page')?.append(transcriptPanel);
+  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; renderInterviewers(); renderInterviewerFollowups(); }); });
+  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews(); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
-function interviewerInsightSessions() {
-  const filters = app.interviewerFilters || {};
-  const captured = transcriptCaptureEntries(filters).slice(0, 6).map(item => ({
-    candidateName: item.candidateName || '',
-    jobName: item.jobName || '',
-    interviewer: item.interviewer || '',
-    round: item.round || '',
-    startedAt: item.startedAt || '',
-    text: String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
-  })).filter(item => item.text.length >= 40);
-  if (captured.length) return captured;
-  return interviewerRecords(filters).filter(item => String(item.transcript || '').trim().length >= 40).slice(0, 6).map(item => ({
-    candidateName: item.candidateName || '',
-    jobName: item.jobName || '',
-    interviewer: item.interviewer || '',
-    round: item.round || '',
-    startedAt: item.startedAt || '',
-    text: String(item.transcript || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
-  }));
-}
-function interviewerInsightKey(sessions) {
-  const filters = app.interviewerFilters || {};
-  return JSON.stringify({ interviewer: filters.interviewer || '', job: filters.job || '', round: filters.round || '', period: filters.period || '', sessions: sessions.map(item => [item.candidateName, item.jobName, item.interviewer, item.startedAt, item.text.length, item.text.slice(0, 24)]) });
-}
-function interviewerInsightHtml(result = {}) {
-  const questions = (result.questions || []).map(item => String(item || '').trim()).filter(Boolean);
-  const themes = (result.themes || []).map(item => `<p><b>${escapeHtml(item.name || '主题')}：</b>${escapeHtml(item.detail || '')}</p>`).join('');
-  const questionList = questions.length ? `<div class="interviewer-question-list">${questions.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : '<p>转写里没有提炼出可复用的问句。</p>';
-  if (!result.summary && !questions.length && !themes) return '<p>这次没有形成可展示的分析。</p>';
-  return `<p><b>提问偏好：</b>${escapeHtml(result.summary || '暂无总结')}</p><p><b>高频问题：</b></p>${questionList}${themes}<p><b>追问方式：</b>${escapeHtml(result.followUpStyle || '暂无')}</p>`;
-}
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
-  const selected = app.interviewerFilters?.interviewer || '';
-  const filters = app.interviewerFilters || {};
-  const records = interviewerRecords({ ...filters, interviewer: selected });
+  const selected = app.interviewerFilters?.interviewer || app.mokaInterviews[0]?.interviewer || '';
+  const records = interviewerRecords({ ...app.interviewerFilters, interviewer: selected });
   const transcripts = records.map(item => String(item.transcript || '')).filter(Boolean);
   const questionLines = transcripts.flatMap(text => text.split(/\n+/).map(line => line.trim()).filter(line => /[？?]$/.test(line) && line.length >= 6));
+  const questionTopics = ['项目结果', '个人职责', '业务规模', '离职动机', '团队协作', '风险核验'].map(topic => ({ topic, count: transcripts.filter(text => new RegExp(topic.replace('风险核验', '风险|核实')).test(text)).length })).filter(item => item.count).sort((a, b) => b.count - a.count);
   const followUpCount = transcripts.reduce((sum, text) => sum + (text.match(/为什么|如何|具体|负责|结果|核实|确认|追问/g) || []).length, 0);
   const coverage = transcripts.length ? Math.min(100, Math.round(questionLines.length / transcripts.length * 12)) : 0;
   const completeness = records.length ? Math.round(records.filter(item => item.outcome || item.interviewPassed || item.hired).length / records.length * 100) : 0;
   const depth = transcripts.length ? Math.min(100, Math.round(followUpCount / transcripts.length * 8)) : 0;
-  const sessions = interviewerInsightSessions();
-  const insightKey = interviewerInsightKey(sessions);
-  const cached = app.interviewerInsight?.key === insightKey ? app.interviewerInsight.result : null;
-  const insightHtml = cached ? interviewerInsightHtml(cached) : (sessions.length ? '<p>正在根据当前筛选的转写分析提问偏好…</p>' : '<p>当前筛选下还没有可分析的转写。</p>');
   const score = records.length ? Math.round(coverage * .35 + depth * .35 + completeness * .3) : 0;
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
-  const comparePageSize = 5;
-  const comparePageCount = Math.max(1, Math.ceil(comparison.length / comparePageSize));
-  const comparePage = Math.min(Math.max(1, Number(app.interviewerComparePage || 1)), comparePageCount);
-  app.interviewerComparePage = comparePage;
-  const compareVisible = comparison.slice((comparePage - 1) * comparePageSize, comparePage * comparePageSize);
-  const compareStart = comparison.length ? (comparePage - 1) * comparePageSize + 1 : 0;
-  const compareEnd = comparison.length ? compareStart + compareVisible.length - 1 : 0;
-  const comparePager = comparison.length > comparePageSize ? `<div class="interview-record-pager"><button type="button" data-compare-page="prev"${comparePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-compare-page-select>${Array.from({ length: comparePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === comparePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${comparePageCount} 页</label><span>${compareStart}–${compareEnd} / ${comparison.length} 位</span><button type="button" data-compare-page="next"${comparePage >= comparePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
-  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">按上方筛选提炼可复用的短问句。转写原文在页面底部的抓取记录里，这里不再重复</p></div><span>${sessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${score || '—'}${score ? '/100' : ''}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverage || '—'}</b></div><div><span>追问深度</span><b>${depth || '—'}</b></div><div><span>结论完整</span><b>${completeness || '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">每页 5 位，其余分页查看</p></div><span>${comparison.length ? `${compareStart}–${compareEnd} / ${comparison.length} 位` : '0 位'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${compareVisible.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count ? `${row.passRate}%` : '—'}</td><td>${row.hired}</td><td>${selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div>${comparePager}</section>`;
+  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">第二阶段：从当前面试官的真实转写中提取问题主题和追问方式</p></div><span>${transcripts.length} 份转写</span></div><div class="surface-body recommendation-list"><p><b>高频问题：</b>${questionLines.slice(0, 5).map(item => escapeHtml(item)).join(' · ') || '暂无可识别的问题句。'}</p><p><b>关注主题：</b>${questionTopics.map(item => `${escapeHtml(item.topic)}（${item.count}）`).join(' · ') || '等待 Moka 转写数据。'}</p><p><b>追问信号：</b>${followUpCount ? `${followUpCount} 个，主要用于判断项目结果、职责边界和风险信息。` : '暂无追问信号。'}</p></div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${score || '—'}${score ? '/100' : ''}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverage || '—'}</b></div><div><span>追问深度</span><b>${depth || '—'}</b></div><div><span>结论完整</span><b>${completeness || '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">第四阶段：以面试官为主语比较工作量和结果，不做岗位招聘总览</p></div><span>${comparison.length} 位面试官</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${comparison.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count ? `${row.passRate}%` : '—'}</td><td>${row.hired}</td><td>${selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div></section>`;
   page.append(section);
-  const captureList = page.querySelector('.transcript-capture-list');
-  const recordList = page.querySelector('.interview-record-list');
-  if (captureList) page.append(captureList);
-  if (recordList) page.append(recordList);
-  const keepCompareScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
-  section.querySelector('[data-compare-page="prev"]')?.addEventListener('click', () => { app.interviewerComparePage = Math.max(1, comparePage - 1); keepCompareScroll(); });
-  section.querySelector('[data-compare-page="next"]')?.addEventListener('click', () => { app.interviewerComparePage = Math.min(comparePageCount, comparePage + 1); keepCompareScroll(); });
-  section.querySelector('[data-compare-page-select]')?.addEventListener('change', event => { app.interviewerComparePage = Number(event.target.value) || 1; keepCompareScroll(); });
-  if (!cached && sessions.length && app.interviewerInsightLoading !== insightKey) {
-    app.interviewerInsightLoading = insightKey;
-    generate({ action: 'review-interviewer', interviewer: selected, job: filters.job || '', round: filters.round || '', sessions }).then(result => {
-      if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
-      app.interviewerInsight = { key: insightKey, result };
-      const box = document.querySelector('[data-interviewer-insight]');
-      if (box) box.innerHTML = interviewerInsightHtml(result);
-    }).catch(error => {
-      if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
-      const box = document.querySelector('[data-interviewer-insight]');
-      if (box) box.innerHTML = `<p>分析没有完成：${escapeHtml(error.message || 'AI 服务暂时不可用')}</p>`;
-    }).finally(() => { if (app.interviewerInsightLoading === insightKey) app.interviewerInsightLoading = ''; });
-  }
 }
 
 function renderScreeningRules() {
@@ -1020,23 +779,33 @@ function renderTranscriptReview() {
   const complete = records.filter(item => item.communicationSummary && item.report).length;
   $('#transcriptReviewView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">INTERVIEW TRANSCRIPT REVIEW</span><h1>面试转写复盘</h1><p>抓取并分析面试转写，提取面试官提问重点、追问深度与候选人回答中的决策信号。</p></div><span class="readonly-badge">合规留痕</span></div><div class="research-banner"><div><span>已分析记录</span><strong>${records.length}<small> 份</small></strong></div><p>录音或转写需要在取得候选人告知同意后进入分析，系统保留原始记录、总结和最终结果的关联。</p><span class="data-status">${transcripts.length ? `${transcripts.length} 份含转写` : '等待转写数据'}</span></div><div class="metrics research-metrics"><div class="metric"><b>${transcripts.length}</b><span>已抓取转写</span><small>原始文本</small></div><div class="metric"><b>${followUps}</b><span>追问信号</span><small>核实与风险词</small></div><div class="metric"><b>${complete}</b><span>完整复盘</span><small>总结与结果齐全</small></div><div class="metric"><b>${records.length ? Math.round(complete / records.length * 100) : 0}%</b><span>记录完整度</span><small>可用于规则学习</small></div></div><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>高频面试关注点</h2><p class="surface-subtitle">从准备问题、转写和总结中归纳</p></div></div><div class="surface-body research-tags"><span class="research-tag blue">项目结果</span><span class="research-tag blue">个人职责</span><span class="research-tag blue">业务规模</span><span class="research-tag">离职动机</span><span class="research-tag">风险核实</span></div></section><section class="surface"><div class="surface-head"><div><h2>复盘建议</h2><p class="surface-subtitle">帮助团队校准面试标准</p></div></div><div class="surface-body recommendation-list"><p><b>统一：</b>将同岗位高频问题沉淀为结构化面试清单。</p><p><b>追踪：</b>关联面试通过、Offer 和入职结果，验证问题的预测价值。</p><p><b>保护：</b>转写分析仅用于招聘质量复盘，不直接作为自动淘汰依据。</p></div></section></div></div>`;
 }
-function renderIntelligence() {
-   const records = intelligenceRecords();
+ function renderIntelligence() {
+   const records = intelligenceRecords({ source: app.intelligenceSource });
    const companies = records.filter(item => item.name).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
    const view = app.intelligenceView || 'company';
    const query = String(app.intelligenceQuery || '').trim().toLowerCase();
-   const objects = view === 'company' ? companies : intelligenceDimensionRecords(view, records);
-   const filteredCompanies = objects.filter(item => !query || `${item.name} ${item.summary} ${item.evidence}`.toLowerCase().includes(query));
-   const selectedKey = app.intelligenceSelected || filteredCompanies[0]?.key || '';
+   const objects = view === 'company' ? companies : intelligenceDimensionRecords(view, records, { source: app.intelligenceSource });
+   const industryObjects = intelligenceDimensionRecords('industry', records, { source: app.intelligenceSource });
+   const selectedIndustry = app.intelligenceIndustry && industryObjects.some(item => item.key === app.intelligenceIndustry) ? app.intelligenceIndustry : '';
+   const filteredCompanies = objects.filter(item => (!selectedIndustry || view !== 'company' || (item.industries || []).some(industry => industry.toLowerCase() === selectedIndustry)) && (!query || `${item.name} ${item.summary} ${item.evidence}`.toLowerCase().includes(query)));
+   const selectedKey = app.intelligenceSelected && filteredCompanies.some(item => item.key === app.intelligenceSelected) ? app.intelligenceSelected : (filteredCompanies[0]?.key || '');
    const selected = filteredCompanies.find(item => item.key === selectedKey) || filteredCompanies[0];
    const themes = [...new Set(app.jobs.flatMap(job => job.keywords || []))].slice(0, 12);
    const transcriptCount = intelligenceSourceRecords().filter(item => String(item.transcript || '').trim()).length;
    const pendingCount = filteredCompanies.filter(item => (app.intelligenceReviewed[item.key] || 'pending') === 'pending').length;
-   const companyRows = filteredCompanies.map(item => `<button class="intelligence-list-item ${selected?.key === item.key ? 'active' : ''}" type="button" data-intelligence-select="${escapeHtml(item.key)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.count} 条线索 · ${item.transcripts} 场面试</small></span><b>${escapeHtml(item.confidence)}</b></button>`).join('');
-   const detail = selected ? `<div class="intelligence-detail-head"><div><span class="eyebrow">${view.toUpperCase()}</span><h2>${escapeHtml(selected.name)}</h2></div><span class="intelligence-status ${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? 'confirmed' : ''}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '已确认' : '待确认'}</span></div><p class="intelligence-summary">${escapeHtml(selected.summary || '已从面试材料中识别到该对象，业务信息待补充。')}</p><div class="intelligence-detail-grid"><div><span>线索数量</span><b>${selected.count}</b></div><div><span>关联面试</span><b>${selected.transcripts}</b></div><div><span>可信度</span><b>${escapeHtml(selected.confidence)}</b></div></div><div class="intelligence-evidence"><strong>原文证据</strong><span>${escapeHtml(selected.evidence || '暂无可展示的原文片段')}</span></div><div class="intelligence-row-actions"><button class="primary" type="button" data-intelligence-review="${escapeHtml(selected.key)}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '标记待确认' : '确认线索'}</button><button class="link-action" type="button" data-intelligence-detail="${escapeHtml(selected.key)}">查看关联面试 →</button></div>` : '<div class="empty">当前筛选条件下暂无情报。</div>';
+   const sourceSummary = intelligenceSourceSummary();
+   const sourceCards = `<section class="intelligence-source-cards"><div class="intelligence-source-card"><span>候选人简历</span><strong>${sourceSummary.resume}</strong><small>提取工作经历中的公司、职位、任职时间</small></div><div class="intelligence-source-card"><span>电话沟通转写</span><strong>${sourceSummary.phone}</strong><small>识别候选人主动提到的行业、产品和业务</small></div><div class="intelligence-source-card"><span>正式 Moka 面试转写</span><strong>${sourceSummary.moka}</strong><small>识别面试问答中的业务事实和关键词</small></div></section>`;
+   const industryPicker = view === 'company' ? `<div class="intelligence-industry-picker"><div><strong>先选行业</strong><small>公司列表只显示该行业下的公司</small></div><button type="button" class="${!selectedIndustry ? 'active' : ''}" data-intelligence-industry="">全部行业</button>${industryObjects.map(item => `<button type="button" class="${selectedIndustry === item.key ? 'active' : ''}" data-intelligence-industry="${escapeHtml(item.key)}">${escapeHtml(item.name)} <b>${item.count}</b></button>`).join('')}</div>` : '';
+   const companyRows = filteredCompanies.map(item => `<button class="intelligence-list-item ${selected?.key === item.key ? 'active' : ''}" type="button" data-intelligence-select="${escapeHtml(item.key)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.count} 条线索 · ${item.transcripts} 场面试 · ${(item.sources || []).join(' / ') || '来源待确认'}</small></span><b>${escapeHtml(item.confidence)}</b></button>`).join('');
+   const emptyText = `<div class="intelligence-empty"><strong>当前没有可确认的${tabsLabel(view)}数据</strong><span>已读取 ${sourceSummary.total} 条招聘材料，但当前维度没有命中设定词或结构化字段。请先完成简历解析、电话转写或 Moka 面试转写同步。</span><small>本页不会把猜测内容当成情报展示。</small></div>`;
+   const detail = selected ? `<div class="intelligence-detail-head"><div><span class="eyebrow">${view.toUpperCase()} · 研究对象</span><h2>${escapeHtml(selected.name)}</h2></div><span class="intelligence-status ${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? 'confirmed' : ''}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '已确认' : '待确认'}</span></div><p class="intelligence-summary">${escapeHtml(selected.summary || '已从招聘材料中识别到该对象，业务信息待补充。')}</p><div class="intelligence-detail-grid"><div><span>命中材料</span><b>${selected.count}</b></div><div><span>关联面试</span><b>${selected.transcripts}</b></div><div><span>来源类型</span><b>${escapeHtml((selected.sources || []).join(' / ') || '待确认')}</b></div></div><div class="intelligence-detail-section"><strong>为什么会出现在这里</strong><p>${view === 'company' ? '公司名称来自简历工作经历中的公司字段或带任职时间的工作经历行。' : `材料中命中了“${escapeHtml(selected.name)}”这一受控词。`}</p></div><div class="intelligence-evidence"><strong>原文证据</strong><span>${escapeHtml(selected.evidence || '暂无可展示的原文片段')}</span></div><div class="intelligence-row-actions"><button class="primary" type="button" data-intelligence-review="${escapeHtml(selected.key)}">${(app.intelligenceReviewed[selected.key] || 'pending') === 'confirmed' ? '标记待确认' : '确认线索'}</button><button class="link-action" type="button" data-intelligence-detail="${escapeHtml(selected.key)}">查看关联面试 →</button></div>` : emptyText;
    const tabs = [['company','公司'],['industry','行业'],['product','产品'],['business','业务'],['city','城市']];
-   $('#intelligenceView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>按公司、行业、产品、业务和城市切换研究视角，所有线索保留原文依据。</p></div><div class="page-title-actions"><button class="secondary" type="button" data-refresh-intelligence>重新整理</button><button class="secondary" type="button" data-export-intelligence>导出研究草稿</button></div></div><div class="intelligence-toolbar"><input id="intelligenceSearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="搜索公司、产品或业务关键词"><select id="intelligenceSource"><option value="">全部来源</option><option>面试转写</option><option>简历</option><option>沟通总结</option></select><select id="intelligencePeriod"><option>全部时间</option><option>近 30 天</option><option>近 90 天</option></select><select id="intelligenceStatus"><option>全部状态</option><option>待确认</option><option>已确认</option></select></div><nav class="intelligence-tabs" aria-label="情报视角">${tabs.map(([key,label]) => `<button type="button" class="${view === key ? 'active' : ''}" data-intelligence-view="${key}">${label}</button>`).join('')}</nav><div class="research-banner"><div><span>待确认线索</span><strong>${pendingCount}<small> 条</small></strong></div><p>默认展示公司视角；行业、产品、业务和城市视角会基于已同步材料逐步补充。</p><span class="data-status">已关联 ${transcriptCount} 场转写</span></div><div class="metrics research-metrics"><div class="metric"><b>${companies.length}</b><span>涉及公司</span><small>去重后</small></div><div class="metric"><b>${transcriptCount}</b><span>关联面试</span><small>含转写或沟通总结</small></div><div class="metric"><b>${companies.filter(item => item.confidence === '高').length}</b><span>高可信线索</span><small>有明确原文依据</small></div><div class="metric"><b>${pendingCount}</b><span>待人工确认</span><small>不直接作为结论</small></div></div><section class="intelligence-workspace"><div class="surface intelligence-list-panel"><div class="surface-head"><div><h2>${tabs.find(item => item[0] === view)?.[1] || '公司'}列表</h2><p class="surface-subtitle">${filteredCompanies.length} 个对象</p></div></div><div class="surface-body intelligence-list">${companyRows || '<div class="empty">当前筛选条件下暂无情报。</div>'}</div></div><div class="surface intelligence-detail-panel"><div class="surface-body">${detail}</div></div></section></div>`;
+   $('#intelligenceView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从招聘材料中整理可核查的公司、行业、产品、业务和城市线索。</p></div><div class="page-title-actions"><button class="secondary" type="button" data-refresh-intelligence>重新整理</button><button class="secondary" type="button" data-export-intelligence>导出研究草稿</button></div></div><section class="intelligence-purpose"><div><strong>先看数据覆盖，再看研究对象</strong><span>本页不是自动生成报告，而是把候选人材料中的事实整理出来，供招聘人员核查、沉淀和复用。</span></div><div class="intelligence-flow"><span><b>1</b>读取材料</span><i>→</i><span><b>2</b>形成线索</span><i>→</i><span><b>3</b>人工确认</span></div></section>${sourceCards}<div class="intelligence-toolbar"><input id="intelligenceSearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="在当前视角搜索对象"><select id="intelligenceSource"><option value="">全部来源</option><option>正式面试转写</option><option>电话沟通转写</option><option>候选人简历</option></select><select id="intelligencePeriod"><option>全部时间</option><option>近 30 天</option><option>近 90 天</option></select><select id="intelligenceStatus"><option>全部状态</option><option>待确认</option><option>已确认</option></select></div><nav class="intelligence-tabs" aria-label="情报视角"><span class="intelligence-tabs-label">研究视角</span>${tabs.map(([key,label]) => `<button type="button" class="${view === key ? 'active' : ''}" data-intelligence-view="${key}">${label}</button>`).join('')}</nav>${industryPicker}<div class="research-banner"><div><span>待确认线索</span><strong>${pendingCount}<small> 条</small></strong></div><p>${view === 'company' ? (selectedIndustry ? `当前显示“${escapeHtml(industryObjects.find(item => item.key === selectedIndustry)?.name || '')}”行业下的公司。` : '先选择行业，再查看该行业对应的公司。') : `当前显示${tabsLabel(view)}线索，点击对象查看原文证据。`}</p><span class="data-status">已读取 ${sourceSummary.total} 条材料</span></div><section class="intelligence-workspace"><div class="surface intelligence-list-panel"><div class="surface-head"><div><h2>${tabsLabel(view)}对象</h2><p class="surface-subtitle">${filteredCompanies.length} 个对象 · 点击查看详情</p></div></div><div class="surface-body intelligence-list">${companyRows || emptyText}</div></div><div class="surface intelligence-detail-panel"><div class="surface-head"><div><h2>对象详情</h2><p class="surface-subtitle">显示来源、命中原因和原文证据</p></div></div><div class="surface-body">${detail}</div></div></section></div>`;
+   const sourceSelect = $('#intelligenceSource');
+   if (sourceSelect) sourceSelect.value = app.intelligenceSource || '';
    $('#intelligenceSearch')?.addEventListener('input', event => { app.intelligenceQuery = event.target.value; renderIntelligence(); });
+   $('#intelligenceSource')?.addEventListener('change', event => { app.intelligenceSource = event.target.value; app.intelligenceSelected = ''; renderIntelligence(); });
+   $$('#intelligenceView [data-intelligence-industry]').forEach(button => button.addEventListener('click', () => { app.intelligenceIndustry = button.dataset.intelligenceIndustry || ''; app.intelligenceSelected = ''; renderIntelligence(); }));
    $$('#intelligenceView [data-intelligence-select]').forEach(button => button.addEventListener('click', () => { app.intelligenceSelected = button.dataset.intelligenceSelect; renderIntelligence(); }));
    $$('#intelligenceView [data-intelligence-view]').forEach(button => button.addEventListener('click', () => { app.intelligenceView = button.dataset.intelligenceView; renderIntelligence(); }));
    $('#intelligenceView [data-refresh-intelligence]')?.addEventListener('click', () => { renderIntelligence(); toast('已重新整理面试与简历线索'); });
@@ -1045,15 +814,16 @@ function renderIntelligence() {
    $$('#intelligenceView [data-intelligence-detail]').forEach(button => button.addEventListener('click', () => toast('关联面试详情将在下一步展开')));
  }
 
- function intelligenceDimensionRecords(view, records) {
+ function intelligenceDimensionRecords(view, records, filters = {}) {
    const terms = INTELLIGENCE_LEXICON[view] || [];
    const groups = new Map();
-   const source = intelligenceSourceRecords();
+   const source = intelligenceSourceRecords().filter(item => !filters.source || item.sourceType === filters.source);
    source.forEach(item => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}\n${item.jobName || ''} ${item.roleName || ''}`;
      terms.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(term => {
-       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '' };
+       const key = term.toLowerCase(); const existing = groups.get(key) || { key, name: term, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [] };
        existing.count += 1; if (item.transcript || item.communicationSummary) existing.transcripts += 1;
+       if (item.sourceType && !existing.sources.includes(item.sourceType)) existing.sources.push(item.sourceType);
        if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.toLowerCase().includes(term.toLowerCase())) || '';
        existing.summary = view === 'industry' ? `${term}相关业务线索` : view === 'product' ? `${term}相关产品线索` : view === 'business' ? `${term}相关业务活动` : `${term}相关地点线索`;
        existing.confidence = existing.evidence.length > 15 ? '高' : '中';
@@ -1064,21 +834,36 @@ function renderIntelligence() {
    return [...groups.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
  }
 
- function intelligenceRecords() {
+ function tabsLabel(view = 'company') { return ({ company: '公司', industry: '行业', product: '产品', business: '业务', city: '城市' }[view] || '公司'); }
+ function intelligenceSourceSummary() {
+   const resume = app.cases.filter(item => String(item.resume || '').trim()).length;
+   const phone = app.cases.filter(item => String(item.transcript || '').trim()).length;
+   const moka = app.mokaInterviews.filter(item => item.transcriptStatus === 'synced' && String(item.transcript || '').trim()).length;
+   return { resume, phone, moka, total: resume + phone + moka };
+ }
+
+ function intelligenceRecords(filters = {}) {
     // Combine résumé, phone-screen, and formal interview evidence; source labels remain available for later filtering.
    const source = intelligenceSourceRecords();
    const groups = new Map();
-   source.forEach(item => {
+   source.filter(item => !filters.source || item.sourceType === filters.source).forEach(item => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}`.replace(/\r/g, '');
      const structuredCompanies = item.resumeMeta?.companies || item.companies || [];
      const structuredCompany = item.resumeMeta?.currentCompany || item.currentCompany || item.company || item.mokaData?.companyName || '';
-     const names = [...new Set([structuredCompany, ...structuredCompanies, ...extractResumeCompanyNames(item.resume || ''), ...extractCompanyEntities(text)].filter(Boolean))];
+     const resumeNames = [...structuredCompanies, ...extractResumeCompanyNames(item.resume || '')];
+     const relatedIndustries = INTELLIGENCE_LEXICON.industry.filter(term => text.toLowerCase().includes(term.toLowerCase()));
+     const explicitTextNames = item.resume ? [] : extractCompanyEntities(text);
+     const names = [...new Set([structuredCompany, ...resumeNames, ...explicitTextNames].filter(Boolean))];
      names.forEach(rawName => {
        const name = normalizeCompanyName(rawName);
        if (!isReliableCompanyName(name)) return;
-       const key = name.toLowerCase(); const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '' };
+       const key = name.toLowerCase(); const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], industries: [], products: [], businesses: [] };
        existing.count += 1; if (item.transcript) existing.transcripts += 1;
-       if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.includes(name)) || '';
+       if (item.sourceType && !existing.sources.includes(item.sourceType)) existing.sources.push(item.sourceType);
+       relatedIndustries.forEach(industry => { if (!existing.industries.includes(industry)) existing.industries.push(industry); });
+       INTELLIGENCE_LEXICON.product.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(product => { if (!existing.products.includes(product)) existing.products.push(product); });
+       INTELLIGENCE_LEXICON.business.filter(term => text.toLowerCase().includes(term.toLowerCase())).forEach(business => { if (!existing.businesses.includes(business)) existing.businesses.push(business); });
+       if (!existing.evidence) existing.evidence = text.split(/[。！？\n]/).map(value => value.trim()).find(value => value.includes(name)) || `简历工作经历中识别到：${name}`;
        existing.summary ||= `来自${item.sourceType || '招聘材料'}，待人工确认业务含义。`;
        existing.latest = item.interviewAt || item.startedAt || item.updatedAt || item.createdAt || existing.latest;
        if (existing.evidence.length > 15) existing.confidence = '高';
@@ -1120,10 +905,14 @@ function renderIntelligence() {
    const end = lines.findIndex((line, index) => index > start && /^(?:教育经历|教育背景|项目经历|专业技能|自我评价|证书|荣誉)/i.test(line.replace(/[：: ].*$/, '')));
    const section = lines.slice(start + 1, end > start ? end : Math.min(lines.length, start + 40));
    const result = [];
-   section.forEach(line => {
-     const match = line.match(/([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)|[\u4e00-\u9fffA-Za-z0-9（）()·&.]{2,36}(?:有限公司|股份有限公司|集团|科技|证券|银行|基金|保险|资本|传媒|教育|医疗|软件))/i);
-     const value = normalizeCompanyName(match?.[1] || '');
-     if (value && isReliableCompanyName(value) && !result.includes(value)) result.push(value);
+   const datePattern = /(?:19|20)\d{2}[./年-]\s*\d{1,2}\s*(?:月)?\s*(?:[-至到]|年)?\s*(?:(?:19|20)\d{2}[./年-]\s*\d{1,2}\s*(?:月)?|至今|现在)?/i;
+   section.forEach((line, index) => {
+     const date = line.match(datePattern);
+     if (!date) return;
+     const left = line.slice(0, date.index).replace(/[|｜·•,，、:：]+$/g, '').trim();
+     const previous = index > 0 ? section[index - 1].replace(datePattern, '').trim() : '';
+     const candidate = normalizeCompanyName(left || previous);
+     if (candidate && isReliableCompanyName(candidate) && !result.includes(candidate)) result.push(candidate);
    });
    return result.slice(0, 8);
  }
@@ -1136,7 +925,7 @@ function renderIntelligence() {
    if (/^(信息|资料|经历|背景|情况|内容|岗位|职位|部门|业务|产品|行业)(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|信息|软件|股份)$/.test(name)) return false;
    return /(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|软件|股份|Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)$/i.test(name);
  }
-function renderConnections() { $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">初筛结果保存后，按手机号或邮箱匹配并追加备注</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。初筛结果保存到云端后，会按手机号或邮箱匹配 Moka 申请并追加备注；不会修改阶段，也不会淘汰候选人。</p></div></section></div>`; }
+function renderConnections() { $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">获得企业 API 后按需开启</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。拿到企业 API 后，将先在测试环境完成只读同步，再开启备注回写，并保留同步日志和失败重试队列。</p></div></section></div>`; }
 
 function renderDashboard() {
   const activeJobs = app.jobs.filter(job => job.status !== 'closed');
@@ -1223,7 +1012,7 @@ function renderInboxLegacy() {
   const policy = getPlatformPolicy();
   const watchStatus = folderWatchTimer ? '监听中' : '未启动';
   const watchLabel = policy.defaultMode === 'downloads' ? '选择 Downloads 并开始监听' : '选择文件夹并开始监听';
-  $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>本次选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface watch-panel"><div class="surface-head"><h2>页面文件监听</h2><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>当前设备：<b>${policy.label}</b></span><span>扫描周期：<b>每 5 分钟</b></span><span>处理范围：<b>仅监听开始后新增文件</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 浏览器无法直接读取 Downloads 路径，请在系统选择器中授权 Downloads 文件夹。' : 'Windows 请选择需要持续读取的授权文件夹。'} 支持 PDF、DOC、DOCX、TXT、MD、RTF；页面关闭后监听会停止。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button>${folderWatchStartedAt ? `<small class="watch-started">监听开始：${formatDate(folderWatchStartedAt)}</small>` : ''}</div></div><div class="surface desktop-agent-panel"><div class="surface-head"><h2>桌面同步助手</h2><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download><span class="button-icon" aria-hidden="true">&#8595;</span><span>下载 Mac 桌面版</span></a><a class="secondary" href="downloads/AceCall-Sync-Windows-Setup.exe" download><span class="button-icon" aria-hidden="true">&#8595;</span><span>下载 Windows 运行包</span></a></div><small class="watch-started">Mac：打开 DMG 后将 AceCall Sync 拖入“应用程序”；Windows 运行包需 Node.js 18+。</small></div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>自动筛选疑似简历</span></div><div class="surface-body"><p class="muted-text">系统会跳过临时下载文件、空文件和不具备简历特征的文档；无法判断的文件不会删除，可通过批量导入或手动粘贴处理。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}${item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? ` <button class="link-action" data-retry-import="${item.id}">重试</button>` : ''}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
+  $('#inboxView').innerHTML = `<div class="page"><div class="page-title"><div><h1>简历中心</h1><p>直接导入简历，系统会自动解析、匹配岗位并建立候选人档案。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>本次选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="metrics"><div class="metric"><b>${app.cases.length}</b><span>已建立档案</span></div><div class="metric"><b>${pending}</b><span>处理中</span></div><div class="metric"><b>${needsAssignment}</b><span>待分配岗位</span></div></div><div class="surface watch-panel"><div class="surface-head"><h2>页面文件监听</h2><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>当前设备：<b>${policy.label}</b></span><span>扫描周期：<b>每 5 分钟</b></span><span>处理范围：<b>仅监听开始后新增文件</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 浏览器无法直接读取 Downloads 路径，请在系统选择器中授权 Downloads 文件夹。' : 'Windows 请选择需要持续读取的授权文件夹。'} 支持 PDF、DOC、DOCX、TXT、MD、RTF；页面关闭后监听会停止。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button>${folderWatchStartedAt ? `<small class="watch-started">监听开始：${formatDate(folderWatchStartedAt)}</small>` : ''}</div></div><div class="surface desktop-agent-panel"><div class="surface-head"><h2>桌面同步助手</h2><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download><span class="button-icon" aria-hidden="true">&#8595;</span><span>下载 Mac 桌面版</span></a><a class="secondary" href="downloads/AceCall-Sync-Windows.zip" download><span class="button-icon" aria-hidden="true">&#8595;</span><span>下载 Windows 运行包</span></a></div><small class="watch-started">Mac：打开 DMG 后将 AceCall Sync 拖入“应用程序”；Windows 运行包需 Node.js 18+。</small></div></div><div class="surface"><div class="surface-head"><h2>导入说明</h2><span>自动筛选疑似简历</span></div><div class="surface-body"><p class="muted-text">系统会跳过临时下载文件、空文件和不具备简历特征的文档；无法判断的文件不会删除，可通过批量导入或手动粘贴处理。</p></div></div><div class="surface" style="margin-top:13px"><div class="surface-head"><h2>最近导入</h2><span>${app.cases.length} 位候选人</span></div><div class="table-wrap"><table><thead><tr><th>候选人</th><th>自动分配岗位</th><th>匹配度</th><th>解析状态</th><th>下一步</th></tr></thead><tbody>${app.cases.slice(0,12).map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td>${escapeHtml(item.ingestStatus || '已入库')}${item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? ` <button class="link-action" data-retry-import="${item.id}">重试</button>` : ''}</td><td><button class="link-action" data-open-candidate="${item.id}">查看 →</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">还没有导入简历</div></td></tr>'}</tbody></table></div></div></div>`;
   $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
   $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files));
   $('#watchFolderButton').addEventListener('click', startFolderWatch);
@@ -1243,7 +1032,7 @@ function renderInbox() {
   const filterCases = inboxQueueFilter ? app.cases.filter(item => inboxQueueFilterMatches(item, inboxQueueFilter)) : app.cases;
   const queue = [...filterCases].sort(byUpdated).slice(0, inboxQueueFilter ? filterCases.length : 30);
   const filterLabel = { all: '全部简历', processing: '解析中', assignment: '待岗位确认', duplicate: '重复待确认', failed: '解析异常' }[inboxQueueFilter] || '';
-  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><button class="metric metric-action ${!inboxQueueFilter ? 'active' : ''}" data-inbox-filter="all" type="button"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></button><button class="metric metric-action ${inboxQueueFilter === 'processing' ? 'active' : ''}" data-inbox-filter="processing" type="button"><b>${pending}</b><span>解析中</span><small>正在处理</small></button><button class="metric metric-action ${inboxQueueFilter === 'assignment' ? 'active' : ''}" data-inbox-filter="assignment" type="button"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></button><button class="metric metric-action ${inboxQueueFilter === 'duplicate' ? 'active' : ''}" data-inbox-filter="duplicate" type="button"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></button><button class="metric metric-action ${inboxQueueFilter === 'failed' ? 'active' : ''}" data-inbox-filter="failed" type="button"><b>${failed}</b><span>解析异常</span><small>支持重试</small></button></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">${filterLabel ? `当前筛选：${filterLabel}` : '这里处理文件，不在此管理电话和审核流程'}</p></div><span>${queue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">当前状态下没有简历</div></td></tr>'}</tbody></table></div></section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download>下载 Mac 桌面版</a><a class="secondary" href="downloads/AceCall-Sync-Windows-Setup.exe" download>下载 Windows 运行包</a></div><small class="watch-started">Mac：打开 DMG 后将 AceCall Sync 拖入“应用程序”；Windows 运行包需 Node.js 18+。</small></div></section></aside></div></div>`;
+  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><button class="metric metric-action ${!inboxQueueFilter ? 'active' : ''}" data-inbox-filter="all" type="button"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></button><button class="metric metric-action ${inboxQueueFilter === 'processing' ? 'active' : ''}" data-inbox-filter="processing" type="button"><b>${pending}</b><span>解析中</span><small>正在处理</small></button><button class="metric metric-action ${inboxQueueFilter === 'assignment' ? 'active' : ''}" data-inbox-filter="assignment" type="button"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></button><button class="metric metric-action ${inboxQueueFilter === 'duplicate' ? 'active' : ''}" data-inbox-filter="duplicate" type="button"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></button><button class="metric metric-action ${inboxQueueFilter === 'failed' ? 'active' : ''}" data-inbox-filter="failed" type="button"><b>${failed}</b><span>解析异常</span><small>支持重试</small></button></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">${filterLabel ? `当前筛选：${filterLabel}` : '这里处理文件，不在此管理电话和审核流程'}</p></div><span>${queue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">当前状态下没有简历</div></td></tr>'}</tbody></table></div></section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download>下载 Mac 桌面版</a><a class="secondary" href="downloads/AceCall-Sync-Windows.zip" download>下载 Windows 运行包</a></div><small class="watch-started">Mac：打开 DMG 后将 AceCall Sync 拖入“应用程序”；Windows 运行包需 Node.js 18+。</small></div></section></aside></div></div>`;
   $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files, { source: 'manual' }));
   $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files, { source: 'folder' }));
   $('#watchFolderButton').addEventListener('click', startFolderWatch);
@@ -1321,15 +1110,15 @@ function renderCandidatesLegacy() {
 }
 
 function renderCandidates() {
-  const counts = ['全部', '待分配', '待分析', '待电话', '待确认', '推荐面试', '补充沟通', '已完成', '暂不推进'].map(status => ({ status, count: status === '全部' ? app.cases.length : status === '待分配' ? app.cases.filter(needsAssignmentReview).length : app.cases.filter(item => displayStatus(item) === status).length }));
-  $('#candidatesView').innerHTML = `<div class="page candidates-page"><div class="page-title"><div><span class="eyebrow">TALENT PIPELINE</span><h1>候选人</h1><p>管理已进入招聘流程的人才，不再处理原始文件导入。</p></div><button class="primary" data-add-candidate>＋ 手动添加候选人</button></div><div class="candidate-stages">${counts.map(item => `<button class="candidate-stage ${item.status === '全部' ? 'active' : ''}" data-stage-filter="${item.status}"><b>${item.count}</b><span>${item.status}</span></button>`).join('')}</div><div class="toolbar candidate-toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司、学校或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部阶段</option><option value="__assignment__">待分配岗位</option>${['待分析','待电话','待确认','推荐面试','补充沟通','已完成','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select><select id="candidateTagFilter"><option value="">全部标签</option><option value="competitor">直接竞品</option><option value="major">行业前 5</option><option value="school">985/211/双一流</option><option value="quality">资料待补全</option><option value="moka">Moka待配置</option></select></div><div class="candidate-summary-line"><span>当前显示 <b id="candidateResultCount">${app.cases.length}</b> 人</span><span>统计包含已淘汰候选人 · 标签依据可在详情查看</span></div><div id="candidateTableSlot">${candidatePoolTable(app.cases)}</div></div>`;
+  const counts = ['全部', '待分析', '待电话', '待确认', '推荐面试', '补充沟通', '已完成', '暂不推进'].map(status => ({ status, count: status === '全部' ? app.cases.length : app.cases.filter(item => displayStatus(item) === status).length }));
+  $('#candidatesView').innerHTML = `<div class="page candidates-page"><div class="page-title"><div><span class="eyebrow">TALENT PIPELINE</span><h1>候选人</h1><p>管理已进入招聘流程的人才，不再处理原始文件导入。</p></div><button class="primary" data-add-candidate>＋ 手动添加候选人</button></div><div class="candidate-stages">${counts.map(item => `<button class="candidate-stage ${item.status === '全部' ? 'active' : ''}" data-stage-filter="${item.status}"><b>${item.count}</b><span>${item.status}</span></button>`).join('')}</div><div class="toolbar candidate-toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司、学校或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部阶段</option>${['待分析','待电话','待确认','推荐面试','补充沟通','已完成','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select><select id="candidateTagFilter"><option value="">全部标签</option><option value="competitor">直接竞品</option><option value="major">行业前 5</option><option value="school">985/211/双一流</option><option value="quality">资料待补全</option><option value="moka">Moka待配置</option></select></div><div class="candidate-summary-line"><span>当前显示 <b id="candidateResultCount">${app.cases.length}</b> 人</span><span>统计包含已淘汰候选人 · 标签依据可在详情查看</span></div><div id="candidateTableSlot">${candidatePoolTable(app.cases)}</div></div>`;
   bindCommonActions($('#candidatesView'));
   ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter', 'candidateTagFilter'].forEach(id => $(`#${id}`).addEventListener('input', filterCandidates));
-  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter === '待分配' ? '__assignment__' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(); }));
+  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(); }));
 }
 
 function candidatePoolTable(items) {
-  return `<div class="surface"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${items.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); const assignment = needsAssignmentReview(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}${assignment ? `<small class="assignment-reason">${escapeHtml(item.matching?.assignmentReviewReason || '自动匹配信心不足，请人工选择岗位')}</small>` : ''}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${assignment ? 'warn' : statusClass(displayStatus(item))}">${assignment ? '待分配' : displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td>${assignment ? `<button class="primary compact-action" data-assign-candidate="${item.id}">分配岗位</button>` : ''}<button class="link-action" data-open-candidate="${item.id}">${assignment ? '查看详情' : `${nextAction(item)} →`}</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div>`;
+  return `<div class="surface"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${items.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div>`;
 }
 
 function candidateTags(item) {
@@ -1357,7 +1146,7 @@ function filterCandidates() {
     return true;
   };
   const tagMatch = item => { const profile = inferTalentProfile(item); if (tag === 'competitor') return profile.competitor === true; if (tag === 'major') return profile.major === true; if (tag === 'school') return profile.school === true; if (tag === 'quality') return resumeQuality(item).level !== 'good'; if (tag === 'moka') return !item.mokaSync?.status || item.mokaSync.status !== '已同步'; return true; };
-  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''} ${(inferTalentProfile(item).competitorCompanies || []).join(' ') } ${needsAssignmentReview(item) ? '待确认岗位 待分配' : ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || (status === '__assignment__' ? needsAssignmentReview(item) : displayStatus(item) === status)));
+  const filtered = app.cases.filter(item => dashboardMatch(item) && tagMatch(item) && (!search || `${item.candidateName} ${item.roleName} ${item.resume} ${item.resumeMeta?.fileName || ''} ${(inferTalentProfile(item).competitorCompanies || []).join(' ') } ${needsAssignmentReview(item) ? '待确认岗位' : ''}`.toLowerCase().includes(search)) && (!jobId || item.jobId === jobId) && (!status || displayStatus(item) === status));
   $('#candidateResultCount').textContent = filtered.length;
   $('#candidateTableSlot').innerHTML = candidatePoolTable(filtered);
   bindCommonActions($('#candidateTableSlot'));
@@ -1380,16 +1169,7 @@ function useTeamRule(index) { const value = teamRules[index]; if (!value) return
 
 function jobCards(jobs) {
   if (!jobs.length) return '<div class="surface empty">暂无岗位，请先建立岗位标准。</div>';
-  return dedupeJobs(jobs).map(job => { const count = app.cases.filter(item => item.jobId === job.id || (item.roleName && assignmentJobKey(item.roleName) === assignmentJobKey(job.name))).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => (item.jobId === job.id || (item.roleName && assignmentJobKey(item.roleName) === assignmentJobKey(job.name))) && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
-}
-
-function dedupeJobs(jobs = []) {
-  return [...jobs.reduce((map, job) => {
-    const key = assignmentJobKey(job.name);
-    const existing = map.get(key);
-    if (!existing || Number(job.status !== 'closed') > Number(existing.status !== 'closed') || assignmentJobCompleteness(job) > assignmentJobCompleteness(existing)) map.set(key, job);
-    return map;
-  }, new Map()).values()];
+  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
 }
 
 function filterJobs() {
@@ -1409,7 +1189,7 @@ async function toggleJobStatus(id) {
 function renderCandidateDetail() {
   const item = currentCandidate();
   if (!item) { navigate('candidates'); return; }
-  $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${needsAssignmentReview(item) ? '待分配岗位' : displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button>${needsAssignmentReview(item) ? ` <button class="primary" data-assign-candidate="${item.id}">分配岗位</button>` : ` <button class="secondary" data-assign-candidate="${item.id}">改派岗位</button>`}${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
+  $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
   bindCommonActions($('#candidateDetailView'));
 }
@@ -1453,7 +1233,7 @@ function resultTab(item) {
   return `<div class="decision"><span class="tag">待人工确认</span><small>AI综合建议</small><h2>${escapeHtml(report.conclusion || '信息不足')}</h2><p>${escapeHtml(report.conclusionReason || '')}</p></div><div class="grid-2" style="margin-top:13px"><div class="surface"><div class="surface-head"><h2>结论依据</h2><span>${(report.capabilities || []).length} 项</span></div><div class="surface-body">${(report.capabilities || []).map(point => `<div class="evidence"><span class="tag">${escapeHtml(point.assessment || '待确认')}</span><strong>${escapeHtml(point.item || point)}</strong><p>${escapeHtml(point.evidence || '')}</p></div>`).join('') || '<div class="empty">暂无能力判断</div>'}${(report.risks || []).map(risk => `<div class="point risk"><strong>${escapeHtml(risk)}</strong></div>`).join('')}</div></div><div><div class="surface"><div class="surface-head"><h2>基础条件</h2></div><div class="surface-body">${Object.entries(info).map(([key,value]) => `<div class="fact"><span>${escapeHtml(infoLabel(key))}</span><b>${escapeHtml(value)}</b></div>`).join('') || '<div class="empty">待确认</div>'}</div></div><div class="review"><label>最终动作<select id="finalDecision">${['推荐业务面试','补充电话沟通','转入其他岗位','暂不推进','纳入人才库长期维护'].map(value => `<option ${value === (report.finalDecision || report.nextStep) ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label style="margin-top:10px">推荐理由<textarea id="recommendationReason" placeholder="AI根据简历与沟通事实生成，可人工修订">${escapeHtml(report.recommendationReason || '')}</textarea></label><label style="margin-top:10px">审核备注<textarea id="reviewNotes" placeholder="补充事实或后续安排">${escapeHtml(report.reviewNotes || '')}</textarea></label><label class="review-check"><input type="checkbox" id="reviewConfirmed" ${report.reviewConfirmed ? 'checked' : ''}> 我已核对材料并确认最终动作</label><button class="primary" style="width:100%" data-confirm-result>确认完成</button></div></div></div>`;
 }
 
-function resumeTab(item) { const meta=item.resumeMeta||{}; const original = meta.originalFileId; const preview = meta.originalTempUrl; const isPdf = meta.originalMimeType === 'application/pdf' || /\.pdf$/i.test(meta.fileName || ''); const quality = meta.parseQuality || {}; const originalView = original && preview ? (isPdf ? `<div class="resume-original"><div class="resume-original-toolbar"><strong>原始 PDF 简历</strong><a class="secondary" href="${escapeHtml(preview)}" target="_blank" rel="noopener">新标签页打开</a></div><iframe title="原始PDF简历" src="${escapeHtml(preview)}"></iframe></div>` : `<div class="resume-original resume-original-file"><div class="resume-file-icon">DOC</div><div><strong>原始 Word 简历</strong><p>${escapeHtml(meta.fileName || 'resume.docx')} · 保留原始排版</p><a class="secondary" href="${escapeHtml(preview)}" target="_blank" rel="noopener">打开原始 Word 文件</a></div></div>`) : original ? '<div class="resume-original resume-original-file"><strong>原始简历正在准备预览…</strong><p>如果长时间未出现，请重新打开“简历”页。</p></div>' : '<div class="resume-original resume-original-file resume-original-missing"><strong>当前仅有解析文本</strong><p>该候选人没有保存原始文件。新上传 PDF 或 Word 后将优先展示原版简历。</p></div>'; return `<div class="surface"><div class="surface-head"><div><h2>候选人简历</h2><p class="surface-subtitle">${original ? '优先查看原始文件，解析文本仅用于搜索和AI分析' : '文本录入'}</p></div><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'待确认')}</b><small class="muted-text">${escapeHtml(meta.candidateNameSource ? `来源：${meta.candidateNameSource} · 置信度：${meta.candidateNameConfidence || '中'}` : '来源待确认')}</small></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'待确认')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'待确认')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'待确认')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'待确认')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'待确认')}</b></div></div><div class="resume-parse-status"><span class="quality quality-${escapeHtml(quality.level || 'good')}">${escapeHtml(quality.label || (item.resume ? '已完成解析' : '暂无解析文本'))}</span><span>${Number(quality.characters || item.resume?.length || 0).toLocaleString()} 字</span></div>${originalView}<details class="resume-text-fallback"><summary>查看解析文本</summary><pre>${escapeHtml(item.resume || '暂无简历内容')}</pre></details></div></div>`; }
+function resumeTab(item) { const meta=item.resumeMeta||{}; const original = meta.originalFileId; const preview = meta.originalTempUrl; const originalView = original ? (meta.originalMimeType === 'application/pdf' && preview ? `<div class="resume-original"><iframe title="原始PDF简历" src="${escapeHtml(preview)}"></iframe></div>` : `<div class="resume-original resume-original-file"><p>Word 原文件已保存，可按原格式打开查看。</p><button class="secondary" data-resume-download type="button">打开 / 下载原简历</button></div>`) : ''; return `<div class="surface"><div class="surface-head"><div><h2>候选人简历</h2><p class="surface-subtitle">${original ? '原始文件优先，解析文本用于搜索和AI分析' : '文本录入'}</p></div><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'待确认')}</b></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'待确认')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'待确认')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'待确认')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'待确认')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'待确认')}</b></div></div>${originalView}<details class="resume-text-fallback" ${original ? '' : 'open'}><summary>查看解析文本</summary><pre>${escapeHtml(item.resume || '暂无简历内容')}</pre></details></div></div>`; }
 function historyTab(item) { const events = [['建立候选人档案',item.createdAt],item.preparation&&['AI完成电话准备',item.createdAt],item.communicationSummary&&['生成沟通总结',item.updatedAt],item.report&&['生成综合初筛结果',item.updatedAt],item.report?.reviewConfirmed&&['招聘人员确认结果',item.updatedAt]].filter(Boolean); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact"><span>${formatDate(event[1])}</span><b>${event[0]}</b></div>`).join('')}</div></div>`; }
 
 function renderSettings() {
@@ -1500,68 +1280,11 @@ async function inviteMember() {
 function bindCommonActions(root) {
   root.querySelectorAll('[data-add-candidate]').forEach(button => button.addEventListener('click', openCandidateDialog));
   root.querySelectorAll('[data-open-candidate]').forEach(button => button.addEventListener('click', () => openCandidate(button.dataset.openCandidate)));
-  root.querySelectorAll('[data-assign-candidate]').forEach(button => button.addEventListener('click', () => openAssignmentDialog(button.dataset.assignCandidate)));
   root.querySelectorAll('[data-add-job]').forEach(button => button.addEventListener('click', () => openJobDialog()));
   root.querySelectorAll('[data-edit-job]').forEach(button => button.addEventListener('click', () => openJobDialog(button.dataset.editJob)));
   bindJobActions(root);
   root.querySelectorAll('[data-back-candidates]').forEach(button => button.addEventListener('click', () => navigate('candidates')));
   root.querySelectorAll('[data-detail-tab]').forEach(button => button.addEventListener('click', () => { app.detailTab = button.dataset.detailTab; renderCandidateDetail(); }));
-}
-
-function openAssignmentDialog(candidateId) {
-  const candidate = app.cases.find(item => item.id === candidateId);
-  if (!candidate) return toast('候选人记录不存在');
-  const dialog = $('#assignmentDialog');
-  $('#assignmentCandidateId').value = candidateId;
-  $('#assignmentCandidateLabel').textContent = `${candidate.candidateName || '未命名候选人'} · 选择一个在招岗位`;
-  delete $('#assignmentForm').dataset.selectedJob;
-  $('#assignmentJobSearch').value = '';
-  $('#assignmentJobStatus').value = 'active';
-  renderAssignmentJobs(candidate);
-  dialog.showModal();
-}
-
-function renderAssignmentJobs(candidate) {
-  const query = ($('#assignmentJobSearch')?.value || '').trim().toLowerCase();
-  const showAll = $('#assignmentJobStatus')?.value === 'all';
-  const selectedId = $('#assignmentForm')?.dataset.selectedJob || candidate?.jobId || '';
-  const filteredJobs = app.jobs.filter(job => (showAll || job.status !== 'closed') && (!query || `${job.name} ${job.department || ''} ${job.industry || ''} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
-  // Moka 回填和手工创建可能产生同名岗位；分配时只展示一条，优先在招且信息更完整的记录。
-  const jobs = [...filteredJobs.reduce((map, job) => {
-    const key = assignmentJobKey(job.name);
-    const existing = map.get(key);
-    if (!existing || Number(job.status !== 'closed') > Number(existing.status !== 'closed') || assignmentJobCompleteness(job) > assignmentJobCompleteness(existing)) map.set(key, job);
-    return map;
-  }, new Map()).values()]
-    .sort((left, right) => Number(right.status !== 'closed') - Number(left.status !== 'closed') || assignmentJobCompleteness(right) - assignmentJobCompleteness(left));
-  $('#assignmentJobList').innerHTML = jobs.map(job => {
-    const score = candidate ? normalizedMatchScore(candidate.matching || {}, candidate.resume || '', job) : 0;
-    const selected = job.id === selectedId;
-    return `<label class="assignment-job-option ${selected ? 'selected' : ''}"><input type="radio" name="assignmentJob" value="${escapeHtml(job.id)}" ${selected ? 'checked' : ''}><span><strong>${escapeHtml(job.name)}${job.department ? ` · ${escapeHtml(job.department)}` : ''}</strong><small>${escapeHtml((job.jd || '').replace(/\s+/g, ' ').slice(0, 120) || '暂未填写 JD')} · 关键词：${escapeHtml((job.keywords || []).slice(0, 5).join('、') || '未设置')}</small></span><b class="assignment-job-score">${score}分</b></label>`;
-  }).join('') || '<div class="empty">没有可分配的在招岗位，请先创建或启用岗位。</div>';
-  $('#confirmAssignmentButton').disabled = !jobs.length || !selectedId;
-  $$('#assignmentJobList input[name="assignmentJob"]').forEach(input => input.addEventListener('change', () => { $('#assignmentForm').dataset.selectedJob = input.value; renderAssignmentJobs(candidate); }));
-}
-
-function assignmentJobKey(name = '') { return String(name).toLowerCase().replace(/[\s\-_—·•（）()【】\[\]]/g, ''); }
-function assignmentJobCompleteness(job = {}) { return Number(Boolean(job.jd)) * 2 + (Array.isArray(job.keywords) ? job.keywords.length : 0) + Number(Boolean(job.department)); }
-
-async function confirmAssignment(event) {
-  event.preventDefault();
-  const candidateId = $('#assignmentCandidateId').value;
-  const candidate = app.cases.find(item => item.id === candidateId);
-  const jobId = $('#assignmentForm').dataset.selectedJob || $('#assignmentJobList input[name="assignmentJob"]:checked')?.value;
-  const job = app.jobs.find(item => item.id === jobId);
-  if (!candidate || !job) return toast('请选择一个在招岗位');
-  const button = $('#confirmAssignmentButton'); button.disabled = true; button.textContent = '正在保存';
-  const previous = { ...candidate, matching: candidate.matching ? { ...candidate.matching } : candidate.matching };
-  candidate.jobId = job.id; candidate.roleName = job.name; candidate.jd = job.jd || ''; candidate.rules = job.rules || ''; candidate.keywords = job.keywords || [];
-  candidate.assignmentSource = 'manual'; candidate.assignmentStatus = 'assigned'; candidate.assignedAt = new Date().toISOString(); candidate.assignedBy = app.authUser?.email || app.authUser?.username || '当前用户';
-  candidate.matching = { ...(candidate.matching || {}), jobId: job.id, status: '已分配', assignmentReview: false, assignmentReviewReason: '', assignedAt: candidate.assignedAt, assignmentSource: 'manual' };
-  candidate.updatedAt = new Date().toISOString();
-  const saved = REMOTE_BACKEND ? await saveRemote(`/api/candidates/${candidate.id}`, candidate, true) : true;
-  if (!saved && REMOTE_BACKEND) { Object.assign(candidate, previous); button.disabled = false; button.textContent = '确认分配'; return toast('云端保存失败，岗位尚未分配，请稍后重试'); }
-  persistCases(candidate); $('#assignmentDialog').close(); renderCurrent(); toast(`已将 ${candidate.candidateName || '候选人'} 分配至 ${job.name}`);
 }
 
 function bindDetailActions(root) {
@@ -1593,10 +1316,7 @@ async function createCandidate(event) {
 }
 
 async function importResumeBatch(files, options = {}) {
-  const candidates = [...(files || [])].filter(file => isSupportedResumeFileName(file.name));
-  const selected = candidates.filter(file => Number(file.size || 0) > 1024);
-  const tinyFiles = candidates.filter(file => Number(file.size || 0) <= 1024);
-  if (tinyFiles.length) toast(`${tinyFiles.length} 个文件过小，已跳过；请确认文件下载已完成且不是临时文件`);
+  const selected = [...(files || [])].filter(file => isSupportedResumeFile(file));
   if (!selected.length) return;
   if (!app.jobs.length) return toast('请先创建至少一个岗位');
   const batchId = options.batchId || crypto.randomUUID();
@@ -1771,13 +1491,6 @@ async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
     if (task.status === 'completed' && task.result?.text) {
       const transcript = $('#callTranscript');
       if (transcript && !transcript.value.trim()) transcript.value = task.result.text;
-      const candidate = currentCandidate();
-      if (candidate && candidate.id === recordingDraft.candidateId) {
-        candidate.transcript = task.result.text;
-        candidate.transcriptMeta = { taskId, fileName, provider: task.result.provider || task.provider || '', characters: task.result.characters || task.result.text.length, completedAt: new Date().toISOString() };
-        candidate.updatedAt = new Date().toISOString();
-        persistCases(candidate);
-      }
       if (status) status.textContent = `${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`;
       return toast('录音已自动转写到电话记录');
     }
@@ -1996,11 +1709,6 @@ async function resolveResumePreview(item) {
 
 function localGenerate(payload) {
   if (payload.action === 'match') return localMatch(payload);
-  if (payload.action === 'review-interviewer') {
-    const sessions = (payload.sessions || []).filter(item => String(item.text || '').trim().length >= 40).slice(0, 6);
-    const interviewer = payload.interviewer || sessions[0]?.interviewer || '面试官';
-    return { summary: `${interviewer}当前有 ${sessions.length} 场转写。本地演示只保留结构，在线环境会由 AI 总结提问偏好。`, themes: [{ name: '职责与结果', detail: '关注个人负责范围和结果如何衡量。' }], questions: ['请说明个人负责范围和项目结果。'], followUpStyle: '本地演示不调用 AI。', sessions: sessions.map(item => ({ candidateName: item.candidateName, jobName: item.jobName, focus: '职责与结果', summary: '这场转写已纳入当前筛选，在线环境会生成这场的提问摘要。' })) };
-  }
   if (payload.action === 'prepare') { const terms = [...new Set([...(payload.keywords || []),'证券','交易','产品','研发','风险','管理'])].filter(term => payload.resume.includes(term)); return { summary:{ headline:`${payload.candidateName}具备与${payload.roleName}相关的经历，核心职责和项目结果需要电话核实。`,experience:'简历信息已完成结构化，具体年限以原始简历为准。',relevantBackground:terms.length ? `相关关键词：${terms.join('、')}` : '相关经验需要电话补充。' }, matches:(terms.length?terms:['相关经验']).map(term=>({requirement:term,evidence:`简历提及“${term}”`,confidence:'中'})), risks:[{risk:'个人职责边界待确认',evidence:'简历描述无法区分参与和主导'},{risk:'项目结果待量化',evidence:'缺少上线效果或业务指标'}], questions:defaultQuestions() }; }
   if (payload.action === 'summarize') { const lines=payload.transcript.split(/[。！？\n]/).map(v=>v.trim()).filter(v=>v.length>8); return { overview:`已识别${lines.length}条候选人陈述。`,confirmed:lines.slice(0,4).map(v=>({item:'候选人陈述',evidence:v})),missing:[{item:'量化业务结果',evidence:'未识别到明确数据'}],contradicted:[],keyFacts:{location:readField(payload.transcript,'地点'),expectedSalary:readField(payload.transcript,'期望薪资'),availability:readField(payload.transcript,'到岗'),nonCompete:readField(payload.transcript,'竞业')},followUps:['补充项目结果和个人职责边界'] }; }
   return { basicInfo:payload.communicationSummary.keyFacts || {}, capabilities:(payload.preparation.matches || []).map(point=>({item:point.requirement,evidence:point.evidence,assessment:'部分匹配'})), risks:(payload.communicationSummary.missing || []).map(point=>point.item), conclusion:'部分匹配', conclusionReason:'候选人具备相关经历，但项目结果与职责边界仍需业务面试进一步验证。', recommendationReason:'候选人具备岗位相关经历，且沟通中体现出一定匹配基础；但项目结果和职责边界仍需业务面试进一步确认。', nextStep:'推荐业务面试', followUps:payload.communicationSummary.followUps || [] };
@@ -2027,13 +1735,12 @@ function scoreValue(item){const value=Number(item.matching?.score);if(Number.isF
 function scoreLabel(item){const value=scoreValue(item);return value==='—'?'<span class="score muted">—</span>':`<strong class="score">${value}分</strong>`;}
 function currentCandidate(){return app.cases.find(item=>item.id===app.candidateId);}
 function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch{return [];}}
-function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate).then(result=>{if(!result?.mokaSync)return;candidate.mokaSync=result.mokaSync;localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));if(app.view==='candidate'&&currentCandidate()?.id===candidate.id)renderCandidateDetail();else if(app.view==='candidates')renderCandidates();});}
+function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
 function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
 function seedJobs(){if(REMOTE_BACKEND||app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
 function resumeHint(item){const meta=item.resumeMeta||{};const facts=[meta.age?`${meta.age}岁`:'',meta.experienceYears?`${meta.experienceYears}年经验`:''].filter(Boolean);return facts.join(' · ')||meta.fileName||'简历已录入';}
 function formatDate(value){if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':`${date.getMonth()+1}月${date.getDate()}日`;}
-function formatInterviewMoment(value){if(!value)return'—';const date=new Date(value);if(Number.isNaN(date.getTime()))return'—';const day=`${date.getMonth()+1}月${date.getDate()}日`;if(!String(value).includes('T'))return day;return `${day} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;}
 function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt);}
 function infoLabel(key){return({currentCompanyRole:'当前公司及职位',location:'当前地点',currentSalary:'当前薪资',expectedSalary:'期望薪资',availability:'到岗时间',motivation:'求职动机',nonCompete:'竞业限制'}[key]||key);}
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
@@ -2045,115 +1752,31 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-function stateFingerprint(remote = {}) {
-  const summarize = items => (Array.isArray(items) ? items : []).map(item => [item.id || item._id || '', item.updatedAt || item.createdAt || '', item.status || '', item.ingestStatus || '']);
-  return JSON.stringify({ jobs: summarize(remote.jobs), cases: summarize(remote.cases), rules: (Array.isArray(remote.rules) ? remote.rules : []).map(item => [item.id || item._id || '', item.updatedAt || item.createdAt || '', item.content || '']) });
-}
-async function hydrateState({ background = false } = {}) {
-  if (!REMOTE_BACKEND) return;
-  if (stateRefreshInFlight) return stateRefreshInFlight;
-  stateRefreshInFlight = (async () => {
-    try {
-      const response = await authenticatedFetch(apiUrl('/api/state'));
-      if (!response.ok) { const body = await response.clone().json().catch(() => ({})); throw new Error(cloudError(response.status, body)); }
-      const payload = await response.json();
-      const remote = { jobs: payload.jobs || [], cases: payload.cases || [], rules: payload.rules || [] };
-      const nextFingerprint = stateFingerprint(remote);
-      const changed = nextFingerprint !== remoteStateFingerprint;
-      if (changed) {
-        remoteStateFingerprint = nextFingerprint;
-        app.remoteState = remote;
-        app.jobs = remote.jobs;
-        app.cases = remote.cases;
-        teamRules = remote.rules.map(item => item.content).filter(Boolean);
-        app.legacyLocalState = null;
-        persistHydratedState();
-        renderCurrent();
-      }
-      if (!background) { void migrateStoredResumesOnce(); void (async () => { await loadMokaInterviews(); await loadInterviewerLibrary(); await loadTranscriptImports(); })(); }
-    } catch (error) {
-      console.error(error);
-      if (!background) toast(`CloudBase暂不可用：${error.message || '已使用本机数据'}`);
-    } finally {
-      stateRefreshInFlight = null;
-    }
-  })();
-  return stateRefreshInFlight;
-}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();await loadMokaInterviews();}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
-function remoteCacheOwner(){const user=app.authUser||{};return String(user.uid||user.email||user.username||'').trim().toLowerCase();}
-function restoreRemoteCache(){if(!REMOTE_BACKEND)return false;const owner=remoteCacheOwner();if(!owner)return false;let meta;try{meta=JSON.parse(localStorage.getItem(REMOTE_CACHE_META_KEY)||'null');}catch{return false;}if(!meta||meta.owner!==owner)return false;app.jobs=Array.isArray(initialLocalState.jobs)?initialLocalState.jobs:[];app.cases=Array.isArray(initialLocalState.cases)?initialLocalState.cases:[];teamRules=Array.isArray(initialLocalState.rules)?initialLocalState.rules:[];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};remoteStateFingerprint=stateFingerprint(app.remoteState);return true;}
-function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));const owner=remoteCacheOwner();if(owner)localStorage.setItem(REMOTE_CACHE_META_KEY,JSON.stringify({owner,updatedAt:new Date().toISOString()}));}
-function startMokaAutoRefresh() {
-  if (!REMOTE_BACKEND || mokaRefreshTimer) return;
-  mokaRefreshTimer = setInterval(() => {
-    if (!document.hidden && app.authUser) void loadMokaInterviews({ automatic: true });
-  }, MOKA_AUTO_REFRESH_INTERVAL_MS);
-}
-async function loadMokaInterviews(options = {}) {
+function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
+async function loadMokaInterviews() {
   if (!REMOTE_BACKEND) return;
-  if (mokaRefreshInFlight) return mokaRefreshInFlight;
-  const automatic = options.automatic === true;
-  mokaRefreshInFlight = (async () => {
   app.mokaInterviewStatus = { configured: false, loading: true };
   try {
-    const debugResponse = await authenticatedFetch(apiUrl('/api/debug/status'), { timeoutMs: 8000 });
-    const debugData = await debugResponse.json().catch(() => ({}));
-    app.connectionDiagnostics = { gateway: debugResponse.ok && debugData.route === 'reachable' ? '正常' : `HTTP ${debugResponse.status}`, checkedAt: debugData.timestamp || new Date().toISOString(), error: debugResponse.ok ? '' : cloudError(debugResponse.status, debugData) };
-    const response = await authenticatedFetch(apiUrl('/api/integrations/moka/interviews'), { timeoutMs: 120000 });
+    const response = await authenticatedFetch(apiUrl('/api/integrations/moka/interviews'), { timeoutMs: 12000 });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(cloudError(response.status, data));
     app.mokaInterviews = Array.isArray(data.records) ? data.records : [];
-    syncInterviewTranscripts();
-    if (Array.isArray(data.syncedJobs) && data.syncedJobs.length) {
-      app.jobs = mergeRecords(app.jobs, data.syncedJobs);
-      try { persistHydratedState(); } catch (error) { console.warn('[AceCall jobs cache]', error); }
-    }
-    app.mokaAnalytics = data.analytics || null;
-    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual' };
+    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, transcript: data.transcript || null };
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   } catch (error) {
     console.warn('[AceCall Moka interviews]', error);
-    app.mokaInterviewStatus = { ...app.mokaInterviewStatus, configured: Boolean(app.mokaInterviewStatus.configured), loading: false, error: error.message, httpStatus: error.status || 0 };
+    app.mokaInterviews = [];
+    app.mokaInterviewStatus = { configured: false, loading: false, error: error.message };
   }
-  })();
-  try { return await mokaRefreshInFlight; } finally { mokaRefreshInFlight = null; }
-}
-async function loadInterviewerLibrary() {
-  if (!REMOTE_BACKEND) return;
-  try {
-    const response = await authenticatedFetch(apiUrl('/api/interviewers'));
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(cloudError(response.status, data));
-    app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
-    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
-  } catch (error) { console.warn('[AceCall interviewers]', error); }
-}
-async function addInterviewerName(name) {
-  const response = await authenticatedFetch(apiUrl('/api/interviewers'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, source: 'manual' }) });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(cloudError(response.status, data));
-  app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
-  await loadTranscriptImports();
-}
-async function loadTranscriptImports() {
-  if (!REMOTE_BACKEND) return;
-  try {
-    const response = await authenticatedFetch(apiUrl('/api/transcript-imports'));
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(cloudError(response.status, data));
-    app.transcriptImports = Array.isArray(data.records) ? data.records : [];
-    syncInterviewTranscripts();
-    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
-    if (app.view === 'intelligence') renderIntelligence();
-  } catch (error) { console.warn('[AceCall transcript imports]', error); }
 }
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
 function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
 async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
-async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));app.connectionDiagnostics={...(app.connectionDiagnostics||{}),gateway:'正常',checkedAt:new Date().toISOString()};$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);app.connectionDiagnostics={...(app.connectionDiagnostics||{}),gateway:error.message,checkedAt:new Date().toISOString(),error:error.message};$('#serviceStatus').textContent=error.message||'服务状态未知';}}
+async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);$('#serviceStatus').textContent=error.message||'服务状态未知';}}
 async function authenticatedFetch(url, options = {}) {
   // The login screen is controlled by initializeAuth/signIn only. A rejected
   // business request (for example a missing workspace membership) must not
@@ -2167,20 +1790,10 @@ async function authenticatedFetch(url, options = {}) {
     finally { clearTimeout(timer); }
   };
   let sessionResult = await cloudbaseAuth.getSession();
-  let session = sessionResult.data?.session;
-  if (session && isAnonymousSession(session)) {
-    await cloudbaseAuth.signOut().catch(() => {});
-    throw new Error('请先登录后使用业务功能');
-  }
-  let token = session?.access_token;
+  let token = sessionResult.data?.session?.access_token;
   if (!token) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
-    session = refreshed?.data?.session;
-    if (session && isAnonymousSession(session)) {
-      await cloudbaseAuth.signOut().catch(() => {});
-      throw new Error('请先登录后使用业务功能');
-    }
-    token = session?.access_token;
+    token = refreshed?.data?.session?.access_token;
   }
   if (!token) throw new Error('登录已过期，请重新登录');
   let response;
@@ -2192,30 +1805,10 @@ async function authenticatedFetch(url, options = {}) {
   if (response.status === 401) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
-    if (freshToken && !isAnonymousSession(refreshed?.data?.session)) response = await request(freshToken);
+    if (freshToken) response = await request(freshToken);
+    else throw new Error('登录已过期，请重新登录');
   }
   return response;
-}
-function isAnonymousSession(session) {
-  const user = session?.user || {};
-  const metadata = user.user_metadata || {};
-  const claims = session?.access_token ? decodeJwtPayload(session.access_token) : {};
-  return Boolean(
-    user.is_anonymous === true || user.isAnonymous === true ||
-    metadata.is_anonymous === true || metadata.isAnonymous === true ||
-    claims.is_anonymous === true || claims.isAnonymous === true ||
-    claims.scope === 'anonymous' || claims.name === 'Anonymous' || claims.sub === 'anon'
-  );
-}
-function decodeJwtPayload(token) {
-  try {
-    const part = String(token).split('.')[1];
-    if (!part) return {};
-    const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
-    return JSON.parse(decodeURIComponent(Array.from(atob(normalized), char => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')));
-  } catch {
-    return {};
-  }
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
 async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));const account=username||app.authUser?.email||app.authUser?.username||$('#loginUsername')?.value||'';if(response.status===403){const requestedCompany=companyName||INTERNAL_TEST_COMPANY;response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:account,companyName:requestedCompany})});}if(!response.ok)throw new Error('工作区初始化失败');const workspace=await response.json();workspace.currentMember={...(app.authUser||{}),...(workspace.currentMember||{}),email:workspace.currentMember?.email||app.authUser?.email||''};app.workspace=workspace;updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
