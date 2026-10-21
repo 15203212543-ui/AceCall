@@ -1063,8 +1063,9 @@ function renderIntelligence() {
    const groups = new Map();
    source.forEach(item => {
      const text = `${item.transcript || ''}\n${item.communicationSummary?.overview || ''}\n${item.resume || ''}`.replace(/\r/g, '');
+     const structuredCompanies = item.resumeMeta?.companies || item.companies || [];
      const structuredCompany = item.resumeMeta?.currentCompany || item.currentCompany || item.company || item.mokaData?.companyName || '';
-     const names = [...new Set([structuredCompany, ...extractCompanyEntities(text)].filter(Boolean))];
+     const names = [...new Set([structuredCompany, ...structuredCompanies, ...extractResumeCompanyNames(item.resume || ''), ...extractCompanyEntities(text)].filter(Boolean))];
      names.forEach(rawName => {
        const name = rawName.trim();
        if (!isReliableCompanyName(name)) return;
@@ -1096,6 +1097,21 @@ function renderIntelligence() {
    const standalonePattern = /(?<![\u4e00-\u9fffA-Za-z0-9])([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology))\b/gi;
    for (const match of text.matchAll(standalonePattern)) result.add(match[1].trim());
    return [...result].map(value => value.replace(/^(?:目前|原|上一家|所在|目标)/, '').trim()).filter(isReliableCompanyName);
+ }
+
+ function extractResumeCompanyNames(text = '') {
+   const lines = String(text).split(/\n+/).map(line => line.trim()).filter(Boolean);
+   const start = lines.findIndex(line => /^(?:工作经历|工作经验|职业经历|任职经历|工作背景)/i.test(line.replace(/[：: ].*$/, '')));
+   if (start < 0) return [];
+   const end = lines.findIndex((line, index) => index > start && /^(?:教育经历|教育背景|项目经历|专业技能|自我评价|证书|荣誉)/i.test(line.replace(/[：: ].*$/, '')));
+   const section = lines.slice(start + 1, end > start ? end : Math.min(lines.length, start + 40));
+   const result = [];
+   section.forEach(line => {
+     const match = line.match(/([A-Za-z][A-Za-z0-9 .&-]{1,36}(?:Inc\.?|Ltd\.?|Group|Capital|Bank|Securities|Technology)|[\u4e00-\u9fffA-Za-z0-9（）()·&.]{2,36}(?:有限公司|股份有限公司|集团|科技|证券|银行|基金|保险|资本|传媒|教育|医疗|软件))/i);
+     const value = match?.[1]?.trim();
+     if (value && isReliableCompanyName(value) && !result.includes(value)) result.push(value);
+   });
+   return result.slice(0, 8);
  }
 
  function isReliableCompanyName(value = '') {
