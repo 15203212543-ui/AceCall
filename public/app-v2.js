@@ -225,10 +225,7 @@ function isAnonymousSession(session) {
   // 兜底：匿名会话的 sub 固定为 anon，且没有邮箱
   if (String(user.sub || '').toLowerCase() === 'anon' && !user.email) return true;
   // 最可靠的判据是 access_token 自己的声明，不依赖 SDK 对象的字段形状
-  const claims = decodeJwtPayload(session?.access_token);
-  if (!claims) return false;
-  if (String(claims.scope || '').toLowerCase() === 'anonymous') return true;
-  return String(claims.sub || '').toLowerCase() === 'anon' && !claims.email;
+  return isAnonymousToken(session?.access_token);
 }
 
 function decodeJwtPayload(token) {
@@ -241,6 +238,13 @@ function decodeJwtPayload(token) {
   } catch {
     return null;
   }
+}
+
+function isAnonymousToken(token) {
+  const claims = decodeJwtPayload(token);
+  if (!claims) return false;
+  if (String(claims.scope || '').toLowerCase() === 'anonymous') return true;
+  return String(claims.sub || '').toLowerCase() === 'anon' && !claims.email;
 }
 
 function captureAuthUser(sessionOrUser, fallbackUsername = '') {
@@ -1909,6 +1913,11 @@ async function authenticatedFetch(url, options = {}) {
     token = refreshed?.data?.session?.access_token;
   }
   if (!token) throw new Error('登录已过期，请重新登录');
+  // 匿名 token 一定过不了网关的身份认证（返回 443 空响应），发出去只会制造
+  // 一堆看不懂的 443。在本地就拦住，直接告诉用户该登录了。
+  if (isAnonymousSession(sessionResult.data?.session) || isAnonymousToken(token)) {
+    throw new Error('当前是匿名身份，请退出后重新登录再操作');
+  }
   let response;
   for (let attempt = 0; attempt < 3; attempt++) {
     try { response = await request(token); } catch (error) { if (attempt === 2) throw error; await sleep(400 * 2 ** attempt); continue; }
@@ -1924,13 +1933,24 @@ async function authenticatedFetch(url, options = {}) {
   // 网关的身份认证拒绝凭据时返回 443 且响应体为空（不是标准状态码，容易被当成
   // 「后端挂了」）。先尝试刷新会话，仍失败则说明必须重新登录。
   if (response.status === 443) {
+    const claims = decodeJwtPayload(token) || {};
+    console.warn('[AceCall auth] 网关拒绝了当前凭据', {
+      scope: claims.scope,
+      sub: claims.sub,
+      email: claims.email,
+      userType: claims.user_type,
+      audience: claims.aud,
+      iss: claims.iss,
+      expiresAt: claims.exp ? new Date(claims.exp * 1000).toISOString() : '',
+      hasEmail: Boolean(claims.email)
+    });
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
     if (freshToken) {
       response = await request(freshToken);
       if (response.status !== 443) return response;
     }
-    throw new Error('登录凭据已失效，请退出后重新登录');
+    throw new Error('登录凭据未被网关接受，请退出后重新登录');
   }
   return response;
 }
