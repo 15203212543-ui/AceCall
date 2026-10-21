@@ -1521,7 +1521,7 @@ async function transcribeRecording(file) {
     if (status) status.textContent = `${file.name} · 正在创建录音任务…`;
     const initResponse = await authenticatedFetch(apiUrl('/api/recordings/init'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId: app.candidateId, fileName: file.name, mimeType: file.type || 'audio/webm', size: file.size }) });
     const initData = await initResponse.json().catch(() => ({}));
-    if (!initResponse.ok) throw new Error(initData.error || '录音任务创建失败');
+    if (!initResponse.ok) throw new Error(cloudError(initResponse.status, initData));
     const { recordingId, taskId, storagePrefix, chunkSize = RECORDING_CHUNK_SIZE } = initData;
     recordingDraft.taskId = taskId; recordingDraft.recordingId = recordingId;
     for (let offset = 0, index = 0; offset < file.size; offset += chunkSize, index += 1) {
@@ -1533,11 +1533,11 @@ async function transcribeRecording(file) {
       const uploadedPart = await cloudbaseClient.uploadFile({ cloudPath, filePath: chunk });
       const partResponse = await authenticatedFetch(apiUrl(`/api/recordings/${recordingId}/parts/complete`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index, path: cloudPath, fileId: uploadedPart.fileID || uploadedPart.fileId || '', size: chunk.size, final: offset + chunk.size >= file.size }) });
       const partData = await partResponse.json().catch(() => ({}));
-      if (!partResponse.ok) throw new Error(partData.error || '录音分片登记失败');
+      if (!partResponse.ok) throw new Error(`第 ${index + 1} 个分片登记失败：${cloudError(partResponse.status, partData)}`);
     }
     const queueResponse = await authenticatedFetch(apiUrl('/api/transcription-tasks'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, taskId }) });
     const queueData = await queueResponse.json().catch(() => ({}));
-    if (!queueResponse.ok) throw new Error(queueData.error || '录音转写排队失败');
+    if (!queueResponse.ok) throw new Error(cloudError(queueResponse.status, queueData));
     if (status) status.textContent = `${file.name} · 已上传，等待异步转写服务处理`;
     recordingDraft.uploaded = true;
     toast('录音已上传，已进入异步转写队列');
