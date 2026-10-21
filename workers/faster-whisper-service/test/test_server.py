@@ -176,3 +176,42 @@ def test_prompt_uses_request_override_over_hotwords() -> None:
 
     service = FakeTranscriptionService(hotwords=["不应出现"])
     assert service.transcribe("ignored", prompt=prompt).text
+
+
+def test_rejects_missing_key_when_api_key_configured(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 服务一旦公网可达，没有鉴权就等于把 GPU 借给所有人。
+    monkeypatch.setattr(server, "ASR_API_KEY", "secret-value")
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("call.wav", b"RIFF" + b"\x00" * 64, "audio/wav")},
+    )
+    assert response.status_code == 401
+    assert "ASR_API_KEY" in response.json()["detail"]
+
+
+def test_rejects_wrong_key_when_api_key_configured(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "ASR_API_KEY", "secret-value")
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("call.wav", b"RIFF" + b"\x00" * 64, "audio/wav")},
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert response.status_code == 401
+
+
+def test_accepts_correct_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "ASR_API_KEY", "secret-value")
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("call.wav", b"RIFF" + b"\x00" * 64, "audio/wav")},
+        headers={"Authorization": "Bearer secret-value"},
+    )
+    assert response.status_code == 200
+    assert response.json()["text"]
+
+
+def test_health_stays_open_for_container_probes(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # /health 不带鉴权，否则云托管探针和 Docker HEALTHCHECK 会一直失败。
+    monkeypatch.setattr(server, "ASR_API_KEY", "secret-value")
+    assert client.get("/health").status_code == 200
+

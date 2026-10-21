@@ -118,6 +118,7 @@ curl -X POST http://127.0.0.1:9001/v1/audio/transcriptions \
 | `ASR_DOWNLOAD_TIMEOUT` | `300` | 拉取远端音频超时（秒） |
 | `ASR_EAGER_LOAD` | `1` | 启动即加载模型；设 `0` 可加快冷启动但首个请求变慢 |
 | `ASR_BACKEND` | `faster-whisper` | 设 `fake` 用模拟后端 |
+| `ASR_API_KEY` | 空（不鉴权） | 设了则要求 `Authorization: Bearer <key>`。**服务对公网开放时必须设**，否则任何人都能不限量调用、白烧 GPU。`/health` 不受此限制，供探针使用。 |
 
 ### 热词怎么配
 

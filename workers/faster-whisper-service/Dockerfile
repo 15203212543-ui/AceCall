@@ -11,19 +11,31 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/models \
     WHISPER_DOWNLOAD_ROOT=/models
 
+# 国内部署时 Hugging Face 直连经常超时，默认走镜像；如需官方源：
+#   docker build --build-arg HF_ENDPOINT=https://huggingface.co ...
+ARG HF_ENDPOINT=https://hf-mirror.com
+ENV HF_ENDPOINT=${HF_ENDPOINT}
+
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY transcriber.py server.py ./
 
-RUN useradd --create-home --uid 10001 asr \
-  && mkdir -p /models \
+RUN useradd --create-home --uid 10001 asr && mkdir -p /models
+
+# 构建期预下载权重。云托管的容器文件系统是临时的，若留到启动时再下载，
+# 每次冷启动都要重新拉 1~3GB，既慢又容易失败，还可能导致健康检查超时。
+# 需要在离线环境构建时可加 --build-arg PRELOAD_MODEL=0 跳过。
+ARG PRELOAD_MODEL=1
+ARG WHISPER_MODEL_SIZE=medium
+RUN if [ "$PRELOAD_MODEL" = "1" ]; then \
+      python -c "from faster_whisper.utils import download_model; download_model('${WHISPER_MODEL_SIZE}', cache_dir='/models')"; \
+    fi \
   && chown -R asr:asr /models /app
 USER asr
 
 EXPOSE 9001
-# CPU inference on large-v3 is slow; smaller models are the practical default
-# here. Override WHISPER_MODEL_SIZE at deploy time.
+# CPU 上 large-v3 很慢，small/medium 才是 CPU 的实际选择；GPU 请用 Dockerfile.gpu。
 ENV WHISPER_MODEL_SIZE=medium \
     WHISPER_DEVICE=cpu \
     WHISPER_COMPUTE_TYPE=int8

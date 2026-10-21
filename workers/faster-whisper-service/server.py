@@ -20,11 +20,12 @@ import os
 import tempfile
 import time
 from contextlib import asynccontextmanager
+from hmac import compare_digest
 from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from transcriber import (
@@ -48,8 +49,21 @@ ALLOWED_AUDIO_HOSTS = {
     if host.strip()
 }
 SUPPORTED_FORMATS = {"json", "verbose_json", "text"}
+# 服务一旦对外暴露，任何人都能拿它烧 GPU。设了 ASR_API_KEY 就要求 Bearer token，
+# worker 侧用同一个值配 WHISPER_API_KEY。
+ASR_API_KEY = os.getenv("ASR_API_KEY", "").strip()
 
 service: Optional[TranscriptionService] = None
+
+
+async def require_api_key(authorization: Optional[str] = Header(default=None)) -> None:
+    if not ASR_API_KEY:
+        return
+    expected = f"Bearer {ASR_API_KEY}"
+    provided = (authorization or "").strip()
+    # compare_digest 避免按字节逐位比较带来的时序侧信道
+    if not compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="无效的 ASR_API_KEY")
 
 
 @asynccontextmanager
@@ -173,6 +187,7 @@ async def transcriptions(
     prompt: Optional[str] = Form(default=None),
     response_format: str = Form(default="json"),
     temperature: Optional[float] = Form(default=None),
+    _: None = Depends(require_api_key),
 ):
     current = get_service()
     fmt = (response_format or "json").strip().lower()
