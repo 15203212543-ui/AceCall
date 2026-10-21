@@ -1520,7 +1520,7 @@ async function transcribeRecording(file) {
     if (status) status.textContent = `${file.name} · 正在创建录音任务…`;
     const initResponse = await authenticatedFetch(apiUrl('/api/recordings/init'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId: app.candidateId, fileName: file.name, mimeType: file.type || 'audio/webm', size: file.size }) });
     const initData = await initResponse.json().catch(() => ({}));
-    if (!initResponse.ok) throw new Error(initData.error || '录音任务创建失败');
+    if (!initResponse.ok) throw new Error(cloudError(initResponse.status, initData));
     const { recordingId, taskId, storagePrefix, chunkSize = RECORDING_CHUNK_SIZE } = initData;
     recordingDraft.taskId = taskId; recordingDraft.recordingId = recordingId;
     for (let offset = 0, index = 0; offset < file.size; offset += chunkSize, index += 1) {
@@ -1532,11 +1532,11 @@ async function transcribeRecording(file) {
       const uploadedPart = await cloudbaseClient.uploadFile({ cloudPath, filePath: chunk });
       const partResponse = await authenticatedFetch(apiUrl(`/api/recordings/${recordingId}/parts/complete`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index, path: cloudPath, fileId: uploadedPart.fileID || uploadedPart.fileId || '', size: chunk.size, final: offset + chunk.size >= file.size }) });
       const partData = await partResponse.json().catch(() => ({}));
-      if (!partResponse.ok) throw new Error(partData.error || '录音分片登记失败');
+      if (!partResponse.ok) throw new Error(`第 ${index + 1} 个分片登记失败：${cloudError(partResponse.status, partData)}`);
     }
     const queueResponse = await authenticatedFetch(apiUrl('/api/transcription-tasks'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, taskId }) });
     const queueData = await queueResponse.json().catch(() => ({}));
-    if (!queueResponse.ok) throw new Error(queueData.error || '录音转写排队失败');
+    if (!queueResponse.ok) throw new Error(cloudError(queueResponse.status, queueData));
     if (status) status.textContent = `${file.name} · 已上传，等待异步转写服务处理`;
     recordingDraft.uploaded = true;
     toast('录音已上传，已进入异步转写队列');
@@ -1821,8 +1821,10 @@ function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&
 function apiUrl(path){return `${API_BASE}${path}`;}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function cloudError(status, body = {}) {
-  if (body.error) return body.error;
-  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
+  // 带上 CloudBase 错误码：统一 500 无法区分是参数非法、权限不足还是网关故障。
+  const suffix = body.code ? `（${body.code}）` : '';
+  if (body.error) return `${body.error}${suffix}`;
+  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`) + suffix;
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
 async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();await loadMokaInterviews();}catch(error){console.error(error);toast(`CloudBase暂不可用：${error.message||'已使用本机数据'}`);}}
