@@ -210,7 +210,16 @@ const server = http.createServer(async (request, response) => {
     }
     return sendJson(response, 404, { error: 'Not found', route: 'unmatched' });
   } catch (error) {
-    console.error(JSON.stringify({ level: 'error', message: error.message, statusCode: error.statusCode || 500 }));
+    // `code` is what makes CloudBase SDK failures diagnosable: an INVALID_PARAM
+    // ("不能更新_id的值") carries no statusCode, so without it the client only
+    // ever sees a generic 500 and the real cause stays buried in the logs.
+    console.error(JSON.stringify({
+      level: 'error',
+      message: error.message,
+      code: error.code || '',
+      statusCode: error.statusCode || 500,
+      stack: String(error.stack || '').split('\n').slice(0, 4).join(' | ')
+    }));
     const statusCode = error.statusCode || 500;
     // Service errors are deliberately phrased without credentials; returning them
     // lets the client distinguish Baidu auth/format failures from CloudBase faults.
@@ -467,7 +476,7 @@ async function syncMokaJobs(context, client, targetNames, result) {
     const existing = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
     const current = existing.data || {};
     const stored = applyScreeningProfile({ ...current, id, tenantId: context.tenantId, source: current.source || 'moka', mokaJobId: job.id, name: current.name || job.name, department: current.department || job.department, jd: current.jd || job.jd, keywords: current.keywords?.length ? current.keywords : job.keywords, status: current.status || 'active', syncedFromMokaAt: now, createdAt: current.createdAt || now, updatedAt: now, updatedBy: context.uid, createdBy: current.createdBy || context.uid });
-    await db.collection(COLLECTIONS.jobs).doc(id).set(stored);
+    await db.collection(COLLECTIONS.jobs).doc(id).set(persistable(stored));
     synced.push(cleanDocument(stored));
   }
   result.mokaJobStats = { fetched: responses.length, matched: jobs.length, synced: synced.length, jobs: names };
@@ -1037,7 +1046,7 @@ async function bootstrapWorkspace(input = {}, request) {
   if (existingMember?.tenantId) {
     if (existingMember.status === 'disabled') throw serviceError('当前账号已被禁用', 403);
     const member = existingMember.status === 'invited' ? { ...existingMember, status: 'active', updatedAt: new Date().toISOString() } : existingMember;
-    if (member.status !== existingMember.status) await db.collection(COLLECTIONS.members).doc(existingMember._id || existingMember.id).set(member);
+    if (member.status !== existingMember.status) await db.collection(COLLECTIONS.members).doc(existingMember._id || existingMember.id).set(persistable(member));
     return workspaceSummary({ uid, tenantId: member.tenantId, role: member.role || 'recruiter', member });
   }
 
@@ -1080,7 +1089,7 @@ async function migrateLegacyTenantData(context) {
       const id = item.id || item._id;
       if (!id) continue;
       const { _id, _openid, ...stored } = item;
-      await db.collection(collection).doc(id).set({ ...stored, tenantId: context.tenantId, updatedBy: context.uid, createdBy: stored.createdBy || context.uid });
+      await db.collection(collection).doc(id).set(persistable({ ...stored, tenantId: context.tenantId, updatedBy: context.uid, createdBy: stored.createdBy || context.uid }));
     }
   }
 }
@@ -1102,7 +1111,7 @@ async function updateWorkspace(context, input = {}) {
   const existing = await db.collection(COLLECTIONS.tenants).doc(context.tenantId).get();
   const now = new Date().toISOString();
   const tenant = existing.data || { id: context.tenantId, status: 'active', createdAt: now, createdBy: context.uid };
-  await db.collection(COLLECTIONS.tenants).doc(context.tenantId).set({ ...tenant, id: context.tenantId, name, updatedAt: now, updatedBy: context.uid });
+  await db.collection(COLLECTIONS.tenants).doc(context.tenantId).set(persistable({ ...tenant, id: context.tenantId, name, updatedAt: now, updatedBy: context.uid }));
   await audit(context, 'workspace.update', context.tenantId, { name });
   return { ok: true, workspace: cleanDocument({ ...tenant, id: context.tenantId, name, updatedAt: now, updatedBy: context.uid }) };
 }
@@ -1135,7 +1144,7 @@ async function updateMember(context, id, input = {}) {
   const member = found.data[0];
   const nextRole = ['owner', 'admin', 'recruiter', 'viewer'].includes(input.role) ? input.role : member.role;
   const status = ['active', 'invited', 'disabled'].includes(input.status) ? input.status : member.status;
-  await db.collection(COLLECTIONS.members).doc(member._id || id).set({ ...member, role: nextRole, status, displayName: String(input.displayName || member.displayName || '').slice(0, 80), updatedAt: new Date().toISOString(), updatedBy: context.uid });
+  await db.collection(COLLECTIONS.members).doc(member._id || id).set(persistable({ ...member, role: nextRole, status, displayName: String(input.displayName || member.displayName || '').slice(0, 80), updatedAt: new Date().toISOString(), updatedBy: context.uid }));
   await audit(context, 'member.update', id, { role: nextRole, status });
   return { ok: true, id };
 }
@@ -1280,7 +1289,7 @@ async function migrateStoredResumes(context) {
       const matching = job ? { ...currentMatch, ...generateDemoMatch({ resume: text, jobs: [job] }), jobId: job.id } : currentMatch;
       const now = new Date().toISOString();
       const { _id, _openid, ...stored } = source;
-      await db.collection(COLLECTIONS.candidates).doc(id).set({
+      await db.collection(COLLECTIONS.candidates).doc(id).set(persistable({
         ...stored,
         id,
         tenantId: context.tenantId,
@@ -1290,7 +1299,7 @@ async function migrateStoredResumes(context) {
         resumeMeta: { ...(source.resumeMeta || {}), ...basics, textNormalizedAt: now },
         matching,
         updatedAt: now
-      });
+      }));
       migrated.push(id);
     } catch (error) { failed.push({ id, reason: error.message }); }
   }
@@ -1348,7 +1357,7 @@ async function completeRecordingPart(context, id, input = {}) {
   if (!part.path || part.path.indexOf(`${task.storagePrefix}/`) !== 0) throw serviceError('录音分片路径无效', 400);
   const parts = [...(task.parts || []).filter(item => item.index !== part.index), part].sort((a, b) => a.index - b.index);
   const patch = { parts, status: input.final ? 'uploaded' : 'uploading', updatedAt: new Date().toISOString() };
-  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set({ ...task, ...patch });
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set(persistable({ ...task, ...patch }));
   return { ok: true, taskId: id, status: patch.status, partCount: parts.length };
 }
 
@@ -1365,7 +1374,7 @@ async function createTranscriptionTask(context, input = {}) {
   const task = await findTask(context, String(input.recordingId || input.taskId || ''));
   const status = task.parts?.length ? 'queued' : task.status;
   const updated = { ...task, status, queuedAt: status === 'queued' ? new Date().toISOString() : task.queuedAt, updatedAt: new Date().toISOString() };
-  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(task.id).set(updated);
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(task.id).set(persistable(updated));
   await audit(context, 'transcription.queue', task.id, { engine: updated.engine, partCount: updated.parts.length });
   return { ok: true, task: cleanDocument(updated), message: status === 'queued' ? '录音已进入异步转写队列，等待转写 worker 处理' : '录音尚未完成上传' };
 }
@@ -1379,7 +1388,7 @@ async function analyzeTranscriptionTask(context, id, input = {}) {
   const text = String(input.text || task.result?.text || '').trim();
   if (!text) throw serviceError('转写结果为空，暂时不能分析', 422);
   const result = { text, characters: text.length, completedAt: new Date().toISOString(), format: 'text' };
-  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set({ ...task, status: 'completed', result, updatedAt: new Date().toISOString(), error: '' });
+  await getDatabase().collection(COLLECTIONS.transcriptionTasks).doc(id).set(persistable({ ...task, status: 'completed', result, updatedAt: new Date().toISOString(), error: '' }));
   return { ok: true, taskId: id, status: 'completed', result };
 }
 
@@ -1478,6 +1487,16 @@ function cleanDocument(document) {
   result.id = result.id || result._id;
   delete result._id;
   return result;
+}
+
+// CloudBase's document.set() rejects any payload containing `_id` with
+// INVALID_PARAM ("不能更新_id的值"). Because that error carries no statusCode,
+// the handler below would report a generic 500 "服务暂时不可用" and the real cause
+// stayed invisible. Every write path that echoes back a record read from the
+// database must strip the server-managed fields first.
+function persistable(document) {
+  const { _id, _openid, ...rest } = document || {};
+  return rest;
 }
 
 function pick(source = {}, keys) {
@@ -1772,4 +1791,4 @@ function sendJson(response, statusCode, body) {
 
 if (require.main === module) server.listen(PORT, '0.0.0.0', () => console.log(`AceCall API listening on ${PORT}`));
 
-module.exports = { server, validatePayload, deriveStatus, cleanDocument, sanitizeJson, normalizeInterviewerReview, generateDemo };
+module.exports = { server, validatePayload, deriveStatus, cleanDocument, sanitizeJson, normalizeInterviewerReview, generateDemo, persistable };

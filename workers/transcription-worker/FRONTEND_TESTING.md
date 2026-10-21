@@ -173,6 +173,47 @@ WHISPER_API_URL=http://127.0.0.1:9001/v1/audio/transcriptions \
 | 转写成功但没有说话人 | Whisper 不做 diarization | 已知限制，面试官分析仍走转写文件导入 |
 | 长录音失败 | 没配切段，或 ASR 侧 32MB 限制 | 确认 `TRANSCRIPTION_AUTO_SEGMENT_SECONDS=900`，并走 `audio_url` 模式 |
 
+### 分片登记返回 500「服务暂时不可用」
+
+已在本次修复，但**必须重新部署云函数才会生效**（见下面「部署清单」）。
+
+原因是 CloudBase 的 `document.set()` 拒绝含 `_id` 的写入（`INVALID_PARAM 不能更新_id的值`），
+而 `set({ ...task })` 把从数据库读出来的 `_id` 又原样写了回去。该错误不带 `statusCode`，
+被统一转成 500，所以界面上只看到「服务暂时不可用」，看不出真实原因。
+
+受影响的不止分片登记：`createTranscriptionTask`、`analyzeTranscriptionTask`、
+成员 / 工作区更新、Moka 岗位同步，以及 **worker 的 `claimTask` / `updateTask`**。
+最后两处意味着即使分片上传成功，转写状态也永远写不回数据库。
+
+修复方式是统一用 `persistable()` 剥掉 `_id` / `_openid`，并加了静态检查防止回退。
+部署后如果仍报 500，把响应里的 `code` 字段发出来——现在错误提示和云函数日志都会带上它。
+
+---
+
+## 部署清单（改完代码必须做，否则前端仍会失败）
+
+代码推到 `main` **不等于**线上生效。这条链路上有两个独立部署物：
+
+| 部署物 | 什么时候要重新部署 | 怎么部署 |
+|---|---|---|
+| 前端静态文件 | 改了 `public/` 下任何文件 | 推 `main` 后 GitHub Actions 自动部署（约 1 分钟） |
+| **云函数 `acecall-api` / `acecall-api-v2`** | **改了 `cloudfunctions/acecall-api/` 任何文件** | 需手动部署，见下 |
+| **worker 容器** | 改了 `workers/transcription-worker/` 任何文件 | 需手动重新构建部署 |
+| ASR 服务 | 改了 `workers/faster-whisper-service/` | 需手动重新构建部署 |
+
+云函数部署（需已安装并登录 CloudBase CLI）：
+
+```bash
+# 在仓库根目录执行；cloudbaserc.json 已声明 envId 和两个函数，无需重复指定
+tcb login
+tcb fn deploy acecall-api --force
+tcb fn deploy acecall-api-v2 --force
+```
+
+两个函数用的是同一份代码（`dir` 都指向 `acecall-api`），`acecall-api-v2` 是前端 `config.js` 实际调用的那个，**不要只部署其中一个**。
+
+判断云函数是否已更新：调用一个会写库的接口，如果还返回 500 且 `code` 为空，说明跑的还是旧代码。
+
 ---
 
 ## 建议的测试顺序

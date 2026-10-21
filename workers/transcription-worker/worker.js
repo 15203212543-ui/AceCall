@@ -269,15 +269,26 @@ function mergeSliceResults(results) {
   return { text: texts.join('\n').trim(), segments, duration: Number(duration.toFixed(3)) };
 }
 
+/**
+ * CloudBase's document.set() rejects payloads containing `_id`
+ * (INVALID_PARAM "不能更新_id的值"). Tasks arrive here straight from a query, so
+ * every write-back must strip the server-managed fields — otherwise the update
+ * throws and the task stays stuck in its previous status forever.
+ */
+function persistable(document) {
+  const { _id, _openid, ...rest } = document || {};
+  return rest;
+}
+
 async function claimTask(task) {
   const now = new Date().toISOString();
   const updated = { ...task, status: 'transcribing', workerId: WORKER_ID, startedAt: now, updatedAt: now, error: '' };
-  await database().collection(COLLECTION).doc(task.id).set(updated);
+  await database().collection(COLLECTION).doc(task.id).set(persistable(updated));
   return updated;
 }
 
 async function updateTask(task, patch) {
-  await database().collection(COLLECTION).doc(task.id).set({ ...task, ...patch, updatedAt: new Date().toISOString() });
+  await database().collection(COLLECTION).doc(task.id).set(persistable({ ...task, ...patch, updatedAt: new Date().toISOString() }));
 }
 
 async function processTask(task) {
@@ -392,5 +403,8 @@ module.exports = {
   prepareAudio,
   mergeSliceResults,
   probeDuration,
+  persistable,
+  claimTask,
+  updateTask,
   configureDependencies
 };
