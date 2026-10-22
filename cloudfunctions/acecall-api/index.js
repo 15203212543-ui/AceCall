@@ -2,12 +2,17 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
-const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
+const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
 const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
 const { prepareDocumentVersions } = require('./document-text');
-const { resolveJobAssignment } = require('./job-assignment');
+const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMatches } = require('./job-assignment');
+const { proposeNameCandidates, chooseDisplayedName, extractProfileFields } = require('./resume-profile');
+const { buildCallQuestions } = require('./call-preparation');
+const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
+const { buildAiTaskRecord } = require('./ai-task');
+const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, buildLegacyDocument } = require('./candidate-documents');
 const { classifyTranscription, presentTranscriptionStatus } = require('./transcription-route');
@@ -168,12 +173,19 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await loadDocumentText(await getRequestContext(request), id));
     }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
-      await guardAiRoute(request, '/api/generate');
+      const context = await guardAiRoute(request, '/api/generate');
       const payload = await readJson(request);
       validatePayload(payload);
-      const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
-      const result = payload.action === 'review-interviewer' ? normalizeInterviewerReview(generated) : generated;
-      return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
+      const startedAt = Date.now();
+      try {
+        const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
+        const result = finalizeGeneratedResult(payload, generated);
+        await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, result, startedAt }));
+        return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
+      } catch (error) {
+        await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, startedAt, error }));
+        throw error;
+      }
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
       await guardAiRoute(request, '/api/parse-resume');
@@ -916,7 +928,7 @@ function buildMokaAnalytics(records = []) {
   if (depth < 60) recommendations.push('增加基于候选人回答的二次追问，避免停留在经历复述。');
   if (completeness < 80) recommendations.push('在面试结束后及时完成结论记录，并明确通过依据或待核验事项。');
   if (!recommendations.length) recommendations.push('保持当前结构化提问和事实核验方式，继续用入职结果校准判断标准。');
-  return {
+  const analytics = {
     scope: { project: String(process.env.MOKA_PROJECT_NAME || 'QS'), jobs: 'all', interviewer: 'all' },
     interviewer: { score: interviewerScore, completed: completed.length, passed, rejected, pending: Math.max(0, completed.length - passed - rejected), passRate: completed.length ? Math.round(passed / completed.length * 100) : 0, offerAccepted, hired, evaluated, evaluationRate: completed.length ? Math.round(evaluated / completed.length * 100) : 0 },
     dimensions: { questionCoverage: coverage, followUpDepth: depth, recordCompleteness: completeness },
@@ -926,6 +938,7 @@ function buildMokaAnalytics(records = []) {
     recommendations,
     intelligence: buildIntelligenceAnalytics(records)
   };
+  return applyTeamVisibility(analytics);
 }
 
 function buildIntelligenceAnalytics(records = []) {
@@ -939,7 +952,8 @@ function buildIntelligenceAnalytics(records = []) {
   ];
   const signals = signalDefinitions.map(([label, terms]) => ({ label, terms: terms.filter(term => texts.includes(term)), evidenceCount: terms.reduce((sum, term) => sum + (texts.match(new RegExp(term, 'g')) || []).length, 0) })).filter(item => item.evidenceCount > 0);
   const questions = records.flatMap(record => String(record.transcript || '').split(/\n+/).map(line => line.trim()).filter(line => /[？?]$/.test(line))).slice(0, 30);
-  return { companies, signals, questions, sourceRecords: records.filter(record => record.transcript || record.feedback).length, generatedAt: new Date().toISOString(), reviewStatus: '待人工确认' };
+  const confirmedFacts = records.flatMap(record => Array.isArray(record.confirmedFacts) ? record.confirmedFacts : []);
+  return { companies, signals, questions, internalClues: internalCluesFromFacts(confirmedFacts), clueAudience: 'internal', rubric: rubricFromCorrections(records.flatMap(record => Array.isArray(record.judgmentCorrections) ? record.judgmentCorrections : [])), sourceRecords: records.filter(record => record.transcript || record.feedback).length, generatedAt: new Date().toISOString(), reviewStatus: '待人工确认' };
 }
 
 function normalizeResumeText(text = '') {
@@ -1256,7 +1270,12 @@ async function saveJob(context, id, input) {
   const db = getDatabase();
   await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
-  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt']);
+  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']);
+  if (input.confirmProfile) {
+    const confirmed = confirmJobProfile(draftJobProfile({ ...input, profile: input.profile }), context.uid, now);
+    job.profile = confirmed;
+    job.profileHistory = [...(Array.isArray(input.profileHistory) ? input.profileHistory : []), confirmed.snapshot].slice(-20);
+  }
   job.id = id;
   job.tenantId = context.tenantId;
   job.createdBy = context.uid;
@@ -1321,14 +1340,17 @@ function hasScreeningResult(record) {
 async function resolveMokaSync(context, previousSync, record) {
   const previous = previousSync && typeof previousSync === 'object' ? previousSync : null;
   if (!hasScreeningResult(record)) return previous;
-  const fingerprint = screeningFingerprint(record);
+  const plan = screeningWritePlan(record, previous);
+  if (plan.action === 'skip' || (plan.action === 'draft' && previous?.status === '已同步')) return previous;
+  if (plan.action === 'draft') return { status: '草稿', fingerprint: plan.fingerprint, reviewDecisionId: plan.reviewDecisionId };
+  const fingerprint = plan.fingerprint;
   if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
   const operatorEmail = chooseOperatorEmail(context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
   try {
     const result = await syncScreeningComment(createMokaClient(), record, operatorEmail);
-    return { ...result, fingerprint };
+    return { ...result, fingerprint, reviewDecisionId: plan.reviewDecisionId };
   } catch (error) {
-    return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, syncedAt: new Date().toISOString() };
+    return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
   }
 }
 
@@ -1478,6 +1500,7 @@ async function importTranscript(context, input = {}) {
   const now = new Date().toISOString();
   const library = await listInterviewerNames(context);
   const metadata = mergeTranscriptMetadata(sanitizeJson(input.metadata || {}), input.fileName, text, library);
+  metadata.findings = extractTranscriptFindings(text, String(input.resume || ''));
   const result = { text, characters: text.length, completedAt: now, format: 'text', source: 'local-moka-download' };
   const task = {
     id, tenantId: context.tenantId, candidateId: String(input.candidateId || '').slice(0, 100),
@@ -1636,10 +1659,11 @@ async function parseResumeFile(fileName, buffer) {
   const contextualName = extractContextualCandidateName(resumeLines);
   const fileNameName = extractNameFromFileName(fileName);
   const contentName = extractCandidateName(resumeLines);
-  const candidateName = chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
-  const candidateNameSource = labeledName ? '简历姓名字段' : contextualName ? '联系方式附近文本' : fileNameName ? '文件名' : contentName ? '简历正文' : '';
-  const candidateNameConfidence = labeledName || contextualName ? '高' : fileNameName || contentName ? '中' : '低';
-  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource, candidateNameConfidence, phone, email, age, experienceYears, education, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
+  const nameCandidates = proposeNameCandidates({ labeled: labeledName, contextual: contextualName, fromFile: fileNameName, fromBody: contentName });
+  const displayedName = chooseDisplayedName(nameCandidates);
+  const candidateName = displayedName.candidateName || chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
+  const profile = extractProfileFields(text);
+  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears, education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
 }
 
 let baiduAccessToken = { value: '', expiresAt: 0 };
@@ -1820,6 +1844,29 @@ function summarySchema() {
 }
 function synthesisSchema() {
   return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 是给下一位面试官的重点关注，写 3 到 5 条，每条一句话，只写经验缺口、尚未确认的薪资到岗竞业、简历和口述的矛盾。不要重复结论说明。';
+}
+
+function finalizeGeneratedResult(payload, generated) {
+  if (payload.action === 'match') {
+    const decision = evaluateJobMatches({ resume: payload.resume, jobs: payload.jobs || [], conflicts: payload.conflicts || [] });
+    return { ...generated, ...decision, jobId: decision.jobId, status: decision.status, score: decision.score };
+  }
+  if (payload.action === 'prepare') {
+    const profile = draftJobProfile({ jd: payload.jd, rules: payload.rules, keywords: payload.keywords });
+    const decision = evaluateJobMatches({ resume: payload.resume, jobs: [{ id: 'current', name: payload.roleName || '', status: 'active', jd: payload.jd, rules: payload.rules, keywords: payload.keywords }] });
+    const questions = buildCallQuestions({ profile, items: decision.results?.[0]?.items || [], manual: payload.manualQuestions || [] });
+    return questions.length ? { ...generated, questions } : generated;
+  }
+  if (payload.action === 'summarize') return checkCallSummary(generated, payload.transcript || '');
+  if (payload.action === 'synthesize') return checkSynthesis(generated, `${payload.resume || ''}\n${payload.transcript || ''}`);
+  if (payload.action === 'review-interviewer') return protectInterviewerReview(normalizeInterviewerReview(generated), (payload.sessions || []).length);
+  return generated;
+}
+
+async function rememberAiTask(context, task) {
+  try {
+    await getDatabase().collection(COLLECTIONS.aiTasks).add({ ...task, tenantId: context.tenantId, createdBy: context.uid, createdAt: new Date().toISOString() });
+  } catch {}
 }
 
 function generateDemo(payload) {
