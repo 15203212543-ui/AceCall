@@ -17,6 +17,46 @@ from typing import Any, Iterable, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _patch_av_open() -> bool:
+    """让 faster-whisper 能在不支持 metadata_errors 的 PyAV 上工作。
+
+    faster-whisper 的 audio.py 调用 av.open(..., metadata_errors="ignore")，
+    但 PyAV 19.0.2（当前最新发布版）不接受这个关键字，真正转写时会直接报
+    TypeError: open() got an unexpected keyword argument 'metadata_errors'。
+    模型加载阶段不会触发，所以问题要到第一次转写才暴露。
+
+    探测一次，不支持就把该参数丢掉再调用。返回是否打了补丁，便于日志记录。
+    """
+    try:
+        import av
+    except Exception:  # pragma: no cover - av 缺失时交给 faster-whisper 自己报错
+        return False
+    if getattr(av.open, "_acecall_metadata_errors_patched", False):
+        return False
+    original = av.open
+    try:
+        # 不支持的 PyAV 会在参数校验阶段抛 TypeError；支持则抛文件/格式相关错误
+        original("/nonexistent-acecall-probe", metadata_errors="ignore")
+        return False
+    except TypeError as error:
+        if "metadata_errors" not in str(error):
+            return False
+    except Exception:
+        return False
+
+    def open_compat(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return original(*args, **kwargs)
+
+    open_compat._acecall_metadata_errors_patched = True
+    av.open = open_compat
+    logger.info("PyAV 不支持 metadata_errors，已启用兼容补丁")
+    return True
+
+
+AV_COMPAT_PATCHED = _patch_av_open()
+
+
 class TranscriptionError(RuntimeError):
     """Raised when the backend cannot produce a usable transcript."""
 
