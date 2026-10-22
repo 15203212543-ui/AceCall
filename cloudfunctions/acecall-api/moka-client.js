@@ -138,7 +138,7 @@ function screeningFingerprint(candidate = {}) {
     reviewConfirmed: candidate.reviewConfirmed === true || report.reviewConfirmed === true,
     reviewDecisionId: report.reviewDecisionId || candidate.reviewDecisionId || '',
     resume: clipText(candidate.resume, 600),
-    noteVersion: 'screening-note-v2'
+    noteVersion: 'screening-note-v3'
   })).digest('hex').slice(0, 24);
 }
 
@@ -182,11 +182,27 @@ function screeningWritePlan(record = {}, previous = null) {
   return { action: 'write', status: '待写入', fingerprint, reviewDecisionId };
 }
 
-function buildScreeningNote(candidate = {}) {
+function distilledExperienceLines(value) {
+  const text = usefulNoteText(value, 500);
+  if (!text) return [];
+  const parts = text.split(/\n+|；|;|(?<=[。！？])/).map(part => part.replace(/^[，,。！？；;\s]+|[。！？；;\s]+$/g, '').trim()).filter(part => part.length >= 2);
+  const verdict = /^(明确匹配|部分匹配|信息不足|明确不匹配|推荐|不推荐|推荐业务面试|补充电话沟通|转入其他岗位|暂不推进|纳入人才库长期维护|待确认)$/;
+  const lines = parts.filter(part => !verdict.test(part)).map(part => clipText(part, 160));
+  return lines.length ? lines : parts.map(part => clipText(part, 160));
+}
+
+function basicInfoLines(candidate = {}) {
   const summary = candidate.communicationSummary || {};
   const report = candidate.report || {};
   const facts = summary.keyFacts || {};
-  const factLines = [
+  const points = [];
+  const push = (value) => {
+    const text = clipText(value, 160);
+    if (!text || points.some(item => item === text || item.includes(text) || text.includes(item))) return;
+    points.push(text);
+  };
+  distilledExperienceLines(report.conclusionReason).forEach(push);
+  [
     ['当前职位', facts.currentCompanyRole],
     ['地点', facts.location],
     ['当前薪资', facts.currentSalary],
@@ -194,22 +210,18 @@ function buildScreeningNote(candidate = {}) {
     ['到岗', facts.availability],
     ['动机', facts.motivation],
     ['竞业', facts.nonCompete]
-  ].filter(([, value]) => clipText(value, 160)).map(([label, value]) => `${label}：${clipText(value, 160)}`);
-  const conclusion = clipText(report.conclusionReason, 500) || '无';
-  const recommendation = usefulNoteText(report.recommendationReason, 300);
+  ].forEach(([label, value]) => { if (clipText(value, 160)) push(`${label}：${clipText(value, 160)}`); });
+  return points.map((item, index) => `${index + 1}. ${item}`);
+}
+
+function buildScreeningNote(candidate = {}) {
   const focus = interviewerFocusPoints(candidate);
+  const basics = basicInfoLines(candidate);
   const lines = [
     `候选人：${clipText(candidate.candidateName, 40) || '未命名'}`,
-    `岗位：${clipText(candidate.roleName, 60) || '未分配'}`,
-    `审核结论：${clipText(report.conclusion, 40) || '待确认'}`,
-    `建议动作：${clipText(report.finalDecision || report.nextStep, 40) || '待确认'}`,
-    '',
-    '结论说明：',
-    conclusion
+    `岗位：${clipText(candidate.roleName, 60) || '未分配'}`
   ];
-  if (recommendation && recommendation !== conclusion && !conclusion.includes(recommendation)) lines.push(`推荐理由：${recommendation}`);
-  if (factLines.length) lines.push('', '关键信息：', ...factLines);
-  lines.push('', '沟通总结：', clipText(summary.overview, 500) || '无');
+  if (basics.length) lines.push('', '基本信息：', ...basics);
   if (focus.length) lines.push('', '建议后续面试官重点关注：', ...focus.map((item, index) => `${index + 1}. ${item}`));
   return lines.join('\n').slice(0, 4000);
 }
