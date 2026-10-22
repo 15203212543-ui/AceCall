@@ -19,7 +19,7 @@ ENV HF_ENDPOINT=${HF_ENDPOINT}
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY transcriber.py server.py ./
+COPY transcriber.py server.py download_model.py ./
 
 RUN useradd --create-home --uid 10001 asr && mkdir -p /models
 
@@ -27,16 +27,33 @@ RUN useradd --create-home --uid 10001 asr && mkdir -p /models
 # 每次冷启动都要重新拉 1~3GB，既慢又容易失败，还可能导致健康检查超时。
 # 需要在离线环境构建时可加 --build-arg PRELOAD_MODEL=0 跳过。
 ARG PRELOAD_MODEL=1
-ARG WHISPER_MODEL_SIZE=medium
+# CPU 部署的默认模型只能是 tiny：实测 16 核上 small 仅 0.38 倍实时、
+# medium 更低，云托管常见 1~2 核实例上跑 medium 等于不可用。tiny 配合
+# ACECALL_ASR_HOTWORDS 能让专业术语基本正确，是纯 CPU 场景的唯一折中。
+# 有 GPU 或高配实例时用 Dockerfile.gpu，或构建时覆盖：
+#   --build-arg WHISPER_MODEL_SIZE=small
+ARG WHISPER_MODEL_SIZE=tiny
+
+# 构建期预下载权重。云托管的容器文件系统是临时的，若留到启动时再下载，
+# 每次冷启动都要重新拉，既慢又容易失败，还可能导致健康检查超时。
+#
+# 这里不用 huggingface_hub 的 download_model：新版 hf_hub 会把大文件重定向到
+# xet 存储（cas-server.xethub.hf.co），在 CI/容器里常因缺少授权返回
+#   401 Unauthorized → File reconstruction error
+# 直接走 HTTP 拉 resolve/main 下的几个文件，行为稳定且可预期。
+# 需要在离线环境构建时可加 --build-arg PRELOAD_MODEL=0 跳过。
+ARG HF_ENDPOINT_FOR_DOWNLOAD=https://hf-mirror.com
 RUN if [ "$PRELOAD_MODEL" = "1" ]; then \
-      python -c "from faster_whisper.utils import download_model; download_model('${WHISPER_MODEL_SIZE}', cache_dir='/models')"; \
+      python download_model.py "${WHISPER_MODEL_SIZE}" "/models/${WHISPER_MODEL_SIZE}"; \
     fi \
   && chown -R asr:asr /models /app
 USER asr
 
 EXPOSE 9001
-# CPU 上 large-v3 很慢，small/medium 才是 CPU 的实际选择；GPU 请用 Dockerfile.gpu。
-ENV WHISPER_MODEL_SIZE=medium \
+# 与上面的 ARG 保持一致，否则构建期下载的模型和运行期加载的模型不是同一个，
+# 运行时会去重新下载（云托管容器文件系统是临时的，冷启动会被健康检查判死）。
+# 指向本地目录而不是模型名，避免运行时再去访问 HuggingFace。
+ENV WHISPER_MODEL_SIZE=/models/tiny \
     WHISPER_DEVICE=cpu \
     WHISPER_COMPUTE_TYPE=int8
 

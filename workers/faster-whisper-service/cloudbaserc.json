@@ -1,0 +1,7 @@
+{
+  "envId": "yuxiaomiaochongwu-d2dsk55ef4b392",
+  "$schema": "https://static.cloudbase.net/cli/cloudbaserc.schema.json",
+  "cloudrun": {
+    "name": "acecall-faster-whisper"
+  }
+}

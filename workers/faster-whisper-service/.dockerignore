@@ -1,10 +1,8 @@
+# 构建期用不到的文件，排除后镜像更小、构建更快。
 __pycache__/
 *.pyc
-.pytest_cache/
-.venv/
-venv/
-models/
-*.wav
-*.mp3
-*.m4a
-*.webm
+.dl-test/
+test/
+*.md
+.env
+.env.*
