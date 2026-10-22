@@ -55,18 +55,59 @@ function configureDependencies(next) {
   dependencies = next || null;
 }
 
+/**
+ * 组装 CloudBase SDK 的凭证参数。
+ *
+ * 注意：node-sdk 的 ICloudBaseConfig **没有 accessKey 字段**（只有
+ * secretId / secretKey / sessionToken），整个 dist 目录里也搜不到 accessKey。
+ * 云函数里写 accessKey 之所以能用，是因为它跑在 CloudBase 环境内，SDK 会自动
+ * 读取平台注入的临时凭证；而这个 worker 是外部进程，必须显式给密钥，
+ * 否则数据库请求会抛「missing secretId or secretKey of tencent cloud」。
+ *
+ * 支持两种来源，优先级从高到低：
+ *   1. CLOUDBASE_SECRET_ID / CLOUDBASE_SECRET_KEY（推荐，写得明确）
+ *   2. TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY（腾讯云官方环境变量名）
+ */
+function credentialConfig() {
+  const config = { env: process.env.TCB_ENV };
+  const secretId = process.env.CLOUDBASE_SECRET_ID || process.env.TENCENTCLOUD_SECRETID;
+  const secretKey = process.env.CLOUDBASE_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY;
+  const sessionToken = process.env.CLOUDBASE_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSIONTOKEN;
+  if (secretId && secretKey) {
+    config.secretId = secretId;
+    config.secretKey = secretKey;
+    if (sessionToken) config.sessionToken = sessionToken;
+  }
+  return config;
+}
+
+function assertCloudbaseCredentials() {
+  if (!process.env.TCB_ENV) throw new Error('转写 worker 未配置 TCB_ENV（CloudBase 环境 ID）');
+  const { secretId, secretKey } = credentialConfig();
+  if (!secretId || !secretKey) {
+    throw new Error(
+      '转写 worker 缺少 CloudBase 密钥：请设置 CLOUDBASE_SECRET_ID 与 CLOUDBASE_SECRET_KEY'
+      + '（腾讯云 API 密钥，不是 CloudBase 的 API Key；CLOUDBASE_APIKEY 对 node-sdk 无效）'
+    );
+  }
+}
+
+function cloudbaseApp() {
+  if (!app) {
+    assertCloudbaseCredentials();
+    app = cloudbase().init(credentialConfig());
+  }
+  return app;
+}
+
 function database() {
   if (dependencies?.database) return dependencies.database();
-  if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 TCB_ENV 或 CLOUDBASE_APIKEY');
-  app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
-  return app.database();
+  return cloudbaseApp().database();
 }
 
 function storage() {
   if (dependencies?.storage) return dependencies.storage();
-  if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 CloudBase 凭证');
-  app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
-  return app;
+  return cloudbaseApp();
 }
 
 async function tempFileUrl(fileID) {
@@ -280,10 +321,28 @@ function persistable(document) {
   return rest;
 }
 
+/**
+ * 领取任务。
+ *
+ * 用 doc(id).set() 是「无条件覆盖」：多个 worker 实例同时轮询时，会把同一条任务
+ * 重复转写，既浪费算力又会互相覆盖结果。这里改成条件更新（CAS）：带上
+ * status: 'queued' 作为条件，只有真正改到了记录才算领取成功。
+ *
+ * 用 where({ id }) 而不是 doc(id) 还有一个好处：云函数创建任务时用的是
+ * doc(id).set()，_id 与业务 id 相同；但历史上若有用 add() 写入的记录，_id 是
+ * 随机串，doc(id) 会找不到它、导致任务永远卡在 queued。按字段查询两种都能覆盖。
+ */
 async function claimTask(task) {
   const now = new Date().toISOString();
   const updated = { ...task, status: 'transcribing', workerId: WORKER_ID, startedAt: now, updatedAt: now, error: '' };
-  await database().collection(COLLECTION).doc(task.id).set(persistable(updated));
+  const patch = persistable(updated);
+  delete patch._id;
+
+  const claimed = await database().collection(COLLECTION)
+    .where({ id: task.id, status: 'queued' })
+    .update(patch);
+  const changed = Number(claimed?.updated ?? claimed?.updatedCount ?? 0);
+  if (!changed) throw new Error(`任务 ${task.id} 已被其他 worker 领取，跳过`);
   return updated;
 }
 
@@ -291,11 +350,39 @@ async function updateTask(task, patch) {
   await database().collection(COLLECTION).doc(task.id).set(persistable({ ...task, ...patch, updatedAt: new Date().toISOString() }));
 }
 
+/**
+ * 决定用哪个转写引擎。
+ *
+ * 任务记录里的 engine 是「创建任务时」云函数写进去的（默认 baidu），它描述的是
+ * 当时的期望，不代表这台 worker 实际能提供什么。之前直接照搬 claimed.engine，
+ * 结果任务一律被判给百度，没配 BAIDU_API_KEY 就必然失败 —— 即使本地 ASR 服务
+ * 完全正常。所以这里以 worker 自身的配置为准：
+ *
+ *   - TRANSCRIPTION_PROVIDER 已设置  → 用它（worker 知道自己能干什么）
+ *   - 未设置                        → 退回任务里的 engine，再没有就 baidu
+ *
+ * 例外：任务显式标记 external-whisper 时，说明它指向外部 Whisper 端点，
+ * createProvider(undefined) 会读取同一组环境变量，语义一致，无需特判。
+ */
+function resolveEngine(taskEngine) {
+  const configured = String(process.env.TRANSCRIPTION_PROVIDER || '').trim();
+  if (configured) {
+    if (configured !== String(taskEngine || '').trim()) {
+      console.log(
+        `[AceCall transcription worker] 任务 engines=${taskEngine || '(空)'}，`
+        + `按本机配置改用 ${configured}`
+      );
+    }
+    return configured;
+  }
+  return taskEngine || 'baidu';
+}
+
 async function processTask(task) {
   const claimed = await claimTask(task);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acecall-transcription-'));
   try {
-    const provider = createProvider(claimed.engine === 'external-whisper' ? undefined : claimed.engine);
+    const provider = createProvider(resolveEngine(claimed.engine));
     const sourcePath = await downloadParts(claimed.parts || [], directory);
     const duration = await probeDuration(sourcePath);
     await updateTask(claimed, {

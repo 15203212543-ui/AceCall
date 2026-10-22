@@ -1,6 +1,17 @@
 import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+esm';
 import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports } from './interviewer-page.js?v=__ACE_CALL_BUILD__';
 
+// auth-session.js 以普通脚本形式先于本文件加载，负责判定匿名身份。
+// 匿名令牌（publishable key 自动生成的 scope=anonymous / sub=anon）会被网关
+// 直接拒绝并返回 443，所以必须在发请求之前就拦住，否则全站接口一起失败。
+const AceCallAuth = globalThis.AceCallAuth || {};
+function isAnonymousSession(session) {
+  return typeof AceCallAuth.isAnonymousSession === 'function' ? AceCallAuth.isAnonymousSession(session) : false;
+}
+function isAnonymousAccessToken(token) {
+  return typeof AceCallAuth.isAnonymousAccessToken === 'function' ? AceCallAuth.isAnonymousAccessToken(token) : false;
+}
+
 const CASES_KEY = 'acecall-cases-v1';
 const JOBS_KEY = 'acecall-jobs-v1';
 const RULES_KEY = 'acecall-team-rules-v1';
@@ -66,6 +77,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindShell();
   updateUserHeader();
   await hydrateWorkspace();
+  // 工作区没准备好（典型是凭据被拒）就不要再打后续接口，否则每个请求都会
+  // 以同样的方式失败，用户看到的是一屏互不相关的报错。
+  if (workspaceReady === false) return;
   await hydrateState();
   seedJobs();
   await checkService();
@@ -218,10 +232,21 @@ async function initializeAuth() {
     return false;
   }
   if (!data?.session) return false;
-  captureAuthUser(data.session, rememberedAccount);
-  await syncDesktopSession(data.session.access_token);
-  $('#loginScreen').classList.add('hidden');
+  // 匿名会话不能进入工作台：后续每个业务请求都会被网关拒绝（443）。
+  if (isAnonymousSession(data.session)) {
+    await cloudbaseAuth.signOut().catch(() => {});
+    showLoginMessage('请登录后使用，匿名身份无法访问云端数据', false);
+    return false;
+  }
+  await beginRealSession(data.session, rememberedAccount);
   return true;
+}
+
+// 只有确认拿到真实用户身份后才会走到这里，负责同步会话与收起登录页。
+async function beginRealSession(session, rememberedAccount = '') {
+  captureAuthUser(session, rememberedAccount);
+  await syncDesktopSession(session.access_token);
+  $('#loginScreen').classList.add('hidden');
 }
 
 function captureAuthUser(sessionOrUser, fallbackUsername = '') {
@@ -1831,6 +1856,13 @@ async function authenticatedFetch(url, options = {}) {
     token = refreshed?.data?.session?.access_token;
   }
   if (!token) throw new Error('登录已过期，请重新登录');
+  // 匿名令牌过不了网关的身份认证（返回 443 空响应），发出去只会制造一串
+  // 看不懂的失败。本地直接判定为需要登录，并打上 authRequired 便于上层回登录页。
+  if (isAnonymousAccessToken(token) || isAnonymousSession(sessionResult.data?.session)) {
+    const error = new Error('当前是匿名身份，请退出后重新登录再操作');
+    error.authRequired = true;
+    throw error;
+  }
   let response;
   for (let attempt = 0; attempt < 3; attempt++) {
     try { response = await request(token); } catch (error) { if (attempt === 2) throw error; await sleep(400 * 2 ** attempt); continue; }
@@ -1846,5 +1878,37 @@ async function authenticatedFetch(url, options = {}) {
   return response;
 }
 let toastTimer;function toast(message){const element=$('#toast');element.textContent=message;element.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.classList.remove('show'),2600);}
-async function hydrateWorkspace(username = '', companyName = ''){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/workspace'));const account=username||app.authUser?.email||app.authUser?.username||$('#loginUsername')?.value||'';if(response.status===403){const requestedCompany=companyName||INTERNAL_TEST_COMPANY;response=await authenticatedFetch(apiUrl('/api/workspace/bootstrap'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:account,companyName:requestedCompany})});}if(!response.ok)throw new Error('工作区初始化失败');const workspace=await response.json();workspace.currentMember={...(app.authUser||{}),...(workspace.currentMember||{}),email:workspace.currentMember?.email||app.authUser?.email||''};app.workspace=workspace;updateUserHeader();}catch(error){console.error(error);toast(error.message||'工作区读取失败');}}
+let workspaceReady = null;
+async function hydrateWorkspace(username = '', companyName = '') {
+  if (!REMOTE_BACKEND) { workspaceReady = true; return; }
+  try {
+    let response = await authenticatedFetch(apiUrl('/api/workspace'));
+    const account = username || app.authUser?.email || app.authUser?.username || $('#loginUsername')?.value || '';
+    if (response.status === 403) {
+      const requestedCompany = companyName || INTERNAL_TEST_COMPANY;
+      response = await authenticatedFetch(apiUrl('/api/workspace/bootstrap'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: account, companyName: requestedCompany }) });
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const error = new Error(cloudError(response.status, body));
+      // 401 说明凭据不被接受，继续请求其他接口只会重复失败，交给上层回登录页。
+      if (response.status === 401) error.authRequired = true;
+      throw error;
+    }
+    const workspace = await response.json();
+    workspace.currentMember = { ...(app.authUser || {}), ...(workspace.currentMember || {}), email: workspace.currentMember?.email || app.authUser?.email || '' };
+    app.workspace = workspace;
+    workspaceReady = true;
+    updateUserHeader();
+  } catch (error) {
+    workspaceReady = false;
+    console.error(error);
+    if (error.authRequired) {
+      $('#loginScreen').classList.remove('hidden');
+      showLoginMessage(error.message || '登录状态已失效，请重新登录', false);
+      return;
+    }
+    toast(error.message || '工作区读取失败');
+  }
+}
 function updateUserHeader(){const workspace=app.workspace||{};const member=workspace.currentMember||{};const authUser=app.authUser||{};const company=workspace.workspace?.name||localStorage.getItem(WORKSPACE_NAME_KEY)||'AceCall 招聘团队';const email=member.email||authUser.email||'';const username=member.username||authUser.username||member.displayName||authUser.displayName||$('#loginUsername')?.value||member.uid||authUser.uid||'当前账号';const displayName=member.displayName||authUser.displayName||(email?email.split('@')[0]:username);const initials=String(displayName||username).slice(0,2).toUpperCase();const companyEl=$('#companyNameDisplay');const companyButton=$('#companyMenuButton');const companyMenuName=$('#companyMenuName');const companyMenuMeta=$('#companyMenuMeta');const userEl=$('#userNameDisplay');const avatar=$('#accountMenuButton');const menuAvatar=$('#accountMenuAvatar');const menuName=$('#accountMenuName');const menuEmail=$('#accountMenuEmail');if(companyEl)companyEl.textContent=company;if(companyButton){companyButton.title=company;companyButton.setAttribute('aria-label',`查看企业工作区：${company}`);}if(companyMenuName)companyMenuName.textContent=company;if(companyMenuMeta)companyMenuMeta.textContent=`${member.role||'成员'} · ${(workspace.members||[]).length||1} 位成员`;if(userEl)userEl.textContent=username;if(avatar)avatar.textContent=initials;if(menuAvatar)menuAvatar.textContent=initials;if(menuName)menuName.textContent=displayName;if(menuEmail)menuEmail.textContent=email||'未绑定邮箱';}
