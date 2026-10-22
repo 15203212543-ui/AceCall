@@ -266,14 +266,31 @@ function questionCard(result, item, extra = '') {
 }
 function questionAnalysisHtml(result = {}) {
   const items = result.items || [];
-  const jobQuestions = items.filter(item => item.classification === 'job_question' && (result.sampleLimited || item.confirmed));
+  const jobQuestions = items.filter(item => item.classification === 'job_question' && (result.sampleLimited || item.confirmed)).sort((left, right) => (right.sources?.length || 0) - (left.sources?.length || 0));
   const conditions = items.filter(item => item.classification === 'condition_check');
   const needs = items.filter(item => item.classification === 'needs_context' || (item.classification === 'job_question' && !result.sampleLimited && !item.confirmed));
   const reviewButtons = item => `<div class="question-actions"><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="job_question">归入岗位问题</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="condition_check">归入条件核验</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="needs_context">保留待判断</button></div>`;
-  const covered = result.coverage?.required || [];
-  const coverage = result.allowPersonalReview ? `<p><b>岗位覆盖：</b>${covered.length ? covered.map(row => `${escapeHtml(row.item)} ${row.covered ? '已问到' : '未问到'}${row.sources?.length ? `（${escapeHtml(row.sources.join('、'))}）` : ''}`).join('；') : '岗位没有配置可对照的关键词。'}</p>${result.followUpStyle ? `<p><b>追问方式：</b>${escapeHtml(result.followUpStyle)}</p>` : ''}${(result.coverage?.supplements || []).map(item => `<p>${escapeHtml(item)}</p>`).join('')}` : '<p>有效转写少于 5 场，或还没有绑定岗位 JD。这里只展示规则分类，不展示提问偏好、追问方式、比率或个人评价。</p>';
+  const visibleJobs = jobQuestions.slice(0, 6);
+  const extraJobs = jobQuestions.slice(6);
+  const jobBlock = jobQuestions.length ? `<section class="question-block"><h3>高频岗位问题</h3>${visibleJobs.map(item => questionCard(result, item)).join('')}${extraJobs.length ? `<details class="question-more"><summary>还有 ${extraJobs.length} 条</summary>${extraJobs.map(item => questionCard(result, item)).join('')}</details>` : ''}</section>` : '';
+  const conditionGroups = new Map();
+  conditions.forEach(item => {
+    const label = item.conditionLabel || '条件';
+    const link = item.linkStatus || '待关联';
+    const key = `${label}|${link}`;
+    const group = conditionGroups.get(key) || { label, link, items: [] };
+    group.items.push(item);
+    conditionGroups.set(key, group);
+  });
+  const conditionBlock = conditionGroups.size ? `<section class="question-block"><h3>条件核验</h3>${[...conditionGroups.values()].map(group => `<details class="question-card"><summary><span>${escapeHtml(group.label)} · ${escapeHtml(group.link)} · ${group.items.length} 次</span></summary>${group.items.map(item => `<p><b>原句：</b>${escapeHtml(item.rawText)}</p><p><b>场次：</b>${escapeHtml((item.sources || []).map(source => [source.candidateName, String(source.startedAt || '').slice(0, 10)].filter(Boolean).join(' ')).filter(Boolean).join('、') || '当前转写')}</p>`).join('')}</details>`).join('')}</section>` : '';
+  const needsShown = needs.slice(0, 5);
+  const needsBlock = needs.length ? `<details class="question-more"><summary>待判断 ${needs.length} 条</summary>${needsShown.map(item => questionCard(result, item, reviewButtons(item))).join('')}${needs.length > 5 ? `<p class="question-excluded">其余 ${needs.length - 5} 条未列出</p>` : ''}</details>` : '';
+  const covered = result.allowPersonalReview ? (result.coverage?.required || []) : [];
+  const asked = covered.filter(row => row.covered).map(row => row.item);
+  const missing = covered.filter(row => !row.covered).map(row => row.item);
+  const coverage = result.allowPersonalReview ? `<p>${escapeHtml(covered.length ? `岗位覆盖：${asked.length ? `已问到 ${asked.join('、')}` : '还没有问到配置的要求'}${missing.length ? `；未问到 ${missing.join('、')}` : ''}。` : '岗位没有配置可对照的关键词。')}${result.followUpStyle ? escapeHtml(result.followUpStyle) : ''}</p>` : '';
   const excluded = result.excludedCommunicationCount > 0 ? `<p class="question-excluded">已排除 ${result.excludedCommunicationCount} 条通话确认</p>` : '';
-  return `${coverage}<section class="question-block"><h3>高频岗位问题</h3>${jobQuestions.map(item => questionCard(result, item)).join('') || '<p>没有识别到岗位问题。</p>'}</section><section class="question-block"><h3>条件核验</h3>${conditions.map(item => questionCard(result, item, `<p><b>关联：</b>${escapeHtml(item.linkStatus || '待关联')}${item.conditionLabel ? ` · ${escapeHtml(item.conditionLabel)}` : ''}</p>`)).join('') || '<p>没有识别到条件核验。</p>'}</section><section class="question-block"><h3>待判断</h3>${needs.map(item => questionCard(result, item, reviewButtons(item))).join('') || '<p>没有待判断的句子。</p>'}</section>${excluded}`;
+  return `${coverage}${jobBlock}${conditionBlock}${needsBlock}${excluded}` || '<p>当前转写里没有可展示的岗位问题。</p>';
 }
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
