@@ -135,8 +135,12 @@ test('rejects resume section noise and uses a valid fallback name', () => {
   assert.equal(chooseCandidateName(extractLabeledCandidateName(['姓名：李四']), '张三', '销售支持'), '李四');
 });
 
-test('cloud function keeps its resume normalization implementation in sync', () => {
-  const source = require('fs').readFileSync(require('path').join(__dirname, '../cloudfunctions/acecall-api/index.js'), 'utf8');
-  assert.match(source, /function normalizeResumeText\(text = ''\)/);
-  assert.match(source, /function parseResumeBasics\(text = ''\)/);
+test('cloud function and local server share one resume parser', () => {
+  const shared = require('fs').readFileSync(require('path').join(__dirname, '../cloudfunctions/acecall-api/resume-text.js'), 'utf8');
+  const cloud = require('fs').readFileSync(require('path').join(__dirname, '../cloudfunctions/acecall-api/index.js'), 'utf8');
+  const local = require('fs').readFileSync(require('path').join(__dirname, '../server.js'), 'utf8');
+  assert.match(shared, /function normalizeResumeText\(text = ''\)/);
+  assert.match(shared, /function parseResumeBasics\(text = ''\)/);
+  assert.match(cloud, /require\('\.\/resume-text'\)/);
+  assert.match(local, /require\('\.\/cloudfunctions\/acecall-api\/resume-text'\)/);
 });
