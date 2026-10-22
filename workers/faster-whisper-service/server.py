@@ -15,6 +15,7 @@ Two input shapes are accepted:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -220,7 +221,8 @@ async def transcriptions(
             model,
             "custom" if prompt else "hotwords",
         )
-        transcript = current.transcribe(
+        transcript = await asyncio.to_thread(
+            current.transcribe,
             audio_path,
             language=(language or "").strip() or None,
             prompt=(prompt or "").strip() or None,
