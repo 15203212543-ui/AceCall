@@ -34,7 +34,7 @@ function extractProfileFields(text = '') {
   const certificates = [...new Set([...source.matchAll(/CPA|CFA|FRM|基金从业|证券从业|律师资格|注册会计师/g)].map(item => item[0]))];
   const ageMatch = source.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i) || source.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/);
   const experiences = lines.flatMap(line => {
-    const match = line.match(/((?:19|20)\d{2}\s*[-–~至]+\s*(?:至今|(?:19|20)\d{2}))\s+([\u4e00-\u9fffA-Za-z0-9]{2,24})\s*([\u4e00-\u9fffA-Za-z]{0,16})/);
+    const match = line.match(/^((?:19|20)\d{2}(?:\s*[./年]\s*\d{1,2}(?:\s*月)?)?\s*[-–~至到]+\s*(?:至今|现在|(?:19|20)\d{2}(?:\s*[./年]\s*\d{1,2}(?:\s*月)?)?))\s*([\u4e00-\u9fffA-Za-z0-9（）()]{2,24})(?:\s+([\u4e00-\u9fffA-Za-z]{2,16}))?/);
     if (!match) return [];
     return [{ dates: match[1].replace(/\s+/g, ''), company: match[2], title: match[3] || '', scope: line, quote: line }];
   });
