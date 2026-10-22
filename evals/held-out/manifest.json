@@ -1,0 +1,368 @@
+{
+  "sealed": true,
+  "purpose": "最终验收样本。开发期不得打开、标注或据此调参。",
+  "resumes": [
+    {
+      "id": "held-resume-001",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-002",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-003",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-004",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-005",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-006",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-007",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-008",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-009",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-010",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-011",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-012",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-013",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-014",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-015",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-016",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-017",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-018",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-019",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-020",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-021",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-022",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-023",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-024",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-025",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-026",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-027",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-028",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-029",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-030",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-031",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-032",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-033",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-034",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-035",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-036",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-037",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-038",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-039",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-040",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-041",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-042",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-043",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-044",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-045",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-046",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-047",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-048",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-049",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-050",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-051",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-052",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-053",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-054",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-055",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-056",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-057",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-058",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-059",
+      "sealed": true
+    },
+    {
+      "id": "held-resume-060",
+      "sealed": true
+    }
+  ],
+  "transcripts": [
+    {
+      "id": "held-transcript-001",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-002",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-003",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-004",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-005",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-006",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-007",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-008",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-009",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-010",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-011",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-012",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-013",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-014",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-015",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-016",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-017",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-018",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-019",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-020",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-021",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-022",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-023",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-024",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-025",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-026",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-027",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-028",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-029",
+      "sealed": true
+    },
+    {
+      "id": "held-transcript-030",
+      "sealed": true
+    }
+  ]
+}
