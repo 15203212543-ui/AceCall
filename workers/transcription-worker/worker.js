@@ -55,18 +55,59 @@ function configureDependencies(next) {
   dependencies = next || null;
 }
 
+/**
+ * 组装 CloudBase SDK 的凭证参数。
+ *
+ * 注意：node-sdk 的 ICloudBaseConfig **没有 accessKey 字段**（只有
+ * secretId / secretKey / sessionToken），整个 dist 目录里也搜不到 accessKey。
+ * 云函数里写 accessKey 之所以能用，是因为它跑在 CloudBase 环境内，SDK 会自动
+ * 读取平台注入的临时凭证；而这个 worker 是外部进程，必须显式给密钥，
+ * 否则数据库请求会抛「missing secretId or secretKey of tencent cloud」。
+ *
+ * 支持两种来源，优先级从高到低：
+ *   1. CLOUDBASE_SECRET_ID / CLOUDBASE_SECRET_KEY（推荐，写得明确）
+ *   2. TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY（腾讯云官方环境变量名）
+ */
+function credentialConfig() {
+  const config = { env: process.env.TCB_ENV };
+  const secretId = process.env.CLOUDBASE_SECRET_ID || process.env.TENCENTCLOUD_SECRETID;
+  const secretKey = process.env.CLOUDBASE_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY;
+  const sessionToken = process.env.CLOUDBASE_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSIONTOKEN;
+  if (secretId && secretKey) {
+    config.secretId = secretId;
+    config.secretKey = secretKey;
+    if (sessionToken) config.sessionToken = sessionToken;
+  }
+  return config;
+}
+
+function assertCloudbaseCredentials() {
+  if (!process.env.TCB_ENV) throw new Error('转写 worker 未配置 TCB_ENV（CloudBase 环境 ID）');
+  const { secretId, secretKey } = credentialConfig();
+  if (!secretId || !secretKey) {
+    throw new Error(
+      '转写 worker 缺少 CloudBase 密钥：请设置 CLOUDBASE_SECRET_ID 与 CLOUDBASE_SECRET_KEY'
+      + '（腾讯云 API 密钥，不是 CloudBase 的 API Key；CLOUDBASE_APIKEY 对 node-sdk 无效）'
+    );
+  }
+}
+
+function cloudbaseApp() {
+  if (!app) {
+    assertCloudbaseCredentials();
+    app = cloudbase().init(credentialConfig());
+  }
+  return app;
+}
+
 function database() {
   if (dependencies?.database) return dependencies.database();
-  if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 TCB_ENV 或 CLOUDBASE_APIKEY');
-  app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
-  return app.database();
+  return cloudbaseApp().database();
 }
 
 function storage() {
   if (dependencies?.storage) return dependencies.storage();
-  if (!process.env.TCB_ENV || !process.env.CLOUDBASE_APIKEY) throw new Error('转写 worker 未配置 CloudBase 凭证');
-  app ||= cloudbase().init({ env: process.env.TCB_ENV, accessKey: process.env.CLOUDBASE_APIKEY });
-  return app;
+  return cloudbaseApp();
 }
 
 async function tempFileUrl(fileID) {
