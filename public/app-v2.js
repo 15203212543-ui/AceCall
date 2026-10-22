@@ -1,5 +1,5 @@
 import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+esm';
-import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports } from './interviewer-page.js?v=__ACE_CALL_BUILD__';
+import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports, clearDeferredCaches, noteDeferredTenant } from './interviewer-page.js?v=__ACE_CALL_BUILD__';
 
 // auth-session.js 以普通脚本形式先于本文件加载，负责判定匿名身份。
 // 匿名令牌（publishable key 自动生成的 scope=anonymous / sub=anon）会被网关
@@ -82,8 +82,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (workspaceReady === false) return;
   await hydrateState();
   seedJobs();
-  await checkService();
   navigate(location.hash.replace('#', '') || 'dashboard');
+  void checkService();
 });
 
 let shellBound = false;
@@ -534,11 +534,12 @@ async function enterWorkspace(username = '', companyName = '') {
   await hydrateWorkspace(username, companyName);
   await hydrateState();
   seedJobs();
-  await checkService();
   navigate(location.hash.replace('#', '') || 'dashboard');
+  void checkService();
 }
 
 async function signOut() {
+  clearDeferredCaches();
   await cloudbaseAuth?.signOut();
   await syncDesktopSession('');
   location.reload();
@@ -563,7 +564,18 @@ function navigate(view, updateHash = true) {
   target.classList.add('active');
   $('#breadcrumb').textContent = view === 'candidate' ? '候选人 / 初筛详情' : ({ dashboard: '招聘工作台', inbox: '简历中心', candidates: '候选人管理', jobs: '岗位管理', talentOrganization: '内部人才分析', talentMarket: '人才市场洞察', recruitmentAnalysis: '招聘分析', insights: '人才洞察', interviewers: '面试官分析', intelligence: '行业情报', connections: '数据连接', settings: '系统设置' }[view]);
   if (updateHash) history.replaceState(null, '', `#${view}`);
+  ensureDeferredViewData(view);
   renderCurrent();
+}
+
+function ensureDeferredViewData(view) {
+  if (!REMOTE_BACKEND) return;
+  if (view === 'interviewers') {
+    void loadMokaInterviews();
+    void loadInterviewerLibrary();
+    void loadTranscriptImports();
+  }
+  if (view === 'intelligence') void loadTranscriptImports();
 }
 
 function renderCurrent() {
@@ -1771,7 +1783,7 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关或认证服务暂时不可用',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();await loadMokaInterviews();await loadInterviewerLibrary();await loadTranscriptImports();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
@@ -1841,6 +1853,7 @@ async function hydrateWorkspace(username = '', companyName = '') {
     const workspace = await response.json();
     workspace.currentMember = { ...(app.authUser || {}), ...(workspace.currentMember || {}), email: workspace.currentMember?.email || app.authUser?.email || '' };
     app.workspace = workspace;
+    noteDeferredTenant();
     workspaceReady = true;
     updateUserHeader();
   } catch (error) {

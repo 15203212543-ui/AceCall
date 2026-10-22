@@ -21,9 +21,60 @@ const mergeRecords = (...args) => runtime.mergeRecords(...args);
 const persistHydratedState = (...args) => runtime.persistHydratedState(...args);
 function renderIntelligence() { return runtime.renderIntelligence(); }
 
-export { renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports };
+export { renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports, clearDeferredCaches, noteDeferredTenant };
 
 let mokaRefreshInFlight = null;
+let interviewerLibraryInFlight = null;
+let transcriptImportsInFlight = null;
+let deferredTenantId = '';
+const DEFERRED_TTL_MS = 12 * 60 * 60 * 1000;
+
+function tenantKey() {
+  return String(app.workspace?.workspace?.id || app.workspace?.workspace?.tenantId || '').trim();
+}
+
+function deferredStorageKey(kind) {
+  return `acecall-deferred-v1:${tenantKey()}:${kind}`;
+}
+
+function readDeferred(kind) {
+  const tenantId = tenantKey();
+  if (!tenantId) return null;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(deferredStorageKey(kind)) || 'null');
+    const savedAt = Date.parse(parsed?.savedAt || '');
+    if (!parsed || parsed.tenantId !== tenantId || !Number.isFinite(savedAt)) return null;
+    if (Date.now() - savedAt > DEFERRED_TTL_MS) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function writeDeferred(kind, payload) {
+  const tenantId = tenantKey();
+  if (!tenantId) return;
+  try { localStorage.setItem(deferredStorageKey(kind), JSON.stringify({ ...payload, tenantId, savedAt: new Date().toISOString() })); }
+  catch (error) { console.warn('[AceCall deferred cache]', error); }
+}
+
+function clearDeferredCaches() {
+  const keys = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key && key.startsWith('acecall-deferred-v1:')) keys.push(key);
+  }
+  keys.forEach(key => localStorage.removeItem(key));
+  app.mokaInterviews = [];
+  app.mokaInterviewStatus = { configured: false, loading: false };
+  app.interviewerLibrary = [];
+  app.transcriptImports = [];
+  deferredTenantId = '';
+}
+
+function noteDeferredTenant() {
+  const next = tenantKey();
+  if (deferredTenantId && next && deferredTenantId !== next) clearDeferredCaches();
+  if (next) deferredTenantId = next;
+}
 
 function interviewerNameOf(item = {}) {
   const value = item.interviewer || item.interviewerName || item.interview?.interviewer || item.interviewRecord?.interviewer || item.interviewers || '';
@@ -171,7 +222,8 @@ function renderInterviewers() {
   const jobSyncCount = status.mokaJobStats?.matched ?? status.mokaJobStats?.fallbackMatched;
   const jobSyncNote = Number.isFinite(jobSyncCount) ? ` · 目标岗位 ${jobSyncCount} 个` : '';
   const lookbackNote = status.filters?.lookbackDays ? `近 ${status.filters.lookbackDays} 天 · ` : '';
-  const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}` : status.configured ? `${lookbackNote}Moka 只读数据 · 按 13 个目标岗位名称筛选` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
+  const lastSyncNote = status.fetchedAt ? `，上次同步 ${formatDate(status.fetchedAt)}` : '';
+  const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}${lastSyncNote}` : status.configured ? `${lookbackNote}Moka 只读数据 · 按 13 个目标岗位名称筛选${status.fromCache ? lastSyncNote : ''}` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
   const diagnosticRow = (label, value, tone = '') => `<div class="connection-diagnostic-row"><span>${escapeHtml(label)}</span><b class="${tone}">${escapeHtml(value || '未检查')}</b></div>`;
   const selectOptions = (values, value, empty) => `<option value="">${empty}</option>${values.map(item => `<option value="${escapeHtml(item)}"${item === value ? ' selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
   root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和提问方式。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${outcomes.passed || '—'}</b><span>面试通过</span><small>明确通过结论</small></div><div class="metric"><b>${outcomes.rejected || '—'}</b><span>面试淘汰</span><small>明确淘汰/不通过结论</small></div><div class="metric"><b>${outcomes.pending || '—'}</b><span>待评价</span><small>尚未形成结果</small></div><div class="metric"><b>${(outcomes.completed || 0) < 5 ? '样本不足' : pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${(outcomes.completed || 0) < 5 ? '少于 5 场不展示比率' : `${outcomes.passed} 人通过`}</small></div><div class="metric"><b>${(outcomes.completed || 0) < 5 ? '样本不足' : pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>${(outcomes.completed || 0) < 5 ? '少于 5 场不展示比率' : '有明确结论的面试'}</small></div></div><section class="surface interviewer-trend-panel"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><b>${row.count}</b><span class="trend-plot"><i style="height:${row.count ? Math.max(14, Math.round(row.count / trendMax * 132)) : 0}px"></i></span><span>${escapeHtml(row.month)}</span></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section>
@@ -215,7 +267,7 @@ function renderInterviewers() {
   root.querySelector('[data-interview-page="next"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.min(recordPageCount, recordPage + 1); keepRecordScroll(); });
   root.querySelector('[data-interview-page-select]')?.addEventListener('change', event => { app.interviewerRecordPage = Number(event.target.value) || 1; keepRecordScroll(); });
   ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; app.interviewerRecordPage = 1; app.transcriptCapturePage = 1; renderInterviewers(); renderInterviewerFollowups(); }); });
-  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary(); await loadTranscriptImports(); renderInterviewers(); renderInterviewerFollowups(); });
+  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary({ force: true }); await loadTranscriptImports({ force: true }); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
 function interviewerTranscripts(filters = {}) {
@@ -361,10 +413,22 @@ function submitQuestionReview(questionId, classification) {
 function formatInterviewMoment(value){if(!value)return'—';const date=new Date(value);if(Number.isNaN(date.getTime()))return'—';const day=`${date.getMonth()+1}月${date.getDate()}日`;if(!String(value).includes('T'))return day;return `${day} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;}
 async function loadMokaInterviews(options = {}) {
   if (!runtime.remoteBackend) return;
+  if (!options.force) {
+    const cached = readDeferred('moka');
+    if (cached) {
+      app.mokaInterviews = Array.isArray(cached.records) ? cached.records : [];
+      if (Array.isArray(cached.syncedJobs) && cached.syncedJobs.length) app.jobs = mergeRecords(app.jobs, cached.syncedJobs);
+      app.mokaAnalytics = cached.analytics || app.mokaAnalytics || null;
+      app.mokaInterviewStatus = { ...(cached.status || {}), loading: false, fromCache: true, error: '' };
+      syncInterviewTranscripts();
+      return;
+    }
+  }
   if (mokaRefreshInFlight) return mokaRefreshInFlight;
   const automatic = options.automatic === true;
   mokaRefreshInFlight = (async () => {
-  app.mokaInterviewStatus = { configured: false, loading: true };
+  const previousStatus = app.mokaInterviewStatus || {};
+  app.mokaInterviewStatus = { ...previousStatus, loading: true, error: '' };
   try {
     const debugResponse = await authenticatedFetch(apiUrl('/api/debug/status'), { timeoutMs: 8000 });
     const debugData = await debugResponse.json().catch(() => ({}));
@@ -379,42 +443,67 @@ async function loadMokaInterviews(options = {}) {
       try { persistHydratedState(); } catch (error) { console.warn('[AceCall jobs cache]', error); }
     }
     app.mokaAnalytics = data.analytics || null;
-    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual' };
+    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual', fromCache: false, error: '' };
+    writeDeferred('moka', { records: app.mokaInterviews, syncedJobs: data.syncedJobs || [], analytics: app.mokaAnalytics, status: app.mokaInterviewStatus });
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   } catch (error) {
     if (error.authRequired) return;
     console.warn('[AceCall Moka interviews]', error);
-    app.mokaInterviewStatus = { ...app.mokaInterviewStatus, configured: Boolean(app.mokaInterviewStatus.configured), loading: false, error: error.message, httpStatus: error.status || 0 };
+    app.mokaInterviewStatus = { ...previousStatus, ...app.mokaInterviewStatus, configured: Boolean(previousStatus.configured), loading: false, error: error.message, httpStatus: error.status || 0, fetchedAt: previousStatus.fetchedAt || '' };
+    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   }
   })();
   try { return await mokaRefreshInFlight; } finally { mokaRefreshInFlight = null; }
 }
-async function loadInterviewerLibrary() {
+async function loadInterviewerLibrary(options = {}) {
   if (!runtime.remoteBackend) return;
-  try {
-    const response = await authenticatedFetch(apiUrl('/api/interviewers'));
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(cloudError(response.status, data));
-    app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
-    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
-  } catch (error) { console.warn('[AceCall interviewers]', error); }
+  if (!options.force) {
+    const cached = readDeferred('interviewers');
+    if (cached) { app.interviewerLibrary = Array.isArray(cached.records) ? cached.records : []; return; }
+  }
+  if (interviewerLibraryInFlight) return interviewerLibraryInFlight;
+  interviewerLibraryInFlight = (async () => {
+    try {
+      const response = await authenticatedFetch(apiUrl('/api/interviewers'));
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
+      writeDeferred('interviewers', { records: app.interviewerLibrary });
+      if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
+    } catch (error) { console.warn('[AceCall interviewers]', error); }
+  })();
+  try { return await interviewerLibraryInFlight; } finally { interviewerLibraryInFlight = null; }
 }
 async function addInterviewerName(name) {
   const response = await authenticatedFetch(apiUrl('/api/interviewers'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, source: 'manual' }) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(cloudError(response.status, data));
   app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
-  await loadTranscriptImports();
+  writeDeferred('interviewers', { records: app.interviewerLibrary });
+  await loadTranscriptImports({ force: true });
 }
-async function loadTranscriptImports() {
+async function loadTranscriptImports(options = {}) {
   if (!runtime.remoteBackend) return;
-  try {
-    const response = await authenticatedFetch(apiUrl('/api/transcript-imports'));
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(cloudError(response.status, data));
-    app.transcriptImports = Array.isArray(data.records) ? data.records : [];
-    syncInterviewTranscripts();
-    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
-    if (app.view === 'intelligence') renderIntelligence();
-  } catch (error) { console.warn('[AceCall transcript imports]', error); }
+  if (!options.force) {
+    const cached = readDeferred('transcripts');
+    if (cached) {
+      app.transcriptImports = Array.isArray(cached.records) ? cached.records : [];
+      syncInterviewTranscripts();
+      return;
+    }
+  }
+  if (transcriptImportsInFlight) return transcriptImportsInFlight;
+  transcriptImportsInFlight = (async () => {
+    try {
+      const response = await authenticatedFetch(apiUrl('/api/transcript-imports'));
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      app.transcriptImports = Array.isArray(data.records) ? data.records : [];
+      writeDeferred('transcripts', { records: app.transcriptImports });
+      syncInterviewTranscripts();
+      if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
+      if (app.view === 'intelligence') renderIntelligence();
+    } catch (error) { console.warn('[AceCall transcript imports]', error); }
+  })();
+  try { return await transcriptImportsInFlight; } finally { transcriptImportsInFlight = null; }
 }
