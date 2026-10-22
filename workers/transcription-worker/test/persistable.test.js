@@ -8,8 +8,13 @@ const { persistable, claimTask, updateTask, configureDependencies } = require('.
 
 function createRecordingDatabase() {
   const writes = [];
+  const documents = new Map();
   return {
     writes,
+    // 预置记录，模拟 collection 里已有的任务文档
+    seed(...items) {
+      for (const item of items) documents.set(item._id, { ...item });
+    },
     collection() {
       return {
         doc(id) {
@@ -24,6 +29,30 @@ function createRecordingDatabase() {
               }
               writes.push({ id, document });
               return { updated: 1 };
+            }
+          };
+        },
+        // claimTask 用条件更新领取任务（CAS），mock 需按 where 条件判断能否命中
+        where(condition) {
+          return {
+            async update(document) {
+              if (Object.prototype.hasOwnProperty.call(document, '_id')) {
+                const error = new Error('不能更新_id的值');
+                error.code = 'INVALID_PARAM';
+                throw error;
+              }
+              const matches = [...documents.values()].filter(item =>
+                Object.entries(condition).every(([key, value]) => item[key] === value));
+              for (const item of matches) {
+                Object.assign(item, document);
+              }
+              writes.push({ id: null, condition, document, matched: matches.length });
+              return { updated: matches.length };
+            },
+            async get() {
+              const matches = [...documents.values()].filter(item =>
+                Object.entries(condition).every(([key, value]) => item[key] === value));
+              return { data: matches };
             }
           };
         }
@@ -55,6 +84,7 @@ test('persistable tolerates empty and undefined input', () => {
 
 test('claimTask writes back a document read from the database without _id', async () => {
   const db = createRecordingDatabase();
+  db.seed({ _id: 'tr_1', id: 'tr_1', tenantId: 'tenant_a', status: 'queued', parts: [] });
   configureDependencies({ database: () => db, storage: () => ({}) });
   try {
     // This is exactly what the worker receives from .where({status:'queued'}).get()

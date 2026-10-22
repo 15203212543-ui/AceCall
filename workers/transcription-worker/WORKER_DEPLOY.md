@@ -73,9 +73,19 @@ CloudRun、ECS + Docker、K8s 均可。只要满足上面四条要求。此时 A
 | 变量 | 值 |
 |---|---|
 | `TCB_ENV` | `yuxiaomiaochongwu-d2dsk55ef4b392` |
-| `CLOUDBASE_APIKEY` | 管理端 API Key（不是前端 `config.js` 里那个 publishable key） |
+| `CLOUDBASE_SECRET_ID` | 腾讯云 API 密钥 ID（`AKID` 开头） |
+| `CLOUDBASE_SECRET_KEY` | 腾讯云 API 密钥 Key |
 | `TRANSCRIPTION_PROVIDER` | `baidu` 或 `whisper` |
 | `WORKER_INTERVAL_MS` | `15000` |
+
+> **注意：不要用 `CLOUDBASE_APIKEY`。** `@cloudbase/node-sdk` 的配置类型里没有
+> `accessKey` 字段，只认 `secretId` / `secretKey`。云函数写 `accessKey` 能用是因为
+> 它跑在 CloudBase 内部、SDK 会自动读平台注入的临时凭证；worker 是外部进程，
+> 只传 `CLOUDBASE_APIKEY` 会报
+> `missing secretId or secretKey of tencent cloud`，且每条数据库请求都会失败。
+>
+> 密钥位置：腾讯云控制台 → 右上角头像 → 访问管理 → API 密钥管理。
+> 也兼容腾讯云官方变量名 `TENCENTCLOUD_SECRETID` / `TENCENTCLOUD_SECRETKEY`。
 
 ### 选 baidu 时
 
@@ -136,7 +146,8 @@ TRANSCRIPTION_MAX_SOURCE_BYTES=1073741824     # 合并上限 1GB
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `/health` 打不开 | 端口没配对，或实例未启动 | 确认容器监听 `PORT`，平台端口填 9000 |
-| 日志报「未配置 TCB_ENV 或 CLOUDBASE_APIKEY」 | 环境变量没注入 | 补齐后重启 |
+| 日志报「缺少 CloudBase 密钥：请设置 CLOUDBASE_SECRET_ID 与 CLOUDBASE_SECRET_KEY」 | 环境变量没注入，或只注入了 `CLOUDBASE_APIKEY` | 补齐 SecretId / SecretKey 后重启 |
+| 日志报「任务 engines=baidu，按本机配置改用 whisper」 | 正常提示，不是错误 | 说明 worker 用自身配置覆盖了任务里的旧 engine |
 | 任务一直 `queued` | worker 没跑 / 实例被缩容到 0 / `status` 查询失败 | 看日志，确认常驻 |
 | 任务变 `failed`，error 含「分片下载失败」 | CloudBase 临时链接获取失败 | 检查 API Key 是否有存储读权限 |
 | 任务变 `failed`，error 含「ASR 服务未返回有效文字」类 | ASR 侧问题 | 直接请求 ASR `/health` 和 `/v1/audio/transcriptions` 单独验证 |
@@ -145,6 +156,5 @@ TRANSCRIPTION_MAX_SOURCE_BYTES=1073741824     # 合并上限 1GB
 
 ## 关于密钥安全
 
-- `CLOUDBASE_APIKEY`、`BAIDU_SECRET_KEY`、`WHISPER_API_KEY` 只放平台环境变量，不要写进镜像、不要提交 Git。
+- `CLOUDBASE_SECRET_ID`、`CLOUDBASE_SECRET_KEY`、`BAIDU_SECRET_KEY`、`WHISPER_API_KEY` 只放平台环境变量，不要写进镜像、不要提交 Git。
 - 如果要把密钥交给别人代为部署，优先用平台自己的「密钥 / 凭据」管理，用完及时轮换。
-- CloudBase API Key 自述 2026-11-16 到期，部署时可顺便确认轮换计划。
