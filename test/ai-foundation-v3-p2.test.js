@@ -24,6 +24,9 @@ test('profile fields keep evidence and age cannot change a match', () => {
   assert.equal(profile.education, '硕士');
   assert.deepEqual(profile.certificates, ['证券从业']);
   assert.equal(profile.experiences[0].company, '示例证券');
+  const dotted = extractProfileFields('2019.03-2022.06 示例证券 做市交易员');
+  assert.equal(dotted.experiences[0].company, '示例证券');
+  assert.equal(dotted.experiences[0].title, '做市交易员');
   assert.equal(profile.age.usedForMatch, false);
   const jobs = [{ id: 'job-1', name: '做市', status: 'active', keywords: ['做市'], exclusions: [] }];
   const younger = evaluateJobMatches({ resume: '做过做市\n年龄：25岁', jobs });
