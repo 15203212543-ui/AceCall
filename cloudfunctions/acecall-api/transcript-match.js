@@ -192,13 +192,15 @@ function matchTranscriptToInterview(hint = {}, interviews = []) {
 
 function mergeTranscriptMetadata(metadata = {}, fileName = '', text = '', interviewerNames = []) {
   const extracted = extractTranscriptContext(fileName, text, { interviewerNames });
+  const mokaFirst = (metadata.source === 'moka' || metadata.mokaInterviewId) && metadata.candidateName;
   return {
     ...metadata,
-    candidateName: extracted.candidateName || metadata.candidateName || '',
-    jobName: extracted.jobName || metadata.jobName || '',
+    candidateName: mokaFirst ? metadata.candidateName : (extracted.candidateName || metadata.candidateName || ''),
+    jobName: mokaFirst && metadata.jobName ? metadata.jobName : (extracted.jobName || metadata.jobName || ''),
     hrName: extracted.hrName || metadata.hrName || '',
-    interviewer: extracted.interviewer || metadata.interviewer || '',
-    interviewAt: extracted.interviewAt || metadata.interviewAt || '',
+    interviewer: mokaFirst && metadata.interviewer ? metadata.interviewer : (extracted.interviewer || metadata.interviewer || ''),
+    interviewAt: metadata.interviewAt || extracted.interviewAt || '',
+    identitySource: mokaFirst ? 'moka_record' : (extracted.candidateName ? 'filename_pattern' : '未匹配'),
     fileName: metadata.fileName || fileName
   };
 }

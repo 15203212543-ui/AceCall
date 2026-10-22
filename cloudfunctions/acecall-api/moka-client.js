@@ -136,6 +136,7 @@ function screeningFingerprint(candidate = {}) {
     recommendationReason: report.recommendationReason || '',
     overview: summary.overview || '',
     reviewConfirmed: candidate.reviewConfirmed === true || report.reviewConfirmed === true,
+    reviewDecisionId: report.reviewDecisionId || candidate.reviewDecisionId || '',
     resume: clipText(candidate.resume, 600),
     noteVersion: 'screening-note-v2'
   })).digest('hex').slice(0, 24);
@@ -170,6 +171,15 @@ function interviewerFocusPoints(candidate = {}) {
     });
   }
   return points.slice(0, 5);
+}
+
+function screeningWritePlan(record = {}, previous = null) {
+  const confirmed = record.reviewConfirmed === true || record.report?.reviewConfirmed === true;
+  const fingerprint = screeningFingerprint(record);
+  const reviewDecisionId = String(record.report?.reviewDecisionId || record.reviewDecisionId || (confirmed ? `rd_${fingerprint}` : ''));
+  if (!confirmed) return { action: 'draft', status: '草稿', fingerprint, reviewDecisionId };
+  if (previous?.status === '已同步' && previous.reviewDecisionId && previous.reviewDecisionId === reviewDecisionId) return { action: 'skip', status: '已同步', fingerprint: previous.fingerprint || fingerprint, reviewDecisionId };
+  return { action: 'write', status: '待写入', fingerprint, reviewDecisionId };
 }
 
 function buildScreeningNote(candidate = {}) {
@@ -286,6 +296,7 @@ module.exports = {
   mokaConnectionStatus,
   maskSecret,
   screeningFingerprint,
+  screeningWritePlan,
   chooseOperatorEmail,
   buildScreeningNote,
   chooseMokaApplication,
