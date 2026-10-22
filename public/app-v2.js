@@ -44,6 +44,7 @@ const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 let desktopAgentAvailable = false;
+let mokaRefreshInFlight = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -699,70 +700,273 @@ function interviewerNameOf(item = {}) {
   return Array.isArray(value) ? String(value[0] || '') : String(value || '').trim();
 }
 function interviewerRecords(filters = {}) {
-  const moka = app.mokaInterviews.map(item => ({ ...item, source: 'moka' }));
+  const moka = app.mokaInterviews.map(item => ({ ...item, source: 'moka', transcriptStatus: item.transcriptStatus || (item.transcript ? 'completed' : 'missing'), transcriptCharacters: Number(item.transcriptCharacters || item.transcript?.length || 0) }));
   const local = app.cases.map(item => ({
     id: item.id, source: 'acecall', candidateName: item.candidateName || '',
     jobName: item.roleName || app.jobs.find(job => job.id === item.jobId)?.name || '未分配岗位',
     jobCategory: app.jobs.find(job => job.id === item.jobId)?.category || '', location: app.jobs.find(job => job.id === item.jobId)?.location || '',
     interviewer: interviewerNameOf(item), round: item.interviewRound || item.interview?.round || item.interviewRecord?.round || '',
-    outcome: item.interviewOutcome || item.outcome?.interviewOutcome || '', completed: Boolean(item.interviewOutcome || item.interviewPassed !== undefined || item.communicationSummary || item.report || item.transcript), interviewPassed: item.interviewPassed === true,
+    outcome: item.interviewOutcome || item.outcome?.interviewOutcome || item.outcome || '', outcomeStatus: item.outcomeStatus || '', completed: Boolean(item.interviewOutcome || item.interviewPassed !== undefined || item.interviewRejected !== undefined || item.communicationSummary || item.report || item.transcript), interviewPassed: item.interviewPassed === true, interviewRejected: item.interviewRejected === true || item.interviewFailed === true,
     offerAccepted: item.offerAccepted === true, hired: item.hired === true, durationMinutes: Number(item.interviewDuration || item.callDuration || 0) || 0,
-    startedAt: item.interviewAt || item.updatedAt || item.createdAt || '', transcript: item.transcript || ''
+    startedAt: item.interviewAt || item.updatedAt || item.createdAt || '', transcript: item.transcript || '', transcriptStatus: item.transcript ? 'completed' : 'missing', transcriptCharacters: item.transcript?.length || 0
   })).filter(item => item.interviewer);
   const records = [...moka, ...local].filter(item => {
     const date = Date.parse(item.startedAt || '') || 0; const days = Number(filters.period || 0); const cutoff = days ? Date.now() - days * 86400000 : 0;
-    return item.completed !== false && (!filters.interviewer || item.interviewer === filters.interviewer) && (!filters.job || item.jobName === filters.job) && (!filters.round || item.round === filters.round) && (!cutoff || date >= cutoff);
+    return (filters.includeIncomplete === true || item.completed !== false) && (!filters.interviewer || item.interviewer === filters.interviewer) && (!filters.job || item.jobName === filters.job) && (!filters.round || item.round === filters.round) && (!cutoff || date >= cutoff);
   });
   return records;
+}
+function sameInterviewPerson(left, right) {
+  const a = String(left || '').replace(/\s+/g, '').toLowerCase();
+  const b = String(right || '').replace(/\s+/g, '').toLowerCase();
+  return a.length >= 2 && b.length >= 2 && (a === b || a.includes(b) || b.includes(a));
+}
+function matchImportedTranscript(task, interviews) {
+  const hint = task.metadata || {};
+  const hintTime = Date.parse(hint.interviewAt || '') || 0;
+  const scored = interviews.filter(item => item.source !== 'acecall-local').map(item => {
+    const nameMatched = sameInterviewPerson(hint.candidateName, item.candidateName);
+    const jobMatched = hint.jobName && item.jobName && (String(item.jobName).includes(hint.jobName) || String(hint.jobName).includes(item.jobName));
+    const interviewerMatched = sameInterviewPerson(hint.interviewer, item.interviewer);
+    const time = Date.parse(item.startedAt || '') || 0;
+    const gap = hintTime && time ? Math.abs(hintTime - time) : 0;
+    const timeScore = hintTime && time ? (gap <= 36 * 60 * 60 * 1000 ? 6 : gap <= 7 * 86400000 ? 2 : -4) : 0;
+    return { item, score: (nameMatched ? 10 : 0) + (jobMatched ? 4 : 0) + (interviewerMatched ? 4 : 0) + timeScore, time, nameMatched };
+  }).filter(entry => entry.nameMatched && entry.score >= 10);
+  scored.sort((left, right) => right.score - left.score || (hintTime ? Math.abs((Date.parse(left.item.startedAt || '') || 0) - hintTime) - Math.abs((Date.parse(right.item.startedAt || '') || 0) - hintTime) : right.time - left.time));
+  return scored[0]?.item || null;
+}
+function attachTranscriptImports(interviews, imports) {
+  const base = (interviews || []).filter(item => item.source !== 'acecall-local').map(item => ({ ...item }));
+  const unmatched = [];
+  for (const task of imports || []) {
+    const text = String(task.result?.text || '').trim();
+    if (!text) continue;
+    const hint = task.metadata || {};
+    const match = matchImportedTranscript(task, base);
+    if (!match) {
+      unmatched.push({ id: `local_${task.id}`, source: 'acecall-local', candidateName: hint.candidateName || '', jobName: hint.jobName || '', interviewer: hint.interviewer || '', round: hint.round || '', transcript: text, transcriptStatus: 'completed', transcriptCharacters: text.length, startedAt: hint.interviewAt || task.createdAt || '', fileName: task.fileName, transcriptSource: 'local-moka-download', completed: Boolean(hint.interviewer), outcome: '', interviewPassed: null, interviewRejected: null });
+      continue;
+    }
+    if (!match.transcript || String(match.transcript).length < text.length) {
+      match.transcript = text;
+      match.transcriptStatus = 'completed';
+      match.transcriptCharacters = text.length;
+      match.transcriptSource = 'local-moka-download';
+      match.transcriptFileName = task.fileName || '';
+    }
+  }
+  return [...base, ...unmatched];
+}
+function syncInterviewTranscripts() {
+  app.mokaInterviews = attachTranscriptImports(app.mokaInterviews, app.transcriptImports);
+}
+function sameInterviewJob(left, right) {
+  const a = String(left || '').replace(/\s+/g, '');
+  const b = String(right || '').replace(/\s+/g, '');
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+function captureMatchesFilters(item, filters = {}) {
+  const days = Number(filters.period || 0);
+  const cutoff = days ? Date.now() - days * 86400000 : 0;
+  const date = Date.parse(item.startedAt || '') || 0;
+  const interviewerOk = !filters.interviewer || sameInterviewPerson(item.interviewer, filters.interviewer);
+  const jobOk = !filters.job || sameInterviewJob(item.jobName, filters.job);
+  const roundOk = !filters.round || item.round === filters.round;
+  const timeOk = !cutoff || date >= cutoff;
+  return interviewerOk && jobOk && roundOk && timeOk;
+}
+function transcriptCaptureEntries(filters = {}) {
+  const interviews = app.mokaInterviews.filter(item => item.source !== 'acecall-local');
+  return (app.transcriptImports || []).map(task => {
+    const text = String(task.result?.text || '').trim();
+    const hint = task.metadata || {};
+    const match = matchImportedTranscript(task, interviews);
+    return {
+      id: task.id,
+      fileName: task.fileName || hint.fileName || '转写文件',
+      capturedAt: task.createdAt || task.updatedAt || '',
+      candidateName: match?.candidateName || hint.candidateName || '',
+      jobName: match?.jobName || hint.jobName || '',
+      hrName: hint.hrName || '',
+      interviewer: match?.interviewer || hint.interviewer || '',
+      startedAt: match?.startedAt || hint.interviewAt || '',
+      round: match?.round || hint.round || '',
+      text,
+      matched: Boolean(match)
+    };
+  }).filter(item => item.text && captureMatchesFilters(item, filters)).sort((left, right) => (Date.parse(right.capturedAt || '') || 0) - (Date.parse(left.capturedAt || '') || 0));
+}
+function interviewResultLabel(item = {}) {
+  const schedule = String(item.scheduleStatus || '');
+  if (item.interviewPassed === true && item.interviewRejected === true) return '结果冲突';
+  if (item.interviewPassed === true) return '通过';
+  if (item.interviewRejected === true) return '淘汰';
+  if (String(item.outcome || '').includes('待定')) return '待定';
+  if (/取消/.test(schedule)) return '已取消';
+  if (/未结束|未进行/.test(schedule) || item.completed === false) return '未完成';
+  return item.feedback ? '未给结论' : '未评价';
+}
+function interviewResultClass(label) {
+  if (label === '通过') return 'quality quality-good';
+  if (label === '淘汰') return 'quality quality-error';
+  if (label === '待定' || label === '结果冲突') return 'quality quality-warn';
+  return 'quality';
 }
 function renderInterviewers() {
   const root = $('#interviewersView'); if (!root) return;
   const stored = app.interviewerFilters || {};
   const sourceRecords = [...app.mokaInterviews, ...app.cases.map(item => ({ interviewer: interviewerNameOf(item) }))].filter(item => item.interviewer);
-  const interviewers = [...new Set(sourceRecords.map(item => item.interviewer).filter(Boolean))];
-  const selected = stored.interviewer || interviewers[0] || '';
+  const capturePool = transcriptCaptureEntries({});
+  const interviewers = [...new Set([...sourceRecords.map(item => item.interviewer), ...capturePool.map(item => item.interviewer)].filter(Boolean))];
+  const selected = stored.interviewer || '';
   const filters = { interviewer: selected, job: stored.job || '', round: stored.round || '', period: stored.period || '' };
   const allRecords = interviewerRecords({ ...filters, interviewer: '' });
   const records = interviewerRecords(filters);
-  const jobs = [...new Set(allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.jobName).filter(Boolean))];
-  const rounds = [...new Set(allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.round).filter(Boolean))];
-  const outcomes = records.reduce((result, item) => { result.completed += 1; result.passed += item.interviewPassed ? 1 : 0; result.offers += item.offerAccepted || item.hired ? 1 : 0; result.hired += item.hired ? 1 : 0; result.duration += item.durationMinutes || 0; result.evaluated += item.outcome || item.interviewPassed || item.hired ? 1 : 0; return result; }, { completed: 0, passed: 0, offers: 0, hired: 0, duration: 0, evaluated: 0 });
+  const captureForOptions = capturePool.filter(item => !selected || sameInterviewPerson(item.interviewer, selected));
+  const jobs = [...new Set([...allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.jobName), ...captureForOptions.map(item => item.jobName)].filter(Boolean))];
+  const rounds = [...new Set([...allRecords.filter(item => !selected || item.interviewer === selected).map(item => item.round), ...captureForOptions.map(item => item.round)].filter(Boolean))];
+  const outcomes = records.reduce((result, item) => { result.completed += 1; result.passed += item.interviewPassed === true ? 1 : 0; result.rejected += item.interviewRejected === true || item.interviewFailed === true ? 1 : 0; result.pending += item.interviewPassed !== true && item.interviewRejected !== true && item.interviewFailed !== true ? 1 : 0; result.offers += item.offerAccepted || item.hired ? 1 : 0; result.hired += item.hired ? 1 : 0; result.duration += item.durationMinutes || 0; result.evaluated += item.outcome || item.interviewPassed !== null || item.interviewRejected !== null || item.hired ? 1 : 0; return result; }, { completed: 0, passed: 0, rejected: 0, pending: 0, offers: 0, hired: 0, duration: 0, evaluated: 0 });
   const pct = (value, denominator) => denominator ? `${Math.round(value / denominator * 100)}%` : '—';
   const rate = (value, denominator) => denominator ? Math.round(value / denominator * 100) : 0;
-  const jobRows = [...new Set(records.map(item => item.jobName).filter(Boolean))].map(job => { const items = records.filter(item => item.jobName === job); return { job, count: items.length, passed: items.filter(item => item.interviewPassed).length, offers: items.filter(item => item.offerAccepted || item.hired).length, hired: items.filter(item => item.hired).length }; }).sort((a, b) => b.count - a.count);
-  const roundRows = [...new Set(records.map(item => item.round).filter(Boolean))].map(round => { const items = records.filter(item => item.round === round); return { round, count: items.length, passed: items.filter(item => item.interviewPassed).length, evaluated: items.filter(item => item.outcome || item.interviewPassed || item.hired).length }; }).sort((a, b) => b.count - a.count);
   const monthRows = [...new Set(records.map(item => String(item.startedAt || '').slice(0, 7)).filter(value => /^\d{4}-\d{2}$/.test(value)))].sort().slice(-6).map(month => ({ month, count: records.filter(item => String(item.startedAt || '').startsWith(month)).length }));
+  const transcriptCoverage = records.length ? rate(records.filter(item => item.transcript).length, records.length) : 0;
+  const pendingTranscript = records.filter(item => !item.transcript).length;
+  const questionCount = records.reduce((sum, item) => sum + String(item.transcript || '').split(/\n+/).filter(line => /[？?]$/.test(line.trim())).length, 0);
+  const followUpSignals = records.reduce((sum, item) => sum + (String(item.transcript || '').match(/为什么|如何|具体|负责|结果|核实|确认|追问/g) || []).length, 0);
   const status = app.mokaInterviewStatus;
-  const transcriptNote = status.transcript ? `转写已同步 ${status.transcript.synced || 0} 份` : '转写等待同步';
-  const dataNote = status.loading ? '正在读取 Moka 面试数据' : status.configured ? `Moka 面试数据 · ${transcriptNote}` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据';
+  const serverAnalytics = app.mokaAnalytics || {};
+  const diagnostics = app.connectionDiagnostics || {};
+  const jobSyncCount = status.mokaJobStats?.matched ?? status.mokaJobStats?.fallbackMatched;
+  const jobSyncNote = Number.isFinite(jobSyncCount) ? ` · 目标岗位 ${jobSyncCount} 个` : '';
+  const lookbackNote = status.filters?.lookbackDays ? `近 ${status.filters.lookbackDays} 天 · ` : '';
+  const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}` : status.configured ? `${lookbackNote}Moka 只读数据 · 按 13 个目标岗位名称筛选` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
+  const diagnosticRow = (label, value, tone = '') => `<div class="connection-diagnostic-row"><span>${escapeHtml(label)}</span><b class="${tone}">${escapeHtml(value || '未检查')}</b></div>`;
   const selectOptions = (values, value, empty) => `<option value="">${empty}</option>${values.map(item => `<option value="${escapeHtml(item)}"${item === value ? ' selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
-  root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和参与结构；岗位与环节仅用于解释面试官表现。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${outcomes.passed} 人通过</small></div><div class="metric"><b>${pct(outcomes.offers, outcomes.passed)}</b><span>Offer / 通过转化</span><small>${outcomes.offers} 人接受 Offer</small></div><div class="metric"><b>${pct(outcomes.hired, outcomes.completed)}</b><span>最终入职率</span><small>${outcomes.hired} 人已入职</small></div><div class="metric"><b>${outcomes.duration ? `${Math.round(outcomes.duration / outcomes.completed)} 分钟` : '—'}</b><span>平均面试时长</span><small>仅统计有时长记录</small></div><div class="metric"><b>${pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>有结论的面试记录</small></div></div><div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>${escapeHtml(selected || '面试官')}的岗位参与</h2><p class="surface-subtitle">按面试官参与过的岗位拆解判断结果</p></div><span>${jobRows.length} 个岗位</span></div><div class="surface-body table-wrap"><table><thead><tr><th>岗位</th><th>面试数</th><th>通过率</th><th>Offer 转化</th><th>入职</th></tr></thead><tbody>${jobRows.map(row => `<tr><td><strong>${escapeHtml(row.job)}</strong></td><td>${row.count}</td><td>${pct(row.passed, row.count)}</td><td>${pct(row.offers, row.passed)}</td><td>${row.hired}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">暂无该面试官的岗位面试数据。接入 Moka 后将从面试安排和结果生成。</div></td></tr>'}</tbody></table></div></section><section class="surface"><div class="surface-head"><div><h2>${escapeHtml(selected || '面试官')}的面试环节</h2><p class="surface-subtitle">区分初面、复面和专业面，避免混淆不同判断任务</p></div></div><div class="surface-body interviewer-round-list">${roundRows.map(row => `<div class="analytics-rank-row"><span>${escapeHtml(row.round)}</span><b>${row.count} 场</b><small>通过 ${pct(row.passed, row.count)} · 评价完成 ${pct(row.evaluated, row.count)}</small></div>`).join('') || '<div class="empty">暂无面试环节字段，等待 Moka 面试数据同步。</div>'}</div></section></div><div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><span>${escapeHtml(row.month)}</span><i style="height:${Math.max(8, row.count * 16)}px"></i><b>${row.count}</b></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>团队对比</h2><p class="surface-subtitle">后续接入更多面试官后展示相对位置</p></div><span class="readonly-badge">阶段一</span></div><div class="surface-body recommendation-list"><p><b>当前口径：</b>通过率、Offer 转化、入职率均基于当前面试官完成的面试，不用岗位总人数作分母。</p><p><b>数据边界：</b>取消、未进行和待定不计入通过率；已淘汰候选人仍保留在明细中。</p><p><b>下一阶段：</b>转写文档同步后，分析问题覆盖、追问深度、候选人体验和面试官评分。</p></div></section></div></div>`;
-  const mokaRows = records.filter(item => item.source === 'moka');
-  const transcriptPanel = document.createElement('section'); transcriptPanel.className = 'surface moka-transcript-panel';
-  const transcriptStatus = item => item.transcriptStatus === 'synced' ? '已同步转写' : item.transcriptStatus === 'download_failed' ? '下载失败' : item.transcriptStatus === 'pending' ? '待同步' : '暂无转写';
-  const transcriptLink = item => /^https?:\/\//i.test(String(item.transcriptDocumentUrl || '')) ? `<a class="link-action" href="${escapeHtml(item.transcriptDocumentUrl)}" target="_blank" rel="noopener">下载 Word</a>` : '—';
-  transcriptPanel.innerHTML = `<div class="surface-head"><div><h2>面试转写记录</h2><p class="surface-subtitle">Moka 自动下载并解析的 Word 转写，直接用于面试官偏好分析</p></div><span>${mokaRows.length} 场</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>面试时间</th><th>面试官</th><th>转写状态</th><th>文档</th></tr></thead><tbody>${mokaRows.map(item => `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.jobName || '未分配岗位')}</small></td><td>${escapeHtml(formatDate(item.startedAt))}</td><td>${escapeHtml(item.interviewer || '—')}</td><td>${transcriptStatus(item)}${item.transcriptError ? `<small>${escapeHtml(item.transcriptError)}</small>` : ''}</td><td>${transcriptLink(item)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">暂无 Moka 面试记录。</div></td></tr>'}</tbody></table></div>`;
-  root.querySelector('.interviewer-analysis-page')?.append(transcriptPanel);
-  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; renderInterviewers(); renderInterviewerFollowups(); }); });
-  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews(); renderInterviewers(); renderInterviewerFollowups(); });
+  root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和提问方式。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${outcomes.passed || '—'}</b><span>面试通过</span><small>明确通过结论</small></div><div class="metric"><b>${outcomes.rejected || '—'}</b><span>面试淘汰</span><small>明确淘汰/不通过结论</small></div><div class="metric"><b>${outcomes.pending || '—'}</b><span>待评价</span><small>尚未形成结果</small></div><div class="metric"><b>${pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${outcomes.passed} 人通过</small></div><div class="metric"><b>${pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>有明确结论的面试</small></div></div><section class="surface interviewer-trend-panel"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><span>${escapeHtml(row.month)}</span><i style="height:${Math.max(8, row.count * 16)}px"></i><b>${row.count}</b></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section>
+  </div>`;
+  root.querySelector('.interviewer-metrics')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-server-analysis"><div class="surface-head"><div><h2>云端结构化分析</h2><p class="surface-subtitle">由 AceCall 云函数基于 Moka 转写统一计算，便于后续月度复盘</p></div><span>${serverAnalytics.interviewer ? '已生成' : '等待数据'}</span></div><div class="server-analysis-grid"><div><b>${serverAnalytics.interviewer?.score ?? '—'}</b><span>面试表现分</span><small>问题覆盖、追问深度、记录完整度</small></div><div><b>${serverAnalytics.dimensions?.questionCoverage ?? '—'}%</b><span>问题覆盖</span><small>${serverAnalytics.questions?.length || 0} 条问题句</small></div><div><b>${serverAnalytics.dimensions?.followUpDepth ?? '—'}%</b><span>追问深度</span><small>${serverAnalytics.followUpSignals || 0} 个追问信号</small></div><div><b>${serverAnalytics.interviewer?.evaluationRate ?? '—'}%</b><span>评价完成</span><small>${serverAnalytics.interviewer?.evaluated || 0} / ${serverAnalytics.interviewer?.completed || 0} 场</small></div></div><div class="recommendation-list server-analysis-recommendations">${(serverAnalytics.recommendations || ['同步 Moka 后生成面试官改进建议。']).map(item => `<p><b>建议：</b>${escapeHtml(item)}</p>`).join('')}</div><div class="research-tags server-analysis-topics">${(serverAnalytics.topics || []).map(item => `<span class="research-tag blue">${escapeHtml(item.name)} · ${item.mentions}</span>`).join('') || '<span class="muted-text">暂无可识别主题</span>'}</div></section>`);
+  root.querySelector('.interviewer-server-analysis')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-data-quality"><div class="surface-head"><div><h2>分析数据质量</h2><p class="surface-subtitle">先区分已完成分析与等待转写，避免把缺失数据当成面试官表现</p></div><span>${records.length ? `${transcriptCoverage}% 已有转写` : '暂无记录'}</span></div><div class="interviewer-quality-grid"><div><b>${records.filter(item => item.source === 'moka').length}</b><span>Moka 面试</span><small>只读来源 · 已抓取 ${status.totalFetched || 0} 条</small></div><div><b>${records.filter(item => item.source === 'acecall').length}</b><span>AceCall 沟通</span><small>本地记录</small></div><div><b>${questionCount || '—'}</b><span>可识别问题</span><small>以问号结尾的句子</small></div><div><b>${followUpSignals || '—'}</b><span>追问信号</span><small>项目、职责与风险核验</small></div><div><b>${pendingTranscript || '—'}</b><span>待处理转写</span><small>${pendingTranscript ? '需要先获取转写' : '当前无缺口'}${status.warnings?.length ? ` · ${status.warnings.length} 项来源提醒` : ''}</small></div></div></section>`);
+    const detailRecords = interviewerRecords({ ...filters, includeIncomplete: true }).slice().sort((a, b) => (Date.parse(b.startedAt || '') || 0) - (Date.parse(a.startedAt || '') || 0));
+  const feedbackCount = detailRecords.filter(item => String(item.feedback || '').trim()).length;
+  const resultCounts = detailRecords.reduce((result, item) => { const label = interviewResultLabel(item); result[label] = (result[label] || 0) + 1; return result; }, {});
+  const recordPageSize = 3;
+  const recordPageCount = Math.max(1, Math.ceil(detailRecords.length / recordPageSize));
+  const recordPage = Math.min(Math.max(1, Number(app.interviewerRecordPage || 1)), recordPageCount);
+  app.interviewerRecordPage = recordPage;
+  const pageRecords = detailRecords.slice((recordPage - 1) * recordPageSize, recordPage * recordPageSize);
+  const pageStart = detailRecords.length ? (recordPage - 1) * recordPageSize + 1 : 0;
+  const pageEnd = detailRecords.length ? pageStart + pageRecords.length - 1 : 0;
+  const detailRows = pageRecords.map(item => {
+    const label = interviewResultLabel(item);
+    const feedback = String(item.feedback || '').trim();
+    const transcript = String(item.transcript || '').trim();
+    return `<tr><td><strong>${escapeHtml(item.candidateName || '未命名候选人')}</strong><small>${escapeHtml(item.scheduleStatus || (item.completed === false ? '未完成' : '已结束'))}</small></td><td>${escapeHtml(item.jobName || '未识别岗位')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatDate(item.startedAt))}</td><td><span class="${interviewResultClass(label)}">${escapeHtml(label)}</span></td><td><div class="interview-feedback-cell">${feedback ? escapeHtml(feedback) : '暂无评价'}</div></td><td><div class="interview-feedback-cell">${transcript ? escapeHtml(transcript) : '未抓到转写'}</div></td></tr>`;
+  }).join('');
+  const transcriptCount = detailRecords.filter(item => String(item.transcript || '').trim()).length;
+  const captureEntries = transcriptCaptureEntries(filters);
+  const capturePageSize = 3;
+  const capturePageCount = Math.max(1, Math.ceil(captureEntries.length / capturePageSize));
+  const capturePage = Math.min(Math.max(1, Number(app.transcriptCapturePage || 1)), capturePageCount);
+  app.transcriptCapturePage = capturePage;
+  const captureVisible = captureEntries.slice((capturePage - 1) * capturePageSize, capturePage * capturePageSize);
+  const captureStart = captureEntries.length ? (capturePage - 1) * capturePageSize + 1 : 0;
+  const captureEnd = captureEntries.length ? captureStart + captureVisible.length - 1 : 0;
+  const captureRows = captureVisible.map(item => `<tr><td><strong>${escapeHtml(item.fileName)}</strong><small>${escapeHtml([formatDate(item.capturedAt), item.hrName ? `安排人 ${item.hrName}` : ''].filter(Boolean).join(' · '))}</small></td><td><span class="${item.matched ? 'quality quality-good' : 'quality quality-warn'}">${item.matched ? '已匹配' : '未匹配'}</span></td><td>${escapeHtml(item.candidateName || '未识别')}</td><td>${escapeHtml(item.interviewer || '未识别')}</td><td>${escapeHtml(item.jobName || '未识别')}</td><td>${escapeHtml(item.round || '—')}</td><td>${escapeHtml(formatInterviewMoment(item.startedAt))}</td><td><div class="interview-feedback-cell">${escapeHtml(item.text)}</div></td></tr>`).join('');
+  const capturePager = captureEntries.length > capturePageSize ? `<div class="interview-record-pager"><button type="button" data-capture-page="prev"${capturePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-capture-page-select>${Array.from({ length: capturePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === capturePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${capturePageCount} 页</label><span>${captureStart}–${captureEnd} / ${captureEntries.length} 份</span><button type="button" data-capture-page="next"${capturePage >= capturePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
+  const recordPager = detailRecords.length > recordPageSize ? `<div class="interview-record-pager"><button type="button" data-interview-page="prev"${recordPage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-interview-page-select>${Array.from({ length: recordPageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === recordPage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${recordPageCount} 页</label><span>${pageStart}–${pageEnd} / ${detailRecords.length} 场</span><button type="button" data-interview-page="next"${recordPage >= recordPageCount ? ' disabled' : ''}>下一页</button></div>` : '';
+  root.querySelector('.interviewer-data-quality')?.insertAdjacentHTML('afterend', `<section class="surface transcript-capture-list"><div class="surface-head"><div><h2>转写抓取记录</h2><p class="surface-subtitle">跟随上方的面试官、岗位、环节和时间筛选。每页 3 份，其余分页查看。${captureEntries.filter(item => item.matched).length} 份已匹配，${captureEntries.filter(item => !item.matched).length} 份未匹配。</p></div><span>${captureEntries.length ? `${captureStart}–${captureEnd} / ${captureEntries.length} 份` : '0 份'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>文件</th><th>抓取状态</th><th>候选人</th><th>面试官</th><th>岗位</th><th>环节</th><th>面试时间</th><th>转写正文</th></tr></thead><tbody>${captureRows || `<tr><td colspan="8"><div class="empty">${filters.interviewer || filters.job || filters.round || filters.period ? '当前筛选条件下没有转写记录。' : '还没有抓到转写文件。助手导入新文件后，点刷新 Moka 数据即可在这里确认。'}</div></td></tr>`}</tbody></table></div>${capturePager}</section><section class="surface interview-record-list"><div class="surface-head"><div><h2>面试记录、结果与评价</h2><p class="surface-subtitle">通过 ${resultCounts['通过'] || 0} · 淘汰 ${resultCounts['淘汰'] || 0} · 待定 ${resultCounts['待定'] || 0} · 有评价 ${feedbackCount} · 有转写 ${transcriptCount}</p></div><span>${detailRecords.length ? `${pageStart}–${pageEnd} / ${detailRecords.length} 场` : '0 场'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>面试官</th><th>环节</th><th>时间</th><th>面试结果</th><th>面试反馈</th><th>转写内容</th></tr></thead><tbody>${detailRows || `<tr><td colspan="8"><div class="empty">近 ${status.filters?.lookbackDays || 60} 天还没有匹配到目标岗位的面试记录。</div></td></tr>`}</tbody></table></div>${recordPager}</section>`);
+  const keepRecordScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
+  root.querySelector('[data-capture-page="prev"]')?.addEventListener('click', () => { app.transcriptCapturePage = Math.max(1, capturePage - 1); keepRecordScroll(); });
+  root.querySelector('[data-capture-page="next"]')?.addEventListener('click', () => { app.transcriptCapturePage = Math.min(capturePageCount, capturePage + 1); keepRecordScroll(); });
+  root.querySelector('[data-capture-page-select]')?.addEventListener('change', event => { app.transcriptCapturePage = Number(event.target.value) || 1; keepRecordScroll(); });
+  root.querySelector('[data-interview-page="prev"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.max(1, recordPage - 1); keepRecordScroll(); });
+  root.querySelector('[data-interview-page="next"]')?.addEventListener('click', () => { app.interviewerRecordPage = Math.min(recordPageCount, recordPage + 1); keepRecordScroll(); });
+  root.querySelector('[data-interview-page-select]')?.addEventListener('change', event => { app.interviewerRecordPage = Number(event.target.value) || 1; keepRecordScroll(); });
+  ['interviewerFilter', 'interviewerJobFilter', 'interviewerRoundFilter', 'interviewerPeriodFilter'].forEach(id => { $(`#${id}`)?.addEventListener('change', () => { app.interviewerFilters = { interviewer: $('#interviewerFilter')?.value || '', job: $('#interviewerJobFilter')?.value || '', round: $('#interviewerRoundFilter')?.value || '', period: $('#interviewerPeriodFilter')?.value || '' }; app.interviewerRecordPage = 1; app.transcriptCapturePage = 1; renderInterviewers(); renderInterviewerFollowups(); }); });
+  root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary(); await loadTranscriptImports(); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
+function interviewerInsightSessions() {
+  const filters = app.interviewerFilters || {};
+  const captured = transcriptCaptureEntries(filters).slice(0, 6).map(item => ({
+    candidateName: item.candidateName || '',
+    jobName: item.jobName || '',
+    interviewer: item.interviewer || '',
+    round: item.round || '',
+    startedAt: item.startedAt || '',
+    text: String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
+  })).filter(item => item.text.length >= 40);
+  if (captured.length) return captured;
+  return interviewerRecords(filters).filter(item => String(item.transcript || '').trim().length >= 40).slice(0, 6).map(item => ({
+    candidateName: item.candidateName || '',
+    jobName: item.jobName || '',
+    interviewer: item.interviewer || '',
+    round: item.round || '',
+    startedAt: item.startedAt || '',
+    text: String(item.transcript || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
+  }));
+}
+function interviewerInsightKey(sessions) {
+  const filters = app.interviewerFilters || {};
+  return JSON.stringify({ interviewer: filters.interviewer || '', job: filters.job || '', round: filters.round || '', period: filters.period || '', sessions: sessions.map(item => [item.candidateName, item.jobName, item.interviewer, item.startedAt, item.text.length, item.text.slice(0, 24)]) });
+}
+function interviewerInsightHtml(result = {}) {
+  const questions = (result.questions || []).map(item => String(item || '').trim()).filter(Boolean);
+  const themes = (result.themes || []).map(item => `<p><b>${escapeHtml(item.name || '主题')}：</b>${escapeHtml(item.detail || '')}</p>`).join('');
+  const questionList = questions.length ? `<div class="interviewer-question-list">${questions.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : '<p>转写里没有提炼出可复用的问句。</p>';
+  if (!result.summary && !questions.length && !themes) return '<p>这次没有形成可展示的分析。</p>';
+  return `<p><b>提问偏好：</b>${escapeHtml(result.summary || '暂无总结')}</p><p><b>高频问题：</b></p>${questionList}${themes}<p><b>追问方式：</b>${escapeHtml(result.followUpStyle || '暂无')}</p>`;
+}
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
-  const selected = app.interviewerFilters?.interviewer || app.mokaInterviews[0]?.interviewer || '';
-  const records = interviewerRecords({ ...app.interviewerFilters, interviewer: selected });
+  const selected = app.interviewerFilters?.interviewer || '';
+  const filters = app.interviewerFilters || {};
+  const records = interviewerRecords({ ...filters, interviewer: selected });
   const transcripts = records.map(item => String(item.transcript || '')).filter(Boolean);
   const questionLines = transcripts.flatMap(text => text.split(/\n+/).map(line => line.trim()).filter(line => /[？?]$/.test(line) && line.length >= 6));
-  const questionTopics = ['项目结果', '个人职责', '业务规模', '离职动机', '团队协作', '风险核验'].map(topic => ({ topic, count: transcripts.filter(text => new RegExp(topic.replace('风险核验', '风险|核实')).test(text)).length })).filter(item => item.count).sort((a, b) => b.count - a.count);
   const followUpCount = transcripts.reduce((sum, text) => sum + (text.match(/为什么|如何|具体|负责|结果|核实|确认|追问/g) || []).length, 0);
   const coverage = transcripts.length ? Math.min(100, Math.round(questionLines.length / transcripts.length * 12)) : 0;
   const completeness = records.length ? Math.round(records.filter(item => item.outcome || item.interviewPassed || item.hired).length / records.length * 100) : 0;
   const depth = transcripts.length ? Math.min(100, Math.round(followUpCount / transcripts.length * 8)) : 0;
+  const sessions = interviewerInsightSessions();
+  const insightKey = interviewerInsightKey(sessions);
+  const cached = app.interviewerInsight?.key === insightKey ? app.interviewerInsight.result : null;
+  const insightHtml = cached ? interviewerInsightHtml(cached) : (sessions.length ? '<p>正在根据当前筛选的转写分析提问偏好…</p>' : '<p>当前筛选下还没有可分析的转写。</p>');
   const score = records.length ? Math.round(coverage * .35 + depth * .35 + completeness * .3) : 0;
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
-  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">第二阶段：从当前面试官的真实转写中提取问题主题和追问方式</p></div><span>${transcripts.length} 份转写</span></div><div class="surface-body recommendation-list"><p><b>高频问题：</b>${questionLines.slice(0, 5).map(item => escapeHtml(item)).join(' · ') || '暂无可识别的问题句。'}</p><p><b>关注主题：</b>${questionTopics.map(item => `${escapeHtml(item.topic)}（${item.count}）`).join(' · ') || '等待 Moka 转写数据。'}</p><p><b>追问信号：</b>${followUpCount ? `${followUpCount} 个，主要用于判断项目结果、职责边界和风险信息。` : '暂无追问信号。'}</p></div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${score || '—'}${score ? '/100' : ''}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverage || '—'}</b></div><div><span>追问深度</span><b>${depth || '—'}</b></div><div><span>结论完整</span><b>${completeness || '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">第四阶段：以面试官为主语比较工作量和结果，不做岗位招聘总览</p></div><span>${comparison.length} 位面试官</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${comparison.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count ? `${row.passRate}%` : '—'}</td><td>${row.hired}</td><td>${selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div></section>`;
+  const comparePageSize = 5;
+  const comparePageCount = Math.max(1, Math.ceil(comparison.length / comparePageSize));
+  const comparePage = Math.min(Math.max(1, Number(app.interviewerComparePage || 1)), comparePageCount);
+  app.interviewerComparePage = comparePage;
+  const compareVisible = comparison.slice((comparePage - 1) * comparePageSize, comparePage * comparePageSize);
+  const compareStart = comparison.length ? (comparePage - 1) * comparePageSize + 1 : 0;
+  const compareEnd = comparison.length ? compareStart + compareVisible.length - 1 : 0;
+  const comparePager = comparison.length > comparePageSize ? `<div class="interview-record-pager"><button type="button" data-compare-page="prev"${comparePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-compare-page-select>${Array.from({ length: comparePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === comparePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${comparePageCount} 页</label><span>${compareStart}–${compareEnd} / ${comparison.length} 位</span><button type="button" data-compare-page="next"${comparePage >= comparePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
+  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">按上方筛选提炼可复用的短问句。转写原文在页面底部的抓取记录里，这里不再重复</p></div><span>${sessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${score || '—'}${score ? '/100' : ''}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverage || '—'}</b></div><div><span>追问深度</span><b>${depth || '—'}</b></div><div><span>结论完整</span><b>${completeness || '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">每页 5 位，其余分页查看</p></div><span>${comparison.length ? `${compareStart}–${compareEnd} / ${comparison.length} 位` : '0 位'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${compareVisible.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count ? `${row.passRate}%` : '—'}</td><td>${row.hired}</td><td>${selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div>${comparePager}</section>`;
   page.append(section);
+  const captureList = page.querySelector('.transcript-capture-list');
+  const recordList = page.querySelector('.interview-record-list');
+  if (captureList) page.append(captureList);
+  if (recordList) page.append(recordList);
+  const keepCompareScroll = () => { const top = window.scrollY; renderInterviewers(); renderInterviewerFollowups(); window.scrollTo(0, top); };
+  section.querySelector('[data-compare-page="prev"]')?.addEventListener('click', () => { app.interviewerComparePage = Math.max(1, comparePage - 1); keepCompareScroll(); });
+  section.querySelector('[data-compare-page="next"]')?.addEventListener('click', () => { app.interviewerComparePage = Math.min(comparePageCount, comparePage + 1); keepCompareScroll(); });
+  section.querySelector('[data-compare-page-select]')?.addEventListener('change', event => { app.interviewerComparePage = Number(event.target.value) || 1; keepCompareScroll(); });
+  if (!cached && sessions.length && app.interviewerInsightLoading !== insightKey) {
+    app.interviewerInsightLoading = insightKey;
+    generate({ action: 'review-interviewer', interviewer: selected, job: filters.job || '', round: filters.round || '', sessions }).then(result => {
+      if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
+      app.interviewerInsight = { key: insightKey, result };
+      const box = document.querySelector('[data-interviewer-insight]');
+      if (box) box.innerHTML = interviewerInsightHtml(result);
+    }).catch(error => {
+      if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
+      const box = document.querySelector('[data-interviewer-insight]');
+      if (box) box.innerHTML = `<p>分析没有完成：${escapeHtml(error.message || 'AI 服务暂时不可用')}</p>`;
+    }).finally(() => { if (app.interviewerInsightLoading === insightKey) app.interviewerInsightLoading = ''; });
+  }
 }
 
 function renderScreeningRules() {
@@ -1838,26 +2042,71 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关或认证服务暂时不可用',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();await loadMokaInterviews();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;persistHydratedState();await migrateStoredResumesOnce();await loadMokaInterviews();await loadInterviewerLibrary();await loadTranscriptImports();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
-async function loadMokaInterviews() {
+function formatInterviewMoment(value){if(!value)return'—';const date=new Date(value);if(Number.isNaN(date.getTime()))return'—';const day=`${date.getMonth()+1}月${date.getDate()}日`;if(!String(value).includes('T'))return day;return `${day} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;}
+async function loadMokaInterviews(options = {}) {
   if (!REMOTE_BACKEND) return;
+  if (mokaRefreshInFlight) return mokaRefreshInFlight;
+  const automatic = options.automatic === true;
+  mokaRefreshInFlight = (async () => {
   app.mokaInterviewStatus = { configured: false, loading: true };
   try {
-    const response = await authenticatedFetch(apiUrl('/api/integrations/moka/interviews'), { timeoutMs: 12000 });
+    const debugResponse = await authenticatedFetch(apiUrl('/api/debug/status'), { timeoutMs: 8000 });
+    const debugData = await debugResponse.json().catch(() => ({}));
+    app.connectionDiagnostics = { gateway: debugResponse.ok && debugData.route === 'reachable' ? '正常' : `HTTP ${debugResponse.status}`, checkedAt: debugData.timestamp || new Date().toISOString(), error: debugResponse.ok ? '' : cloudError(debugResponse.status, debugData) };
+    const response = await authenticatedFetch(apiUrl('/api/integrations/moka/interviews'), { timeoutMs: 120000 });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(cloudError(response.status, data));
     app.mokaInterviews = Array.isArray(data.records) ? data.records : [];
-    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, transcript: data.transcript || null };
+    syncInterviewTranscripts();
+    if (Array.isArray(data.syncedJobs) && data.syncedJobs.length) {
+      app.jobs = mergeRecords(app.jobs, data.syncedJobs);
+      try { persistHydratedState(); } catch (error) { console.warn('[AceCall jobs cache]', error); }
+    }
+    app.mokaAnalytics = data.analytics || null;
+    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual' };
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
   } catch (error) {
+    if (error.authRequired) return;
     console.warn('[AceCall Moka interviews]', error);
-    app.mokaInterviews = [];
-    app.mokaInterviewStatus = { configured: false, loading: false, error: error.message };
+    app.mokaInterviewStatus = { ...app.mokaInterviewStatus, configured: Boolean(app.mokaInterviewStatus.configured), loading: false, error: error.message, httpStatus: error.status || 0 };
   }
+  })();
+  try { return await mokaRefreshInFlight; } finally { mokaRefreshInFlight = null; }
 }
+async function loadInterviewerLibrary() {
+  if (!REMOTE_BACKEND) return;
+  try {
+    const response = await authenticatedFetch(apiUrl('/api/interviewers'));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(cloudError(response.status, data));
+    app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
+    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
+  } catch (error) { console.warn('[AceCall interviewers]', error); }
+}
+async function addInterviewerName(name) {
+  const response = await authenticatedFetch(apiUrl('/api/interviewers'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, source: 'manual' }) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(cloudError(response.status, data));
+  app.interviewerLibrary = Array.isArray(data.records) ? data.records : [];
+  await loadTranscriptImports();
+}
+async function loadTranscriptImports() {
+  if (!REMOTE_BACKEND) return;
+  try {
+    const response = await authenticatedFetch(apiUrl('/api/transcript-imports'));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(cloudError(response.status, data));
+    app.transcriptImports = Array.isArray(data.records) ? data.records : [];
+    syncInterviewTranscripts();
+    if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
+    if (app.view === 'intelligence') renderIntelligence();
+  } catch (error) { console.warn('[AceCall transcript imports]', error); }
+}
+
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
 function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
 async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
