@@ -1217,9 +1217,25 @@ async function toggleJobStatus(id) {
   job.status = closing ? 'closed' : 'active'; job.updatedAt = new Date().toISOString(); persistJobs(job); renderJobs(); toast(closing ? '岗位已关闭，历史数据已保留' : '岗位已重新开启');
 }
 
+async function ensureResumeText(item) {
+  item.resumeLoading = true;
+  try {
+    const response = await authenticatedFetch(apiUrl(`/api/documents/${encodeURIComponent(item.documentId)}`));
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && (data.cleanedText || data.rawText)) {
+      item.resume = data.cleanedText || data.rawText || '';
+      item.resumeRaw = data.rawText || '';
+      item.parseVersion = data.parseVersion || '';
+      renderCandidateDetail();
+    } else item.resumeLoadFailed = true;
+  } catch {}
+  item.resumeLoading = false;
+}
+
 function renderCandidateDetail() {
   const item = currentCandidate();
   if (!item) { navigate('candidates'); return; }
+  if (item.resumeOmitted && !item.resume && !item.resumeLoading && !item.resumeLoadFailed && item.documentId) ensureResumeText(item);
   $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
   bindCommonActions($('#candidateDetailView'));
@@ -1256,7 +1272,7 @@ function callTab(item) {
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
   const recordingLabel = draft?.file ? `${draft.file.name} · ${formatBytes(draft.file.size)}` : item.callRecording?.fileName || '尚未添加录音';
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording">开始录音</button><button class="secondary" type="button" id="stopRecording" disabled>停止录音</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingLabel)}。录音前请先向候选人告知并取得同意。</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><label class="recording-consent"><input type="checkbox" id="recordingConsent"><span>已告知候选人本次沟通会录音，并取得同意。未同意时不开始录音，可以继续手工记录。</span></label><button class="secondary" type="button" id="startRecording">开始录音</button><button class="secondary" type="button" id="stopRecording" disabled>停止录音</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingLabel)}。录音前请先向候选人告知并取得同意。</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {
@@ -1556,6 +1572,10 @@ async function convertWebmToWav(file) {
 }
 
 async function startBrowserRecording() {
+  const consent = $('#recordingConsent');
+  if (consent && !consent.checked) return toast('请先告知候选人并取得同意后再录音。未同意时请直接填写电话记录。');
+  const candidate = currentCandidate();
+  if (candidate) candidate.recordingConsent = { accepted: true, at: new Date().toISOString(), candidateId: candidate.id || '', session: app.authUser?.email || app.authUser?.username || '' };
   try {
     const response = await fetch(`${DESKTOP_AGENT_URL}/status`, { signal: AbortSignal.timeout(900) });
     if (response.ok) {

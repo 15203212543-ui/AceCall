@@ -136,12 +136,40 @@ function screeningFingerprint(candidate = {}) {
     recommendationReason: report.recommendationReason || '',
     overview: summary.overview || '',
     reviewConfirmed: candidate.reviewConfirmed === true || report.reviewConfirmed === true,
-    resume: clipText(candidate.resume, 600)
+    resume: clipText(candidate.resume, 600),
+    noteVersion: 'screening-note-v2'
   })).digest('hex').slice(0, 24);
 }
 
-function resumeExcerpt(resume) {
-  return clipText(String(resume || '').split('\n').filter(line => !/性别|年龄|出生/.test(line)).join(' '), 600);
+function usefulNoteText(value, limit) {
+  const text = clipText(value, limit);
+  return text && !['无', '暂无', '待确认'].includes(text) ? text : '';
+}
+
+function interviewerFocusPoints(candidate = {}) {
+  const report = candidate.report || {};
+  const summary = candidate.communicationSummary || {};
+  const points = [];
+  const push = (value) => {
+    const raw = typeof value === 'string' ? value : (value?.item || value?.topic || '');
+    const text = clipText(raw, 80);
+    if (!text || points.includes(text)) return;
+    points.push(text);
+  };
+  (Array.isArray(report.followUps) ? report.followUps : []).forEach(push);
+  if (points.length < 3) {
+    (Array.isArray(report.risks) ? report.risks : []).forEach(push);
+    (Array.isArray(report.conflicts) ? report.conflicts : []).forEach(item => {
+      if (item && typeof item === 'object' && item.topic) push(`${item.topic}需要核对`);
+      else push(item);
+    });
+    (Array.isArray(summary.missing) ? summary.missing : []).forEach(push);
+    const facts = summary.keyFacts || {};
+    [['期望薪资', facts.expectedSalary], ['竞业', facts.nonCompete], ['到岗', facts.availability]].forEach(([label, value]) => {
+      if (/待确认|未明确|不清楚|没有明确|没说/.test(String(value || ''))) push(`${label}尚未确认，需要面试当面核实`);
+    });
+  }
+  return points.slice(0, 5);
 }
 
 function buildScreeningNote(candidate = {}) {
@@ -156,21 +184,24 @@ function buildScreeningNote(candidate = {}) {
     ['到岗', facts.availability],
     ['动机', facts.motivation],
     ['竞业', facts.nonCompete]
-  ].filter(([, value]) => value).map(([label, value]) => `${label}：${clipText(value, 80)}`);
-  const tags = [report.conclusion, report.finalDecision || report.nextStep].filter(Boolean).map(value => clipText(value, 40));
-  return [
-    '【AceCall 初筛备注】仅追加备注，不修改 Moka 阶段，不淘汰候选人，不覆盖原始简历。',
+  ].filter(([, value]) => clipText(value, 160)).map(([label, value]) => `${label}：${clipText(value, 160)}`);
+  const conclusion = clipText(report.conclusionReason, 500) || '无';
+  const recommendation = usefulNoteText(report.recommendationReason, 300);
+  const focus = interviewerFocusPoints(candidate);
+  const lines = [
     `候选人：${clipText(candidate.candidateName, 40) || '未命名'}`,
     `岗位：${clipText(candidate.roleName, 60) || '未分配'}`,
-    `简历摘录：${resumeExcerpt(candidate.resume) || '无'}`,
-    `沟通总结：${clipText(summary.overview, 500) || '无'}`,
-    factLines.length ? `关键信息：${factLines.join('；')}` : '',
     `审核结论：${clipText(report.conclusion, 40) || '待确认'}`,
-    `结论说明：${clipText(report.conclusionReason, 300) || '无'}`,
-    `推荐理由：${clipText(report.recommendationReason, 400) || '无'}`,
     `建议动作：${clipText(report.finalDecision || report.nextStep, 40) || '待确认'}`,
-    tags.length ? `分析标签：${tags.join('、')}` : ''
-  ].filter(Boolean).join('\n').slice(0, 4000);
+    '',
+    '结论说明：',
+    conclusion
+  ];
+  if (recommendation && recommendation !== conclusion && !conclusion.includes(recommendation)) lines.push(`推荐理由：${recommendation}`);
+  if (factLines.length) lines.push('', '关键信息：', ...factLines);
+  lines.push('', '沟通总结：', clipText(summary.overview, 500) || '无');
+  if (focus.length) lines.push('', '建议后续面试官重点关注：', ...focus.map((item, index) => `${index + 1}. ${item}`));
+  return lines.join('\n').slice(0, 4000);
 }
 
 function applicationList(body) {
