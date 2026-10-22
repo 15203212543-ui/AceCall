@@ -1,0 +1,104 @@
+{
+  "resumes": [
+    {
+      "file": "01-labeled-name-示例甲.txt",
+      "scenario": "labeled-name",
+      "name": "示例甲"
+    },
+    {
+      "file": "02-labeled-name-示例乙.txt",
+      "scenario": "labeled-name",
+      "name": "示例乙"
+    },
+    {
+      "file": "03-labeled-name-示例丙.txt",
+      "scenario": "labeled-name",
+      "name": "示例丙"
+    },
+    {
+      "file": "04-name-near-contact-示例丁.txt",
+      "scenario": "name-near-contact",
+      "name": "示例丁"
+    },
+    {
+      "file": "05-name-near-contact-示例戊.txt",
+      "scenario": "name-near-contact",
+      "name": "示例戊"
+    },
+    {
+      "file": "06-name-near-contact-示例己.txt",
+      "scenario": "name-near-contact",
+      "name": "示例己"
+    },
+    {
+      "file": "07-filename-only-示例庚.txt",
+      "scenario": "filename-only",
+      "name": "示例庚"
+    },
+    {
+      "file": "08-filename-only-示例辛.txt",
+      "scenario": "filename-only",
+      "name": "示例辛"
+    },
+    {
+      "file": "09-filename-only-示例壬.txt",
+      "scenario": "filename-only",
+      "name": "示例壬"
+    },
+    {
+      "file": "10-short-name-示例癸.txt",
+      "scenario": "short-name",
+      "name": "示例癸"
+    },
+    {
+      "file": "11-short-name-示例子.txt",
+      "scenario": "short-name",
+      "name": "示例子"
+    },
+    {
+      "file": "12-short-name-示例丑.txt",
+      "scenario": "short-name",
+      "name": "示例丑"
+    },
+    {
+      "file": "13-english-name-示例寅.txt",
+      "scenario": "english-name",
+      "name": "示例寅"
+    },
+    {
+      "file": "14-english-name-示例卯.txt",
+      "scenario": "english-name",
+      "name": "示例卯"
+    },
+    {
+      "file": "15-english-name-示例辰.txt",
+      "scenario": "english-name",
+      "name": "示例辰"
+    },
+    {
+      "file": "16-watermark-示例巳.txt",
+      "scenario": "watermark",
+      "name": "示例巳"
+    },
+    {
+      "file": "17-watermark-示例午.txt",
+      "scenario": "watermark",
+      "name": "示例午"
+    },
+    {
+      "file": "18-watermark-示例未.txt",
+      "scenario": "watermark",
+      "name": "示例未"
+    }
+  ],
+  "transcripts": [
+    "qa-clear",
+    "unanswered",
+    "conflict",
+    "no-speaker",
+    "multi-job",
+    "short-turn",
+    "condition",
+    "filename-hint"
+  ]
+}

@@ -17,13 +17,21 @@ const candidate = {
   roleName: '法务BP',
   resume: '性别：女\n负责合规审查与合同管理。',
   resumeMeta: { phone: '+86 138-0000-0000', email: 'Lin@Example.com' },
-  communicationSummary: { overview: '沟通顺畅', keyFacts: { location: '上海' } },
-  report: { conclusion: '推荐', conclusionReason: '经历匹配', recommendationReason: '可推进业务面试', finalDecision: '推荐业务面试', reviewConfirmed: true }
+  communicationSummary: { overview: '沟通顺畅', keyFacts: { location: '上海', expectedSalary: '待确认' } },
+  report: { conclusion: '推荐', conclusionReason: '经历匹配', recommendationReason: '可推进业务面试', finalDecision: '推荐业务面试', reviewConfirmed: true, followUps: ['核对券商业务经验是否足以转岗'] }
 };
 const note = buildScreeningNote(candidate);
-assert.match(note, /仅追加备注/);
+assert.doesNotMatch(note, /仅追加备注/);
+assert.doesNotMatch(note, /简历摘录/);
+assert.doesNotMatch(note, /分析标签/);
 assert.match(note, /沟通顺畅/);
 assert.match(note, /推荐业务面试/);
+assert.match(note, /地点：上海/);
+assert.match(note, /期望薪资：待确认/);
+assert.match(note, /1\. 核对券商业务经验是否足以转岗/);
+assert.ok(note.indexOf('结论说明：') < note.indexOf('关键信息：'));
+assert.ok(note.indexOf('关键信息：') < note.indexOf('沟通总结：'));
+assert.ok(note.indexOf('沟通总结：') < note.indexOf('建议后续面试官重点关注：'));
 assert.doesNotMatch(note, /性别：女/);
 assert.equal(note.length <= 4000, true);
 assert.equal(screeningFingerprint(candidate), screeningFingerprint({ ...candidate }));

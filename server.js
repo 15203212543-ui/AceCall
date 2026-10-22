@@ -371,7 +371,7 @@ function summarySchema() {
 }
 
 function synthesisSchema() {
-  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。综合初筛方案和沟通总结，明确哪些风险已关闭、哪些仍存在。';
+  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 是给下一位面试官的重点关注，写 3 到 5 条，每条一句话，只写经验缺口、尚未确认的薪资到岗竞业、简历和口述的矛盾。不要重复结论说明。综合初筛方案和沟通总结，明确哪些风险已关闭、哪些仍存在。';
 }
 
 function generateDemo(payload) {

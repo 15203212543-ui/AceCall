@@ -5,6 +5,7 @@ const fsp = fs.promises;
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { applyJobAssignment } = require('../cloudfunctions/acecall-api/job-assignment');
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const STABLE_MS = 10 * 1000;
@@ -256,9 +257,7 @@ class SyncAgent {
     const jobs = (state.jobs || []).filter(job => job.status !== 'archived');
     if (!jobs.length) return;
     const match = await this.request('/api/generate', { method: 'POST', body: JSON.stringify({ action: 'match', candidateName: candidate.candidateName, resume: candidate.resume, jobs: jobs.map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, rules: job.rules })) }), headers: { 'Content-Type': 'application/json' } });
-    const primary = jobs.find(job => job.id === match.result?.jobId) || jobs[0];
-    candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd || ''; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
-    candidate.matching = { ...(match.result || {}), jobId: primary.id, status: '已分配' }; candidate.ingestStatus = '已入库';
+    applyJobAssignment(candidate, jobs, match);
   }
   async request(endpoint, options = {}) {
     const response = await fetch(`${this.options.apiBase.replace(/\/$/, '')}${endpoint}`, { ...options, headers: { ...(options.headers || {}), ...(this.options.authToken ? { Authorization: `Bearer ${this.options.authToken}` } : {}) } });

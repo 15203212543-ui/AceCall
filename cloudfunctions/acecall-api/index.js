@@ -2,10 +2,21 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
-const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, syncScreeningComment } = require('./moka-client');
+const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
 const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
+const { prepareDocumentVersions } = require('./document-text');
+const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMatches } = require('./job-assignment');
+const { proposeNameCandidates, chooseDisplayedName, extractProfileFields } = require('./resume-profile');
+const { buildCallQuestions } = require('./call-preparation');
+const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
+const { buildAiTaskRecord } = require('./ai-task');
+const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
+const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
+const { presentCandidateForState, buildLegacyDocument } = require('./candidate-documents');
+const { classifyTranscription, presentTranscriptionStatus } = require('./transcription-route');
+const factCenter = require('./fact-center');
 
 const PORT = 9000;
 const COLLECTIONS = {
@@ -17,7 +28,11 @@ const COLLECTIONS = {
   audit: 'acecall_audit_logs',
   rules: 'acecall_team_rules',
   transcriptionTasks: 'acecall_transcription_tasks',
-  interviewers: 'acecall_interviewers'
+  interviewers: 'acecall_interviewers',
+  documents: factCenter.COLLECTIONS.documents,
+  facts: factCenter.COLLECTIONS.facts,
+  jobProfiles: factCenter.COLLECTIONS.jobProfiles,
+  aiTasks: factCenter.COLLECTIONS.aiTasks
 };
 let cloudbaseApp;
 
@@ -153,21 +168,41 @@ const server = http.createServer(async (request, response) => {
       await audit(context, 'rule.upsert', id, { contentLength: String(rule.content || '').length });
       return sendJson(response, 200, { ok: true, id });
     }
+    if (request.method === 'GET' && url.pathname.startsWith('/api/documents/')) {
+      const id = validateId(decodeURIComponent(url.pathname.slice('/api/documents/'.length)));
+      return sendJson(response, 200, await loadDocumentText(await getRequestContext(request), id));
+    }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
+      const context = await guardAiRoute(request, '/api/generate');
       const payload = await readJson(request);
       validatePayload(payload);
-      const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
-      const result = payload.action === 'review-interviewer' ? normalizeInterviewerReview(generated) : generated;
-      return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
+      const startedAt = Date.now();
+      try {
+        const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
+        const result = finalizeGeneratedResult(payload, generated);
+        await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, result, startedAt }));
+        return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
+      } catch (error) {
+        await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, startedAt, error }));
+        throw error;
+      }
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
+      await guardAiRoute(request, '/api/parse-resume');
       const fileName = url.searchParams.get('name') || 'resume';
       const buffer = await readBuffer(request, 50 * 1024 * 1024);
       return sendJson(response, 200, await parseResumeFile(fileName, buffer));
     }
     if (request.method === 'POST' && url.pathname === '/api/transcribe') {
+      const context = await guardAiRoute(request, '/api/transcribe');
       const fileName = url.searchParams.get('name') || 'recording.m4a';
+      const durationSeconds = Number(url.searchParams.get('duration') || 0);
       const buffer = await readBuffer(request, 60_000_000);
+      const route = classifyTranscription({ bytes: buffer.length, durationSeconds });
+      if (!route.useShortApi) {
+        await audit(context, 'transcription.redirect', fileName, { reason: 'short-api-limit', bytes: buffer.length, durationSeconds });
+        return sendJson(response, 202, { ...route, useChunkUpload: true, publicStatus: 'queued' });
+      }
       return sendJson(response, 200, await transcribeWithBaidu(fileName, buffer));
     }
     if (request.method === 'POST' && url.pathname === '/api/recordings/init') {
@@ -230,7 +265,7 @@ const server = http.createServer(async (request, response) => {
     // ever sees a generic 500 and the real cause stays buried in the logs.
     console.error(JSON.stringify({
       level: 'error',
-      message: error.message,
+      message: redactSecrets(error.message),
       code: error.code || '',
       statusCode: error.statusCode || 500,
       stack: String(error.stack || '').split('\n').slice(0, 4).join(' | ')
@@ -239,7 +274,7 @@ const server = http.createServer(async (request, response) => {
     // Service errors are deliberately phrased without credentials; returning them
     // lets the client distinguish Baidu auth/format failures from CloudBase faults.
     const expose = Boolean(error.statusCode && error.message);
-    return sendJson(response, statusCode, { error: expose ? error.message : '服务暂时不可用，请稍后重试。', code: error.code || '' });
+    return sendJson(response, statusCode, { error: expose ? redactSecrets(error.message) : '服务暂时不可用，请稍后重试。', code: error.code || '' });
   }
 });
 
@@ -893,7 +928,7 @@ function buildMokaAnalytics(records = []) {
   if (depth < 60) recommendations.push('增加基于候选人回答的二次追问，避免停留在经历复述。');
   if (completeness < 80) recommendations.push('在面试结束后及时完成结论记录，并明确通过依据或待核验事项。');
   if (!recommendations.length) recommendations.push('保持当前结构化提问和事实核验方式，继续用入职结果校准判断标准。');
-  return {
+  const analytics = {
     scope: { project: String(process.env.MOKA_PROJECT_NAME || 'QS'), jobs: 'all', interviewer: 'all' },
     interviewer: { score: interviewerScore, completed: completed.length, passed, rejected, pending: Math.max(0, completed.length - passed - rejected), passRate: completed.length ? Math.round(passed / completed.length * 100) : 0, offerAccepted, hired, evaluated, evaluationRate: completed.length ? Math.round(evaluated / completed.length * 100) : 0 },
     dimensions: { questionCoverage: coverage, followUpDepth: depth, recordCompleteness: completeness },
@@ -903,6 +938,7 @@ function buildMokaAnalytics(records = []) {
     recommendations,
     intelligence: buildIntelligenceAnalytics(records)
   };
+  return applyTeamVisibility(analytics);
 }
 
 function buildIntelligenceAnalytics(records = []) {
@@ -916,7 +952,8 @@ function buildIntelligenceAnalytics(records = []) {
   ];
   const signals = signalDefinitions.map(([label, terms]) => ({ label, terms: terms.filter(term => texts.includes(term)), evidenceCount: terms.reduce((sum, term) => sum + (texts.match(new RegExp(term, 'g')) || []).length, 0) })).filter(item => item.evidenceCount > 0);
   const questions = records.flatMap(record => String(record.transcript || '').split(/\n+/).map(line => line.trim()).filter(line => /[？?]$/.test(line))).slice(0, 30);
-  return { companies, signals, questions, sourceRecords: records.filter(record => record.transcript || record.feedback).length, generatedAt: new Date().toISOString(), reviewStatus: '待人工确认' };
+  const confirmedFacts = records.flatMap(record => Array.isArray(record.confirmedFacts) ? record.confirmedFacts : []);
+  return { companies, signals, questions, internalClues: internalCluesFromFacts(confirmedFacts), clueAudience: 'internal', rubric: rubricFromCorrections(records.flatMap(record => Array.isArray(record.judgmentCorrections) ? record.judgmentCorrections : [])), sourceRecords: records.filter(record => record.transcript || record.feedback).length, generatedAt: new Date().toISOString(), reviewStatus: '待人工确认' };
 }
 
 function normalizeResumeText(text = '') {
@@ -1167,6 +1204,36 @@ async function updateMember(context, id, input = {}) {
 
 function requireRole(context, roles) { if (!roles.includes(context.role)) throw serviceError('当前账号没有管理权限', 403); }
 
+async function guardAiRoute(request, route) {
+  const context = await getRequestContext(request);
+  consumeRateLimit({ tenantId: context.tenantId, route });
+  await audit(context, 'ai.route', route, { route });
+  return context;
+}
+
+async function loadDocumentText(context, id) {
+  const db = getDatabase();
+  if (id.startsWith('legacy_')) {
+    const candidateId = id.slice('legacy_'.length);
+    const result = await db.collection(COLLECTIONS.candidates).where({ id: candidateId, tenantId: context.tenantId }).limit(1).get();
+    const candidate = result.data?.[0];
+    if (!candidate?.resume) throw serviceError('Not found', 404);
+    const versions = prepareDocumentVersions(candidate.resume, normalizeResumeText);
+    return { id, candidateId, rawText: versions.rawText, cleanedText: versions.cleanedText, parseVersion: versions.parseVersion, lineMap: versions.lineMap };
+  }
+  const result = await db.collection(COLLECTIONS.documents).where({ id, tenantId: context.tenantId }).limit(1).get();
+  const document = result.data?.[0];
+  if (!document) throw serviceError('Not found', 404);
+  return {
+    id: document.id,
+    candidateId: document.candidateId || '',
+    rawText: document.rawText || '',
+    cleanedText: document.cleanedText || '',
+    parseVersion: document.parseVersion || '',
+    lineMap: document.pageOrLineMap || []
+  };
+}
+
 async function loadState(context) {
   const db = getDatabase();
   const [jobs, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
@@ -1179,7 +1246,7 @@ async function loadState(context) {
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
   const cases = (candidatesResult.data || []).map(candidate => {
     const screening = screenings.get(candidate.id || candidate._id) || {};
-    return cleanDocument({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) });
+    return cleanDocument(presentCandidateForState({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) }));
   });
   return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
 }
@@ -1203,7 +1270,12 @@ async function saveJob(context, id, input) {
   const db = getDatabase();
   await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
-  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt']);
+  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']);
+  if (input.confirmProfile) {
+    const confirmed = confirmJobProfile(draftJobProfile({ ...input, profile: input.profile }), context.uid, now);
+    job.profile = confirmed;
+    job.profileHistory = [...(Array.isArray(input.profileHistory) ? input.profileHistory : []), confirmed.snapshot].slice(-20);
+  }
   job.id = id;
   job.tenantId = context.tenantId;
   job.createdBy = context.uid;
@@ -1268,21 +1340,24 @@ function hasScreeningResult(record) {
 async function resolveMokaSync(context, previousSync, record) {
   const previous = previousSync && typeof previousSync === 'object' ? previousSync : null;
   if (!hasScreeningResult(record)) return previous;
-  const fingerprint = screeningFingerprint(record);
+  const plan = screeningWritePlan(record, previous);
+  if (plan.action === 'skip' || (plan.action === 'draft' && previous?.status === '已同步')) return previous;
+  if (plan.action === 'draft') return { status: '草稿', fingerprint: plan.fingerprint, reviewDecisionId: plan.reviewDecisionId };
+  const fingerprint = plan.fingerprint;
   if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
   const operatorEmail = chooseOperatorEmail(context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
   try {
     const result = await syncScreeningComment(createMokaClient(), record, operatorEmail);
-    return { ...result, fingerprint };
+    return { ...result, fingerprint, reviewDecisionId: plan.reviewDecisionId };
   } catch (error) {
-    return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, syncedAt: new Date().toISOString() };
+    return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
   }
 }
 
 async function assertWritableRecord(collection, id, tenantId) {
   const result = await getDatabase().collection(collection).doc(id).get().catch(() => ({ data: null }));
   const existing = result.data;
-  if (existing?.tenantId && existing.tenantId !== tenantId) throw serviceError('无权操作其他公司工作区的数据', 403);
+  assertSameTenant(existing, { tenantId });
 }
 
 async function migrateStoredResumes(context) {
@@ -1298,11 +1373,15 @@ async function migrateStoredResumes(context) {
     const id = source.id || source._id; const originalText = String(source.resume || '').trim();
     if (!id || !originalText) { failed.push({ id, reason: '没有已保存的简历文本' }); continue; }
     try {
-      const text = normalizeResumeText(originalText); const lines = text.split('\n').map(line => line.trim()).filter(Boolean); const basics = parseResumeBasics(text);
+      const versions = prepareDocumentVersions(originalText, normalizeResumeText);
+      const text = versions.cleanedText;
+      const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+      const basics = parseResumeBasics(text);
       basics.candidateName = chooseCandidateName(extractLabeledCandidateName(lines), extractContextualCandidateName(lines), extractNameFromFileName(source.resumeMeta?.fileName || ''), basics.candidateName, source.candidateName);
-      const job = jobs.find(item => item.id === source.jobId) || jobs.find(item => item.name === source.roleName) || jobs[0];
-      const currentMatch = source.matching || {};
-      const matching = job ? { ...currentMatch, ...generateDemoMatch({ resume: text, jobs: [job] }), jobId: job.id } : currentMatch;
+      const knownJob = jobs.find(item => item.id === source.jobId) || jobs.find(item => item.name === source.roleName) || null;
+      const decision = resolveJobAssignment({ jobs, match: { result: { ...(source.matching || {}), jobId: knownJob?.id || '', status: knownJob ? (source.matching?.status || '已分配') : '待分配' } } });
+      const built = buildLegacyDocument({ ...source, id, tenantId: context.tenantId, resume: originalText }, raw => prepareDocumentVersions(raw, normalizeResumeText));
+      await db.collection(COLLECTIONS.documents).doc(built.document.id).set(persistable(built.document));
       const now = new Date().toISOString();
       const { _id, _openid, ...stored } = source;
       await db.collection(COLLECTIONS.candidates).doc(id).set(persistable({
@@ -1310,10 +1389,13 @@ async function migrateStoredResumes(context) {
         id,
         tenantId: context.tenantId,
         updatedBy: context.uid,
-        resume: text,
+        resume: versions.rawText,
+        documentId: built.document.id,
+        resumeSummary: built.candidatePatch.resumeSummary,
         candidateName: basics.candidateName || source.candidateName || '',
-        resumeMeta: { ...(source.resumeMeta || {}), ...basics, textNormalizedAt: now },
-        matching,
+        resumeMeta: { ...(source.resumeMeta || {}), ...basics, textNormalizedAt: now, parseVersion: versions.parseVersion },
+        jobId: decision.assigned ? decision.job.id : '',
+        matching: decision.matching,
         updatedAt: now
       }));
       migrated.push(id);
@@ -1325,7 +1407,7 @@ async function migrateStoredResumes(context) {
 
 async function audit(context, action, entityId, detail) {
   const db = getDatabase();
-  await db.collection(COLLECTIONS.audit).add({ tenantId: context.tenantId, action, entityId, detail, actorUid: context.uid, actorRole: context.role, createdAt: new Date().toISOString() });
+  await db.collection(COLLECTIONS.audit).add({ tenantId: context.tenantId, action, entityId, detail: factCenter.auditDetail(detail), actorUid: context.uid, actorRole: context.role, createdAt: new Date().toISOString() });
 }
 
 function taskId() {
@@ -1396,7 +1478,8 @@ async function createTranscriptionTask(context, input = {}) {
 }
 
 async function getTranscriptionTask(context, id) {
-  return { ok: true, task: cleanDocument(await findTask(context, id)) };
+  const task = cleanDocument(await findTask(context, id));
+  return { ok: true, task: { ...task, publicStatus: presentTranscriptionStatus(task.status) } };
 }
 
 async function analyzeTranscriptionTask(context, id, input = {}) {
@@ -1417,6 +1500,7 @@ async function importTranscript(context, input = {}) {
   const now = new Date().toISOString();
   const library = await listInterviewerNames(context);
   const metadata = mergeTranscriptMetadata(sanitizeJson(input.metadata || {}), input.fileName, text, library);
+  metadata.findings = extractTranscriptFindings(text, String(input.resume || ''));
   const result = { text, characters: text.length, completedAt: now, format: 'text', source: 'local-moka-download' };
   const task = {
     id, tenantId: context.tenantId, candidateId: String(input.candidateId || '').slice(0, 100),
@@ -1562,7 +1646,8 @@ async function parseResumeFile(fileName, buffer) {
   else if (extension === '.docx') text = (await require('mammoth').extractRawText({ buffer })).value;
   else if (extension === '.pdf') text = (await require('pdf-parse')(buffer)).text;
   else throw serviceError('仅支持 PDF、DOCX、TXT 和 MD 文件', 415);
-  text = normalizeResumeText(text);
+  const versions = prepareDocumentVersions(text, normalizeResumeText);
+  text = versions.cleanedText;
   if (text.length < 20) throw serviceError('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR', 422, { code: 'RESUME_TEXT_EMPTY', hint: '该文件可能是扫描件、图片型 PDF 或受保护文档' });
   const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
   const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
@@ -1574,10 +1659,11 @@ async function parseResumeFile(fileName, buffer) {
   const contextualName = extractContextualCandidateName(resumeLines);
   const fileNameName = extractNameFromFileName(fileName);
   const contentName = extractCandidateName(resumeLines);
-  const candidateName = chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
-  const candidateNameSource = labeledName ? '简历姓名字段' : contextualName ? '联系方式附近文本' : fileNameName ? '文件名' : contentName ? '简历正文' : '';
-  const candidateNameConfidence = labeledName || contextualName ? '高' : fileNameName || contentName ? '中' : '低';
-  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource, candidateNameConfidence, phone, email, age, experienceYears, education, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
+  const nameCandidates = proposeNameCandidates({ labeled: labeledName, contextual: contextualName, fromFile: fileNameName, fromBody: contentName });
+  const displayedName = chooseDisplayedName(nameCandidates);
+  const candidateName = displayedName.candidateName || chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
+  const profile = extractProfileFields(text);
+  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears, education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
 }
 
 let baiduAccessToken = { value: '', expiresAt: 0 };
@@ -1757,7 +1843,30 @@ function summarySchema() {
   return '沟通总结字段：overview 字符串；confirmed、contradicted、missing 数组，每项含 item、evidence；questionCoverage 对象含 covered、total、unanswered 数组；keyFacts 对象含 currentCompanyRole、location、currentSalary、expectedSalary、availability、motivation、nonCompete；candidateSignals 字符串数组；followUps 字符串数组。只总结电话内容，不给推荐结论。';
 }
 function synthesisSchema() {
-  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 字符串数组。';
+  return '综合审核字段：basicInfo 对象；capabilities 数组，每项含 item、evidence、assessment（匹配/部分匹配/信息不足/不匹配）；evidence 字符串数组；conflicts 数组，每项含 topic、resumeClaim、callEvidence；risks 字符串数组；conclusion（明确匹配/部分匹配/信息不足/明确不匹配）；conclusionReason 字符串；recommendationReason 字符串，用2-4句话基于简历和沟通事实说明推进理由；nextStep（推荐业务面试/补充电话沟通/转入其他岗位/暂不推进/纳入人才库长期维护）；followUps 是给下一位面试官的重点关注，写 3 到 5 条，每条一句话，只写经验缺口、尚未确认的薪资到岗竞业、简历和口述的矛盾。不要重复结论说明。';
+}
+
+function finalizeGeneratedResult(payload, generated) {
+  if (payload.action === 'match') {
+    const decision = evaluateJobMatches({ resume: payload.resume, jobs: payload.jobs || [], conflicts: payload.conflicts || [] });
+    return { ...generated, ...decision, jobId: decision.jobId, status: decision.status, score: decision.score };
+  }
+  if (payload.action === 'prepare') {
+    const profile = draftJobProfile({ jd: payload.jd, rules: payload.rules, keywords: payload.keywords });
+    const decision = evaluateJobMatches({ resume: payload.resume, jobs: [{ id: 'current', name: payload.roleName || '', status: 'active', jd: payload.jd, rules: payload.rules, keywords: payload.keywords }] });
+    const questions = buildCallQuestions({ profile, items: decision.results?.[0]?.items || [], manual: payload.manualQuestions || [] });
+    return questions.length ? { ...generated, questions } : generated;
+  }
+  if (payload.action === 'summarize') return checkCallSummary(generated, payload.transcript || '');
+  if (payload.action === 'synthesize') return checkSynthesis(generated, `${payload.resume || ''}\n${payload.transcript || ''}`);
+  if (payload.action === 'review-interviewer') return protectInterviewerReview(normalizeInterviewerReview(generated), (payload.sessions || []).length);
+  return generated;
+}
+
+async function rememberAiTask(context, task) {
+  try {
+    await getDatabase().collection(COLLECTIONS.aiTasks).add({ ...task, tenantId: context.tenantId, createdBy: context.uid, createdAt: new Date().toISOString() });
+  } catch {}
 }
 
 function generateDemo(payload) {
