@@ -1,3 +1,5 @@
+import { directInterviewQuestions } from './interview-questions.mjs?v=__ACE_CALL_BUILD__';
+
 const runtime = {};
 
 export function attachInterviewerRuntime(next) {
@@ -240,12 +242,15 @@ function interviewerInsightKey(sessions) {
   const filters = app.interviewerFilters || {};
   return JSON.stringify({ interviewer: filters.interviewer || '', job: filters.job || '', round: filters.round || '', period: filters.period || '', sessions: sessions.map(item => [item.candidateName, item.jobName, item.interviewer, item.startedAt, item.text.length, item.text.slice(0, 24)]) });
 }
-function interviewerInsightHtml(result = {}) {
-  const questions = (result.questions || []).map(item => String(item || '').trim()).filter(Boolean);
+function questionChips(questions) {
+  return questions.length ? `<p><b>高频问题：</b></p><div class="interviewer-question-list">${questions.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : '<p>转写里没有提炼出可复用的问句。</p>';
+}
+function interviewerInsightHtml(result = {}, fallbackLines = []) {
+  const questions = directInterviewQuestions([...(result.questions || []), ...fallbackLines]);
   const themes = (result.themes || []).map(item => `<p><b>${escapeHtml(item.name || '主题')}：</b>${escapeHtml(item.detail || '')}</p>`).join('');
-  const questionList = questions.length ? `<div class="interviewer-question-list">${questions.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : '<p>转写里没有提炼出可复用的问句。</p>';
+  const questionList = questionChips(questions);
   if (!result.summary && !questions.length && !themes) return '<p>这次没有形成可展示的分析。</p>';
-  return `<p><b>提问偏好：</b>${escapeHtml(result.summary || '暂无总结')}</p><p><b>高频问题：</b></p>${questionList}${themes}<p><b>追问方式：</b>${escapeHtml(result.followUpStyle || '暂无')}</p>`;
+  return `<p><b>提问偏好：</b>${escapeHtml(result.summary || '暂无总结')}</p>${questionList}${themes}<p><b>追问方式：</b>${escapeHtml(result.followUpStyle || '暂无')}</p>`;
 }
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
@@ -262,8 +267,8 @@ function renderInterviewerFollowups() {
   const insightKey = interviewerInsightKey(sessions);
   const cached = app.interviewerInsight?.key === insightKey ? app.interviewerInsight.result : null;
   const sampleLimited = sessions.length < 5;
-  const objectiveQuestions = questionLines.slice(0, 8).map(item => `<li>${escapeHtml(item)}</li>`).join('');
-  const insightHtml = sampleLimited ? `<p>有效转写少于 5 场，只展示原始问题，不展示比率、改进建议或个人评价。</p><ul>${objectiveQuestions || '<li>当前筛选下还没有问句。</li>'}</ul>` : (cached ? interviewerInsightHtml(cached) : (sessions.length ? '<p>正在根据当前筛选的转写分析提问偏好…</p>' : '<p>当前筛选下还没有可分析的转写。</p>'));
+  const directQuestions = directInterviewQuestions(questionLines);
+  const insightHtml = sampleLimited ? `<p>有效转写少于 5 场，只展示直接问题，不展示比率、改进建议或个人评价。</p>${questionChips(directQuestions)}` : (cached ? interviewerInsightHtml(cached, questionLines) : (sessions.length ? '<p>正在根据当前筛选的转写分析提问偏好…</p>' : '<p>当前筛选下还没有可分析的转写。</p>'));
   const score = sampleLimited ? 0 : (records.length ? Math.round(coverage * .35 + depth * .35 + completeness * .3) : 0);
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
@@ -291,7 +296,7 @@ function renderInterviewerFollowups() {
       if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
       app.interviewerInsight = { key: insightKey, result };
       const box = document.querySelector('[data-interviewer-insight]');
-      if (box) box.innerHTML = interviewerInsightHtml(result);
+      if (box) box.innerHTML = interviewerInsightHtml(result, questionLines);
     }).catch(error => {
       if (interviewerInsightKey(interviewerInsightSessions()) !== insightKey) return;
       const box = document.querySelector('[data-interviewer-insight]');
