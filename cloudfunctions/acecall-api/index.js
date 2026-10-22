@@ -15,7 +15,7 @@ const { classifyInterviewQuestions, analyzeInterviewQuestions } = require('./int
 const { buildAiTaskRecord } = require('./ai-task');
 const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
-const { presentCandidateForState, buildLegacyDocument } = require('./candidate-documents');
+const { presentCandidateForState, presentCaseSummary, buildLegacyDocument } = require('./candidate-documents');
 const { classifyTranscription, presentTranscriptionStatus } = require('./transcription-route');
 const factCenter = require('./fact-center');
 
@@ -146,6 +146,11 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await updateMember(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext(request)));
+    if (request.method === 'GET' && url.pathname === '/api/screenings/texts') return sendJson(response, 200, await loadScreeningTexts(await getRequestContext(request)));
+    if (request.method === 'GET' && url.pathname.match(/^\/api\/candidates\/[^/]+\/screening$/)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await loadCandidateScreening(await getRequestContext(request), id));
+    }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/jobs/')) {
       const id = validateId(url.pathname.slice('/api/jobs/'.length));
       const job = await readJson(request);
@@ -1261,9 +1266,48 @@ async function loadState(context) {
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
   const cases = (candidatesResult.data || []).map(candidate => {
     const screening = screenings.get(candidate.id || candidate._id) || {};
-    return cleanDocument(presentCandidateForState({ ...candidate, ...pick(screening, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) }));
+    return cleanDocument(presentCaseSummary(candidate, screening));
   });
   return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+}
+
+async function loadCandidateScreening(context, id) {
+  const db = getDatabase();
+  const candidateResult = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+  const candidate = candidateResult.data;
+  if (!candidate) throw serviceError('Not found', 404);
+  assertSameTenant(candidate, context);
+  const screeningResult = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
+  const screening = screeningResult.data || {};
+  if (screening.tenantId) assertSameTenant(screening, context);
+  return {
+    id,
+    preparation: screening.preparation || null,
+    transcript: screening.transcript || '',
+    communicationSummary: screening.communicationSummary || null,
+    report: screening.report || null,
+    consentConfirmed: Boolean(screening.consentConfirmed),
+    callRecording: screening.callRecording || null
+  };
+}
+
+async function loadScreeningTexts(context) {
+  const result = await getDatabase().collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get();
+  const seen = new Set();
+  const records = [];
+  for (const item of result.data || []) {
+    const candidateId = item.candidateId || item.id;
+    if (!candidateId || seen.has(candidateId)) continue;
+    seen.add(candidateId);
+    records.push({
+      candidateId,
+      preparation: item.preparation || null,
+      transcript: item.transcript || '',
+      communicationSummary: item.communicationSummary || null,
+      report: item.report || null
+    });
+  }
+  return { records };
 }
 
 async function listTenantJobs(tenantId) {
@@ -1325,8 +1369,14 @@ async function saveCandidate(context, id, input) {
   candidate.updatedBy = context.uid;
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
-  candidate.status = deriveStatus(input);
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
+  const existingScreening = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
+  const previousScreening = existingScreening.data || {};
+  if (previousScreening.tenantId) assertSameTenant(previousScreening, context);
+  for (const key of ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) {
+    if (screening[key] === undefined && previousScreening[key] !== undefined) screening[key] = previousScreening[key];
+  }
+  candidate.status = deriveStatus({ ...input, report: screening.report, communicationSummary: screening.communicationSummary, preparation: screening.preparation });
   screening.id = id;
   screening.tenantId = context.tenantId;
   screening.createdBy = context.uid;
@@ -1336,7 +1386,7 @@ async function saveCandidate(context, id, input) {
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
   const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
-  const mokaSync = await resolveMokaSync(context, existingCandidate.data?.mokaSync, { ...candidate, ...screening, reviewConfirmed: input.report?.reviewConfirmed === true });
+  const mokaSync = await resolveMokaSync(context, existingCandidate.data?.mokaSync, { ...candidate, ...screening, reviewConfirmed: screening.report?.reviewConfirmed === true });
   if (mokaSync) candidate.mokaSync = mokaSync;
   await Promise.all([
     db.collection(COLLECTIONS.candidates).doc(id).set(candidate),

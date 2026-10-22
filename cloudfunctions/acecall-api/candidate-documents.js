@@ -4,6 +4,26 @@ function resumeSummary(text = '') {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
+function screeningFlags(screening = {}) {
+  const report = screening.report && typeof screening.report === 'object' ? screening.report : null;
+  return {
+    hasTranscript: Boolean(String(screening.transcript || '').trim()),
+    hasSummary: Boolean(screening.communicationSummary),
+    hasReport: Boolean(report),
+    hasPreparation: Boolean(screening.preparation),
+    reviewConfirmed: Boolean(report?.reviewConfirmed),
+    finalDecision: String(report?.finalDecision || '').slice(0, 80),
+    nextStep: String(report?.nextStep || '').slice(0, 80)
+  };
+}
+
+function presentCaseSummary(candidate = {}, screening = {}) {
+  const view = presentCandidateForState(candidate);
+  for (const key of ['transcript', 'communicationSummary', 'report', 'preparation', 'callRecording']) delete view[key];
+  if (screening.consentConfirmed) view.consentConfirmed = true;
+  return { ...view, ...screeningFlags(screening) };
+}
+
 function presentCandidateForState(candidate = {}) {
   const resume = String(candidate.resume || '');
   const view = { ...candidate };
@@ -47,4 +67,4 @@ function buildLegacyDocument(candidate = {}, clean) {
   };
 }
 
-module.exports = { resumeSummary, presentCandidateForState, buildLegacyDocument };
+module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument };
