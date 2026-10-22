@@ -11,6 +11,7 @@ const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMat
 const { proposeNameCandidates, chooseDisplayedName, extractProfileFields } = require('./resume-profile');
 const { buildCallQuestions } = require('./call-preparation');
 const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
+const { classifyInterviewQuestions, analyzeInterviewQuestions } = require('./interview-question-analysis');
 const { buildAiTaskRecord } = require('./ai-task');
 const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
@@ -172,12 +173,26 @@ const server = http.createServer(async (request, response) => {
       const id = validateId(decodeURIComponent(url.pathname.slice('/api/documents/'.length)));
       return sendJson(response, 200, await loadDocumentText(await getRequestContext(request), id));
     }
+    if (request.method === 'POST' && url.pathname === '/api/interview-questions/reviews') {
+      const context = await getRequestContext(request);
+      const body = await readJson(request);
+      const classification = String(body.classification || '');
+      if (!['communication_check', 'condition_check', 'job_question', 'needs_context'].includes(classification)) throw serviceError('无效分类', 400);
+      const review = { questionId: String(body.questionId || '').slice(0, 80), classification, conditionType: body.conditionType || null, previousClassification: String(body.previousClassification || '').slice(0, 40), version: Number(body.version || 1), rawText: String(body.rawText || '').slice(0, 80), at: new Date().toISOString() };
+      await audit(context, 'interview-question.review', review.questionId || 'question', review);
+      return sendJson(response, 200, { ok: true, review });
+    }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
       const context = await guardAiRoute(request, '/api/generate');
       const payload = await readJson(request);
       validatePayload(payload);
       const startedAt = Date.now();
       try {
+        if (payload.action === 'classify-interview-questions') {
+          const result = await analyzeInterviewQuestions(payload, process.env.DEEPSEEK_API_KEY ? completeQuestionAi : null);
+          await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, result, startedAt }));
+          return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
+        }
         const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
         const result = finalizeGeneratedResult(payload, generated);
         await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, result, startedAt }));
@@ -902,7 +917,7 @@ async function loadMokaInterviews(context) {
 function buildMokaAnalytics(records = []) {
   const completed = records.filter(record => record.completed !== false);
   const transcripts = completed.map(record => String(record.transcript || '')).filter(Boolean);
-  const questions = transcripts.flatMap(text => text.split(/\n+/).map(line => line.trim()).filter(line => line.length >= 6 && /[？?]$/.test(line)));
+  const questions = completed.flatMap(record => classifyInterviewQuestions({ sessions: [{ id: record.id || 'moka', text: record.transcript || '', interviewer: record.interviewer || '', candidateName: record.candidateName || '', jobName: record.jobName || '' }], sessionCount: 1 }).items.filter(item => item.classification === 'job_question' || item.classification === 'condition_check').map(item => item.normalizedText || item.rawText));
   const followUpTerms = ['为什么', '如何', '具体', '负责', '结果', '规模', '上线', '核实', '确认', '追问'];
   const followUpSignals = transcripts.reduce((sum, text) => sum + followUpTerms.reduce((count, term) => count + (text.match(new RegExp(term, 'g')) || []).length, 0), 0);
   const topicDefinitions = [
@@ -1760,7 +1775,8 @@ function chooseCandidateName(...values) {
 }
 
 function validatePayload(payload) {
-  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer'].includes(payload.action)) throw serviceError('未知工作流步骤', 400);
+  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer', 'classify-interview-questions'].includes(payload.action)) throw serviceError('未知工作流步骤', 400);
+  if (payload.action === 'classify-interview-questions') return;
   if (payload.action === 'match' && (!payload.resume?.trim() || !Array.isArray(payload.jobs))) throw serviceError('请提供简历和岗位列表', 400);
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) throw serviceError('请填写 JD 和候选人简历', 400);
   if (payload.action === 'summarize' && !payload.transcript?.trim()) throw serviceError('请填写电话转写内容', 400);
@@ -1817,6 +1833,19 @@ function buildModelPrompt(payload) {
     instructions: `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`,
     input: JSON.stringify(payload)
   };
+}
+
+async function completeQuestionAi(prompt) {
+  const apiResponse = await fetch(process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: process.env.DEEPSEEK_MODEL || 'deepseek-chat', messages: [{ role: 'system', content: prompt.instructions }, { role: 'user', content: prompt.input }], response_format: { type: 'json_object' }, temperature: 0, stream: false })
+  });
+  if (!apiResponse.ok) throw new Error(`DeepSeek API error: ${apiResponse.status}`);
+  const data = await apiResponse.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('DeepSeek 未返回有效内容');
+  return JSON.parse(content);
 }
 
 async function generateWithDeepSeek(payload) {

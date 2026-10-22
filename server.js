@@ -4,6 +4,7 @@ const path = require('node:path');
 
 loadEnv(path.join(__dirname, '.env'));
 
+const { analyzeInterviewQuestions } = require('./cloudfunctions/acecall-api/interview-question-analysis');
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '127.0.0.1';
@@ -30,6 +31,10 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && request.url === '/api/generate') {
       const payload = await readJson(request);
       validatePayload(payload);
+      if (payload.action === 'classify-interview-questions') {
+        const result = await analyzeInterviewQuestions(payload, provider === 'deepseek' ? completeQuestionAi : null);
+        return sendJson(response, 200, { result, mode: provider === 'demo' ? 'demo' : 'ai', provider });
+      }
       const generated = provider === 'deepseek'
         ? await generateWithDeepSeek(payload)
         : provider === 'openai' ? await generateWithOpenAI(payload) : generateDemo(payload);
@@ -282,7 +287,8 @@ function demoInterviewerReview(payload) {
 }
 
 function validatePayload(payload) {
-  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
+  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer', 'classify-interview-questions'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
+  if (payload.action === 'classify-interview-questions') return;
   if (payload.action === 'match' && (!payload.resume?.trim() || !Array.isArray(payload.jobs))) throw Object.assign(new Error('请提供简历和岗位列表'), { statusCode: 400 });
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) {
     throw Object.assign(new Error('请填写 JD 和候选人简历'), { statusCode: 400 });
@@ -314,6 +320,19 @@ function buildModelPrompt(payload) {
   const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : payload.action === 'synthesize' ? synthesisSchema() : matchSchema();
   const instructions = `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`;
   return { instructions, input: JSON.stringify(payload) };
+}
+
+async function completeQuestionAi(prompt) {
+  const apiResponse = await fetch(process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: process.env.DEEPSEEK_MODEL || 'deepseek-chat', messages: [{ role: 'system', content: prompt.instructions }, { role: 'user', content: prompt.input }], response_format: { type: 'json_object' }, temperature: 0, stream: false })
+  });
+  if (!apiResponse.ok) throw new Error(`DeepSeek API error: ${apiResponse.status}`);
+  const data = await apiResponse.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('DeepSeek 未返回有效内容');
+  return JSON.parse(content);
 }
 
 async function generateWithDeepSeek(payload) {
