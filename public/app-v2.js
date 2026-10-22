@@ -954,12 +954,16 @@ function renderTranscriptReview() {
  }
 
  function intelligenceSourceRecords() {
-   // Industry intelligence uses the same interview record set as interviewer analysis.
-   // Only records with an actual synced transcript are eligible as evidence.
-   return interviewerRecords({}).filter(item => String(item.transcript || '').trim()).map(item => {
-     const candidate = app.cases.find(record => (item.id && record.id === item.id) || (item.candidateName && record.candidateName && item.candidateName === record.candidateName));
-     return { ...item, ...candidate ? { resume: candidate.resume || '', resumeMeta: candidate.resumeMeta || {}, currentCompany: candidate.currentCompany || candidate.resumeMeta?.currentCompany || '', companies: candidate.companies || candidate.resumeMeta?.companies || [], candidateId: candidate.id } : {}, sourceType: item.source === 'moka' ? '正式面试转写' : '面试转写' };
-   });
+   // Keep the exact transcript records used by interviewer analysis, but do not
+   // require the optional interviewer/date fields that can be absent in Moka exports.
+   const moka = app.mokaInterviews.map((item, index) => ({ ...item, source: 'moka', recordKey: item.id || item._id || `moka-${index}` }));
+   const local = app.cases.filter(item => String(item.transcript || '').trim()).map(item => ({ ...item, source: 'acecall', recordKey: item.id }));
+   return [...moka, ...local].map(item => {
+     const transcript = String(item.transcript || item.transcription || item.transcriptText || item.transcriptionText || item.transcriptContent || item.transcriptionContent || '').trim();
+     if (!transcript) return null;
+     const candidate = app.cases.find(record => (item.candidateId && record.id === item.candidateId) || (item.id && record.id === item.id) || (item.candidateName && record.candidateName && item.candidateName === record.candidateName));
+     return { ...item, transcript, ...candidate ? { resume: candidate.resume || '', resumeMeta: candidate.resumeMeta || {}, currentCompany: candidate.currentCompany || candidate.resumeMeta?.currentCompany || '', companies: candidate.companies || candidate.resumeMeta?.companies || [], candidateId: candidate.id } : {}, sourceType: item.source === 'moka' ? '正式面试转写' : '面试转写' };
+   }).filter(Boolean);
  }
 
  function extractCompanyEntities(text = '') {
