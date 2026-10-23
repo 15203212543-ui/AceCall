@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { getMokaConfig, mokaConnectionStatus, maskSecret, screeningFingerprint, buildScreeningNote, chooseMokaApplication, chooseOperatorEmail, syncScreeningComment } = require('./moka-client');
+const { getMokaConfig, mokaConnectionStatus, maskSecret, screeningFingerprint, buildScreeningNote, buildSalaryNote, chooseMokaApplication, chooseOperatorEmail, syncScreeningComment } = require('./moka-client');
 
 assert.deepEqual(getMokaConfig({}), {
   apiKey: '', baseUrl: '', enterpriseId: '', apiKeyHeader: 'Authorization', authMode: 'basic', apiKeyPrefix: '', interviewsPath: '/api-platform/v1/interviews', projectName: 'QS'
@@ -32,9 +32,32 @@ assert.doesNotMatch(note, /关键信息/);
 assert.match(note, /基本信息：/);
 assert.match(note, /1\. 经历匹配/);
 assert.match(note, /2\. 地点：上海/);
-assert.match(note, /3\. 期望薪资：待确认/);
+assert.doesNotMatch(note, /薪资|薪水|工资|年薪|月薪/);
 assert.match(note, /1\. 核对券商业务经验是否足以转岗/);
 assert.ok(note.indexOf('基本信息：') < note.indexOf('建议后续面试官重点关注：'));
+const salaryNote = buildSalaryNote(candidate);
+assert.match(salaryNote, /薪资信息：/);
+assert.match(salaryNote, /1\. 期望薪资：待确认/);
+assert.doesNotMatch(salaryNote, /地点：上海/);
+assert.doesNotMatch(salaryNote, /经历匹配/);
+const mixed = buildScreeningNote({
+  ...candidate,
+  communicationSummary: { keyFacts: { location: '上海', currentSalary: '年薪40万', expectedSalary: '45万' } },
+  report: { ...candidate.report, conclusionReason: '有5年合规经验，目前年薪40万。合同审核经验完整。', followUps: ['核对券商业务经验是否足以转岗', '确认薪资结构是否含年终'] }
+});
+const mixedSalary = buildSalaryNote({
+  ...candidate,
+  communicationSummary: { keyFacts: { location: '上海', currentSalary: '年薪40万', expectedSalary: '45万' } },
+  report: { ...candidate.report, conclusionReason: '有5年合规经验，目前年薪40万。合同审核经验完整。', followUps: ['核对券商业务经验是否足以转岗', '确认薪资结构是否含年终'] }
+});
+assert.match(mixed, /有5年合规经验/);
+assert.match(mixed, /合同审核经验完整/);
+assert.doesNotMatch(mixed, /年薪|薪资结构/);
+assert.match(mixedSalary, /目前年薪40万/);
+assert.match(mixedSalary, /当前薪资：年薪40万/);
+assert.match(mixedSalary, /期望薪资：45万/);
+assert.match(mixedSalary, /确认薪资结构是否含年终/);
+assert.doesNotMatch(mixedSalary, /合同审核经验完整/);
 assert.doesNotMatch(note, /性别：女/);
 assert.equal(note.length <= 4000, true);
 assert.equal(screeningFingerprint(candidate), screeningFingerprint({ ...candidate }));
@@ -60,18 +83,28 @@ async function runSyncCases() {
     async request(path, options) {
       calls.push({ path, body: JSON.parse(options.body) });
       if (path.endsWith('list_by_contact_or_id')) return { ok: true, status: 200, body: { data: { applicationList: applications } } };
-      return { ok: true, status: 200, body: { code: 200, data: { commentId: 44 } } };
+      return { ok: true, status: 200, body: { code: 200, data: { commentId: 43 + calls.filter(item => String(item.path).includes('addComment')).length } } };
     }
   };
   const synced = await syncScreeningComment(client, candidate, 'Owner@Example.com');
   assert.equal(synced.status, '已同步');
   assert.equal(synced.applicationId, '3');
   assert.equal(synced.commentId, '44');
+  assert.equal(synced.salaryCommentId, '45');
   assert.deepEqual(calls[0].body, { phoneList: ['13800000000'], emailList: ['lin@example.com'] });
   assert.equal(calls[1].body.applicationId, 3);
   assert.equal(calls[1].body.operatorEmail, 'owner@example.com');
   assert.match(calls[1].body.content, /基本信息：/);
-  assert.doesNotMatch(calls[1].body.content, /沟通总结/);
+  assert.doesNotMatch(calls[1].body.content, /期望薪资|沟通总结/);
+  assert.match(calls[2].body.content, /薪资信息：/);
+  assert.match(calls[2].body.content, /期望薪资：待确认/);
+
+  calls.length = 0;
+  const salaryRetry = await syncScreeningComment(client, candidate, 'owner@example.com', { status: '薪资备注写入失败', applicationId: '3', commentId: '44', reviewDecisionId: 'rd_same' });
+  assert.equal(salaryRetry.status, '已同步');
+  assert.equal(salaryRetry.salaryCommentId, '44');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].body.content, /薪资信息：/);
 
   calls.length = 0;
   const missingContact = await syncScreeningComment(client, { ...candidate, resumeMeta: {} }, 'owner@example.com');

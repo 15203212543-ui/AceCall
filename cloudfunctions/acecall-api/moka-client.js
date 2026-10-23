@@ -138,7 +138,7 @@ function screeningFingerprint(candidate = {}) {
     reviewConfirmed: candidate.reviewConfirmed === true || report.reviewConfirmed === true,
     reviewDecisionId: report.reviewDecisionId || candidate.reviewDecisionId || '',
     resume: clipText(candidate.resume, 600),
-    noteVersion: 'screening-note-v3'
+    noteVersion: 'screening-note-v4'
   })).digest('hex').slice(0, 24);
 }
 
@@ -154,7 +154,7 @@ function interviewerFocusPoints(candidate = {}) {
   const push = (value) => {
     const raw = typeof value === 'string' ? value : (value?.item || value?.topic || '');
     const text = clipText(raw, 80);
-    if (!text || points.includes(text)) return;
+    if (!text || points.includes(text) || isSalaryText(text)) return;
     points.push(text);
   };
   (Array.isArray(report.followUps) ? report.followUps : []).forEach(push);
@@ -166,7 +166,7 @@ function interviewerFocusPoints(candidate = {}) {
     });
     (Array.isArray(summary.missing) ? summary.missing : []).forEach(push);
     const facts = summary.keyFacts || {};
-    [['期望薪资', facts.expectedSalary], ['竞业', facts.nonCompete], ['到岗', facts.availability]].forEach(([label, value]) => {
+    [['竞业', facts.nonCompete], ['到岗', facts.availability]].forEach(([label, value]) => {
       if (/待确认|未明确|不清楚|没有明确|没说/.test(String(value || ''))) push(`${label}尚未确认，需要面试当面核实`);
     });
   }
@@ -180,6 +180,47 @@ function screeningWritePlan(record = {}, previous = null) {
   if (!confirmed) return { action: 'draft', status: '草稿', fingerprint, reviewDecisionId };
   if (previous?.status === '已同步' && previous.reviewDecisionId && previous.reviewDecisionId === reviewDecisionId) return { action: 'skip', status: '已同步', fingerprint: previous.fingerprint || fingerprint, reviewDecisionId };
   return { action: 'write', status: '待写入', fingerprint, reviewDecisionId };
+}
+
+function isSalaryText(value) {
+  return /薪资|薪水|工资|年薪|月薪|薪酬|底薪|税前|税后|总包|年包|月包|待遇|期望薪|当前薪|salary|compensation|\d+\s*[kK](?![A-Za-z])/i.test(String(value || ''));
+}
+
+function salaryClauses(text) {
+  const source = clipText(text, 160);
+  if (!source || !isSalaryText(source)) return { salary: [], rest: source };
+  const clauses = source.split(/[，,]/).map(part => part.trim()).filter(part => part.length >= 2);
+  if (clauses.length <= 1) return { salary: [source], rest: '' };
+  const salary = [];
+  const rest = [];
+  clauses.forEach(part => (isSalaryText(part) ? salary : rest).push(part));
+  return { salary, rest: rest.join('，') };
+}
+
+function pushUnique(bucket, value) {
+  const text = clipText(value, 160);
+  if (!text || bucket.some(item => item === text || item.includes(text) || text.includes(item))) return;
+  bucket.push(text);
+}
+
+function salaryInfoLines(candidate = {}) {
+  const summary = candidate.communicationSummary || {};
+  const report = candidate.report || {};
+  const facts = summary.keyFacts || {};
+  const lines = [];
+  distilledExperienceLines(report.conclusionReason).forEach(line => salaryClauses(line).salary.forEach(item => pushUnique(lines, item)));
+  [['当前薪资', facts.currentSalary], ['期望薪资', facts.expectedSalary]].forEach(([label, value]) => {
+    if (clipText(value, 160)) pushUnique(lines, `${label}：${clipText(value, 160)}`);
+  });
+  const mention = (value) => {
+    const raw = typeof value === 'string' ? value : (value?.item || value?.topic || '');
+    if (isSalaryText(raw)) pushUnique(lines, raw);
+  };
+  (Array.isArray(report.followUps) ? report.followUps : []).forEach(mention);
+  (Array.isArray(report.risks) ? report.risks : []).forEach(mention);
+  (Array.isArray(report.conflicts) ? report.conflicts : []).forEach(mention);
+  (Array.isArray(summary.missing) ? summary.missing : []).forEach(mention);
+  return lines.map((item, index) => `${index + 1}. ${item}`);
 }
 
 function distilledExperienceLines(value) {
@@ -201,16 +242,21 @@ function basicInfoLines(candidate = {}) {
     if (!text || points.some(item => item === text || item.includes(text) || text.includes(item))) return;
     points.push(text);
   };
-  distilledExperienceLines(report.conclusionReason).forEach(push);
+  distilledExperienceLines(report.conclusionReason).forEach(line => {
+    const rest = salaryClauses(line).rest;
+    if (rest && !isSalaryText(rest)) push(rest);
+  });
   [
     ['当前职位', facts.currentCompanyRole],
     ['地点', facts.location],
-    ['当前薪资', facts.currentSalary],
-    ['期望薪资', facts.expectedSalary],
     ['到岗', facts.availability],
     ['动机', facts.motivation],
     ['竞业', facts.nonCompete]
-  ].forEach(([label, value]) => { if (clipText(value, 160)) push(`${label}：${clipText(value, 160)}`); });
+  ].forEach(([label, value]) => {
+    const text = clipText(value, 160);
+    if (!text || isSalaryText(text)) return;
+    push(`${label}：${text}`);
+  });
   return points.map((item, index) => `${index + 1}. ${item}`);
 }
 
@@ -224,6 +270,18 @@ function buildScreeningNote(candidate = {}) {
   if (basics.length) lines.push('', '基本信息：', ...basics);
   if (focus.length) lines.push('', '建议后续面试官重点关注：', ...focus.map((item, index) => `${index + 1}. ${item}`));
   return lines.join('\n').slice(0, 4000);
+}
+
+function buildSalaryNote(candidate = {}) {
+  const lines = salaryInfoLines(candidate);
+  if (!lines.length) return '';
+  return [
+    `候选人：${clipText(candidate.candidateName, 40) || '未命名'}`,
+    `岗位：${clipText(candidate.roleName, 60) || '未分配'}`,
+    '',
+    '薪资信息：',
+    ...lines
+  ].join('\n').slice(0, 4000);
 }
 
 function applicationList(body) {
@@ -261,13 +319,40 @@ function syncResult(status, extra = {}) {
   return { status, syncedAt: new Date().toISOString(), ...extra };
 }
 
-async function syncScreeningComment(client, candidate = {}, operatorEmail = '') {
+function commentSucceeded(comment) {
+  const code = Number(comment.body?.code);
+  const commentId = comment.body?.data?.commentId || comment.body?.commentId || '';
+  return { ok: Boolean(comment.ok) && !(Number.isFinite(code) && code !== 0 && code !== 200), commentId: String(commentId), message: comment.body?.msg || comment.status };
+}
+
+async function postApplicationComment(client, applicationId, email, content) {
+  const comment = await client.request(client.config.commentPath, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      applicationId: /^\d{1,15}$/.test(String(applicationId)) ? Number(applicationId) : applicationId,
+      content,
+      operatorEmail: email
+    })
+  });
+  return commentSucceeded(comment);
+}
+
+async function syncScreeningComment(client, candidate = {}, operatorEmail = '', previous = null) {
   if (!client?.config?.baseUrl || !client?.config?.apiKey) return syncResult('未配置');
   const email = normalizeEmail(operatorEmail || client.config.operatorEmail);
   if (!email) return syncResult('缺少 Moka 操作人邮箱');
   const phone = normalizePhone(candidate.resumeMeta?.phone);
   const candidateEmail = normalizeEmail(candidate.resumeMeta?.email);
   if (!phone && !candidateEmail) return syncResult('缺少手机号或邮箱');
+  const salaryNote = buildSalaryNote(candidate);
+  const decisionId = String(candidate.report?.reviewDecisionId || candidate.reviewDecisionId || '');
+  const retrySalary = previous?.status !== '已同步' && previous?.commentId && previous.applicationId && !previous.salaryCommentId && salaryNote && (!decisionId || !previous.reviewDecisionId || decisionId === previous.reviewDecisionId);
+  if (retrySalary) {
+    const salary = await postApplicationComment(client, previous.applicationId, email, salaryNote);
+    if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, { applicationId: String(previous.applicationId), commentId: String(previous.commentId) });
+    return syncResult('已同步', { applicationId: String(previous.applicationId), commentId: String(previous.commentId), salaryCommentId: salary.commentId, candidateId: previous.candidateId || '', jobTitle: previous.jobTitle || '' });
+  }
   const lookupBody = {};
   if (phone) lookupBody.phoneList = [phone];
   if (candidateEmail) lookupBody.emailList = [candidateEmail];
@@ -280,26 +365,18 @@ async function syncScreeningComment(client, candidate = {}, operatorEmail = '') 
   const application = chooseMokaApplication(applicationList(lookup.body), candidate.roleName);
   const applicationId = application?.applicationId || application?.id;
   if (!applicationId) return syncResult('未匹配到 Moka 申请');
-  const comment = await client.request(client.config.commentPath, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      applicationId: /^\d{1,15}$/.test(String(applicationId)) ? Number(applicationId) : applicationId,
-      content: buildScreeningNote(candidate),
-      operatorEmail: email
-    })
-  });
-  const commentId = comment.body?.data?.commentId || comment.body?.commentId || '';
-  const code = Number(comment.body?.code);
-  if (!comment.ok || (Number.isFinite(code) && code !== 0 && code !== 200)) {
-    return syncResult(`Moka 备注写入失败（${comment.body?.msg || comment.status}）`, { applicationId: String(applicationId) });
-  }
-  return syncResult('已同步', {
+  const comment = await postApplicationComment(client, applicationId, email, buildScreeningNote(candidate));
+  if (!comment.ok) return syncResult(`Moka 备注写入失败（${comment.message}）`, { applicationId: String(applicationId) });
+  const synced = {
     applicationId: String(applicationId),
     candidateId: String(application.candidateBaseInfo?.candidateId || application.candidateId || ''),
-    commentId: String(commentId),
+    commentId: comment.commentId,
     jobTitle: application.job?.jobTitle || application.jobTitle || ''
-  });
+  };
+  if (!salaryNote) return syncResult('已同步', synced);
+  const salary = await postApplicationComment(client, applicationId, email, salaryNote);
+  if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, synced);
+  return syncResult('已同步', { ...synced, salaryCommentId: salary.commentId });
 }
 
 module.exports = {
@@ -311,6 +388,7 @@ module.exports = {
   screeningWritePlan,
   chooseOperatorEmail,
   buildScreeningNote,
+  buildSalaryNote,
   chooseMokaApplication,
   syncScreeningComment
 };

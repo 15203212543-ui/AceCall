@@ -1371,7 +1371,7 @@ async function resolveMokaSync(context, previousSync, record) {
   if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
   const operatorEmail = chooseOperatorEmail(context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
   try {
-    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail);
+    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail, previous);
     return { ...result, fingerprint, reviewDecisionId: plan.reviewDecisionId };
   } catch (error) {
     return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
