@@ -16,6 +16,7 @@ const { buildAiTaskRecord } = require('./ai-task');
 const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, presentCaseSummary, buildLegacyDocument } = require('./candidate-documents');
+const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -217,10 +218,12 @@ const server = http.createServer(async (request, response) => {
       }
     }
     if (request.method === 'POST' && url.pathname === '/api/parse-resume') {
-      await guardAiRoute(request, '/api/parse-resume');
+      const context = await guardAiRoute(request, '/api/parse-resume');
       const fileName = url.searchParams.get('name') || 'resume';
       const buffer = await readBuffer(request, 50 * 1024 * 1024);
-      return sendJson(response, 200, await parseResumeFile(fileName, buffer));
+      const parsed = await parseResumeFile(fileName, buffer);
+      parsed.metadata = { ...parsed.metadata, ...(await storeOriginalResume(context, fileName, buffer)) };
+      return sendJson(response, 200, parsed);
     }
     if (request.method === 'POST' && url.pathname === '/api/transcribe') {
       const context = await guardAiRoute(request, '/api/transcribe');
@@ -1345,6 +1348,9 @@ async function saveCandidate(context, id, input) {
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
   const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+  if (existingCandidate.data?.tenantId) assertSameTenant(existingCandidate.data, context);
+  const retainedResume = retainOriginalResume(candidate.resumeMeta, existingCandidate.data?.resumeMeta);
+  if (retainedResume) candidate.resumeMeta = retainedResume;
   const mokaSync = await resolveMokaSync(context, existingCandidate.data?.mokaSync, { ...candidate, ...screening, reviewConfirmed: screening.report?.reviewConfirmed === true });
   if (mokaSync) candidate.mokaSync = mokaSync;
   await Promise.all([
@@ -1689,6 +1695,14 @@ async function readBuffer(request, limit) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+async function storeOriginalResume(context, fileName, buffer) {
+  const cloudPath = originalResumeCloudPath(context.tenantId, fileName, Date.now(), crypto.randomBytes(4).toString('hex'));
+  const uploaded = await getCloudbaseApp().uploadFile({ cloudPath, fileContent: buffer });
+  const fileId = uploaded?.fileID || uploaded?.fileId || '';
+  if (!fileId) throw serviceError('简历原件上传失败', 502);
+  return originalResumeMeta(fileName, buffer, fileId);
 }
 
 async function parseResumeFile(fileName, buffer) {

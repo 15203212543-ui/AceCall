@@ -95,7 +95,7 @@ npm start
 
 如需启用模型，在 `.env` 中配置：
 
-Moka 接入采用服务端适配层。面试记录读取、简历上传和初筛备注回写都在云函数中完成，凭据只放在 CloudBase 云函数环境变量里：`MOKA_BASE_URL`、`MOKA_API_KEY`。简历上传还需要 `MOKA_SOURCE_ID`（Moka 渠道编号）。需要企业维度时再配置 `MOKA_ENTERPRISE_ID`。备注写入人优先使用当前成员用户名。用户名是邮箱时，就用它作为 Moka 操作人。后续会要求用户名统一为企业邮箱。在此之前，用户名还不是邮箱时，才使用云函数环境变量 `MOKA_OPERATOR_EMAIL` 兜底。招聘人员确认电话初筛后，系统先把简历原件上传到 AceCall 已匹配的 Moka 岗位；如果该岗位上已经有这位候选人的申请，就不再重复上传。简历进入 Moka 之后，再追加初筛备注。同一份确认不会重复写入。上传或写入失败只记录在候选人的同步状态上，不影响 AceCall 保存，也不修改已有申请的阶段。连接状态接口为 `GET /api/integrations/moka/status`。
+Moka 接入采用服务端适配层。面试记录读取、简历上传和初筛备注回写都在云函数中完成，凭据只放在 CloudBase 云函数环境变量里：`MOKA_BASE_URL`、`MOKA_API_KEY`。简历上传还需要 `MOKA_SOURCE_ID`（Moka 渠道编号）。需要企业维度时再配置 `MOKA_ENTERPRISE_ID`。备注写入人优先使用当前成员用户名。用户名是邮箱时，就用它作为 Moka 操作人。后续会要求用户名统一为企业邮箱。在此之前，用户名还不是邮箱时，才使用云函数环境变量 `MOKA_OPERATOR_EMAIL` 兜底。桌面助手或网页解析简历时，原件会先存入云存储，页面可以查看原件。招聘人员确认电话初筛后，系统先把这份简历原件上传到 AceCall 已匹配的 Moka 岗位；如果该岗位上已经有这位候选人的申请，就不再重复上传。简历进入 Moka 之后，再追加初筛备注。同一份确认不会重复写入。上传或写入失败只记录在候选人的同步状态上，不影响 AceCall 保存，也不修改已有申请的阶段。连接状态接口为 `GET /api/integrations/moka/status`。
 
 ```env
 DEEPSEEK_API_KEY=your_key

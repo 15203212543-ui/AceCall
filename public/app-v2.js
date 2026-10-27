@@ -1131,7 +1131,7 @@ async function retryImport(id) {
   const candidate = app.cases.find(item => item.id === id); const file = importFileCache.get(candidate?.ingestFileKey);
   if (!candidate || !file) return toast('原文件已不在当前会话，请重新选择文件');
   candidate.ingestStatus = '解析中'; renderCurrent();
-  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = result.metadata; candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
+  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
 }
 
 function renderCandidates() {
@@ -1905,6 +1905,7 @@ async function generate(payload) {
 
 async function persistOriginalResume(candidateId, file, metadata = {}) {
   const clean = { ...metadata }; delete clean.originalFile;
+  if (clean.originalFileId) return { ...clean, originalFileName: clean.originalFileName || file?.name || clean.fileName || '', originalMimeType: clean.originalMimeType || file?.type || '', originalFileSize: clean.originalFileSize || file?.size || 0 };
   if (!file || !cloudbaseClient || !REMOTE_BACKEND) return { ...clean, originalFileName: file?.name || clean.fileName, originalMimeType: file?.type || '', originalFileSize: file?.size || 0 };
   const safeName = file.name.replace(/[^\w.-]+/g, '_');
   const result = await cloudbaseClient.uploadFile({ cloudPath: `acecall/resumes/${candidateId}/${Date.now()}-${safeName}`, filePath: file });
