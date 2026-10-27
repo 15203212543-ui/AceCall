@@ -1415,7 +1415,7 @@ async function retryImport(id) {
   const candidate = app.cases.find(item => item.id === id); const file = importFileCache.get(candidate?.ingestFileKey);
   if (!candidate || !file) return toast('原文件已不在当前会话，请重新选择文件');
   candidate.ingestStatus = '解析中'; renderCurrent();
-  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
+  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName, candidate.resumeMeta?.fileName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
 }
 
 function renderCandidates() {
@@ -1707,7 +1707,7 @@ function openCandidateDialog() {
 async function createCandidate(event) {
   event.preventDefault(); const selectedJob = app.jobs.find(item => item.id === $('#candidateJobInput').value); const capturedAt = new Date().toISOString(); const candidate = { id: crypto.randomUUID(), jobId: selectedJob?.id || '', candidateName: $('#candidateNameInput').value.trim(), roleName: selectedJob?.name || '', jd: selectedJob?.jd || '', rules: selectedJob?.rules || '', keywords: selectedJob?.keywords || [], resume: $('#candidateResumeInput').value.trim(), resumeMeta: app.resumeMeta, createdAt: capturedAt, updatedAt: capturedAt, capturedAt, capturedBy: currentActor() };
   if (!candidate.candidateName || !candidate.resume) return toast('请填写候选人姓名和简历');
-  if (!selectedJob) { const match = await matchResumeToJobs(candidate.resume, candidate.candidateName); applyJobMatch(candidate, match); }
+  if (!selectedJob) { const match = await matchResumeToJobs(candidate.resume, candidate.candidateName, candidate.resumeMeta?.fileName); applyJobMatch(candidate, match); }
   if (app.resumeFile) candidate.resumeMeta = await persistOriginalResume(candidate.id, app.resumeFile, candidate.resumeMeta || {});
   app.cases.unshift(candidate); persistCases(candidate); $('#candidateDialog').close(); app.candidateId = candidate.id; app.detailTab = 'overview'; navigate('candidate');
   await generatePreparation(candidate);
@@ -1730,7 +1730,7 @@ async function importResumeBatch(files, options = {}) {
       if (!looksLikeResume(result.text)) throw new Error('文件内容不像简历，已跳过，请确认文件后重试');
       candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, file, result.metadata); candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
       const sameContact = app.cases.find(item => item.id !== candidate.id && ((result.metadata.phone && item.resumeMeta?.phone === result.metadata.phone) || (result.metadata.email && item.resumeMeta?.email && item.resumeMeta.email.toLowerCase() === result.metadata.email.toLowerCase())));
-      const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
+      const match = await matchResumeToJobs(candidate.resume, candidate.candidateName, candidate.resumeMeta?.fileName || file.name);
       applyJobMatch(candidate, match); candidate.ingestStatus = sameContact ? '重复待确认' : '已入库'; candidate.duplicateOf = sameContact?.id || ''; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
     } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; candidate.ingestFileKey = fileKey; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); }
     renderCurrent();
@@ -1778,8 +1778,8 @@ async function parseResumeFileForImport(file) {
   const data = await response.json(); if (!response.ok) throw new Error(data.error || '简历解析失败'); data.metadata = { ...(data.metadata || {}), originalFile: file }; return data;
 }
 
-async function matchResumeToJobs(resume, candidateName = '') {
-  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, required: job.required, bonus: job.bonus, exclusions: job.exclusions, verify: job.verify, profile: job.profile, rules: job.rules })) });
+async function matchResumeToJobs(resume, candidateName = '', fileName = '') {
+  const response = await generate({ action: 'match', candidateName, fileName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, location: job.location, industry: job.industry, jd: job.jd, keywords: job.keywords, required: job.required, bonus: job.bonus, exclusions: job.exclusions, verify: job.verify, profile: job.profile, rules: job.rules })) });
   return response;
 }
 
@@ -1793,6 +1793,7 @@ function applyJobMatch(candidate, match) {
     candidate.assignmentSource = 'automatic'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = candidate.assignedAt || new Date().toISOString();
   } else {
     candidate.jobId = ''; candidate.roleName = ''; candidate.jd = ''; candidate.rules = ''; candidate.keywords = [];
+    candidate.assignmentSource = ''; candidate.assignmentStatus = ''; candidate.assignedAt = '';
   }
   const suggestedJobId = match?.suggestedJobId || primary?.id || match?.jobId || '';
   candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId, score, status: assignable ? '已分配' : (match?.status || '待分配'), assignmentReview: !assignable, assignmentReviewReason: assignable ? '' : (!suggestedJobId ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '需要人工确认岗位') };
@@ -1800,10 +1801,11 @@ function applyJobMatch(candidate, match) {
 
 async function reconcilePendingAssignments() {
   if (assignmentReconcileInFlight || !REMOTE_BACKEND) return;
-  const pending = app.cases.filter(item => !item.jobId && item.resumeMeta?.source === 'local-sync-agent' && item.documentId);
+  const pending = app.cases.filter(item => item.documentId && !['manual', 'manual-confirmation'].includes(item.assignmentSource) && Number(item.matching?.ruleVersion || 0) < 2).slice(0, 30);
   if (!pending.length) return;
   assignmentReconcileInFlight = true;
   let assigned = 0;
+  let reviewed = 0;
   try {
     for (const candidate of pending) {
       try {
@@ -1811,11 +1813,11 @@ async function reconcilePendingAssignments() {
         const document = await documentResponse.json().catch(() => ({}));
         const resume = documentResponse.ok ? (document.cleanedText || document.rawText || '') : '';
         if (!resume) continue;
-        const match = await matchResumeToJobs(resume, candidate.candidateName);
+        const match = await matchResumeToJobs(resume, candidate.candidateName, candidate.resumeMeta?.fileName);
         applyJobMatch(candidate, match);
-        if (!candidate.jobId) continue;
-        candidate.ingestStatus = '已入库'; candidate.assignmentSource = 'automatic'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = new Date().toISOString(); candidate.updatedAt = candidate.assignedAt;
-        persistCases(candidate); assigned += 1;
+        candidate.ingestStatus = candidate.jobId ? '已入库' : '已解析待分配';
+        candidate.updatedAt = new Date().toISOString();
+        persistCases(candidate); reviewed += 1; if (candidate.jobId) assigned += 1;
       } catch (error) {
         console.warn('[AceCall assignment reconcile candidate]', candidate.id, error);
       }
@@ -1823,7 +1825,7 @@ async function reconcilePendingAssignments() {
   } finally {
     assignmentReconcileInFlight = false;
   }
-  if (assigned) { renderCurrent(); toast(`已自动完成 ${assigned} 份简历的岗位分配`); }
+  if (reviewed) { renderCurrent(); toast(`已按新规则复核 ${reviewed} 份简历，其中 ${assigned} 份自动分配`); }
 }
 
 async function generatePreparation(candidate) {
