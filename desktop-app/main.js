@@ -6,7 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { SyncAgent, platformPolicy } = require('./local-sync-agent');
 
-const DEFAULT_API_BASE = 'https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api';
+const DEFAULT_API_BASE = 'https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api-v2';
 let window;
 let agent;
 let currentDirectory = '';

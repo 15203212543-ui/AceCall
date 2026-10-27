@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test",
-    "sync-agent": "node local-sync-agent/index.js"
+    "sync-agent": "node index.js"
   },
   "engines": {
     "node": ">=18"
