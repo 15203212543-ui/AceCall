@@ -10,6 +10,10 @@ test('history shows the capturing account, upload time, and Moka HR', async () =
     ingestSource: 'folder-watch',
     capturedBy: { name: '演示HR', email: 'wei@example.com' },
     capturedAt: '2026-10-27T01:02:00.000Z',
+    jobId: 'job-1',
+    roleName: '数据分析师',
+    assignmentSource: 'automatic',
+    assignedAt: '2026-10-27T01:03:00.000Z',
     report: { reviewConfirmed: true },
     reviewConfirmed: true,
     mokaSync: { status: '已同步', operatorName: '演示HR', syncedAt: '2026-10-27T03:05:00.000Z' }
@@ -18,6 +22,8 @@ test('history shows the capturing account, upload time, and Moka HR', async () =
   assert.equal(events[0].title, '简历抓取上传');
   assert.equal(events[0].at, '2026-10-27T01:02:00.000Z');
   assert.match(events[0].detail, /演示HR · 文件夹监听/);
+  assert.equal(events[1].title, '自动分配岗位');
+  assert.equal(events[1].detail, '数据分析师');
   assert.equal(events.at(-1).title, '同步 Moka');
   assert.match(events.at(-1).detail, /演示HR · 已同步/);
   assert.equal(events.find(event => event.title === '招聘人员确认结果').detail, '演示HR');

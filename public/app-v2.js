@@ -73,6 +73,7 @@ let candidatePage = 1;
 let candidatePageSize = 8;
 let candidateFitPasses = 0;
 let expandedAssignmentId = '';
+let expandedQualityId = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
 let pendingTeamRule = '';
@@ -1279,6 +1280,10 @@ function renderInbox() {
     expandedAssignmentId = expandedAssignmentId === button.dataset.toggleAssignment ? '' : button.dataset.toggleAssignment;
     renderInbox();
   }));
+  $$('#inboxView [data-toggle-quality]').forEach(button => button.addEventListener('click', () => {
+    expandedQualityId = expandedQualityId === button.dataset.toggleQuality ? '' : button.dataset.toggleQuality;
+    renderInbox();
+  }));
   $$('#inboxView [data-confirm-assignment]').forEach(button => button.addEventListener('click', () => confirmCandidateAssignment(button.dataset.confirmAssignment)));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
   $$('#inboxView [data-inbox-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; inboxQueueFitPasses = 0; inboxQueuePage = Number(button.dataset.inboxPage) || 1; renderInbox(); }));
@@ -1321,9 +1326,13 @@ function resumeQueueRow(item) {
   const meta = item.resumeMeta || {};
   const quality = resumeQuality(item);
   const duplicateLabel = item.ingestStatus === '重复待确认' ? '<span class="status warn resume-duplicate">疑似重复</span>' : '';
-  const source = captureSourceLabel(item) || '手动导入';
+  const primaryLabel = meta.fileName || item.candidateName || '文本录入';
+  const qualityDetail = quality.missing ? `缺少：${quality.missing}` : '基础字段完整';
+  const qualityMarkup = quality.level === 'good'
+    ? `<span class="quality quality-${quality.level}">${quality.label}</span>`
+    : `<span class="quality-control"><button class="quality quality-${quality.level}" type="button" data-toggle-quality="${escapeHtml(item.id)}" aria-expanded="${expandedQualityId === item.id}">${quality.label}</button>${expandedQualityId === item.id ? `<span class="quality-popover">${escapeHtml(qualityDetail)}</span>` : ''}</span>`;
   const action = item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? `<button class="link-action" data-retry-import="${item.id}">重试</button>` : `<button class="link-action" data-open-candidate="${item.id}">查看 →</button>`;
-  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small><small class="resume-source">${escapeHtml(source)} · ${formatDate(item.createdAt || item.updatedAt)} ${duplicateLabel}</small></td><td>${assignmentCell(item)}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${action}</td></tr>`;
+  return `<tr><td><strong>${escapeHtml(primaryLabel)}</strong>${duplicateLabel}</td><td>${assignmentCell(item)}</td><td>${qualityMarkup}</td><td>${action}</td></tr>`;
 }
 
 function assignmentState(item) {
@@ -1337,7 +1346,7 @@ function assignmentState(item) {
 }
 
 function assignmentCell(item) {
-  if (item.jobId) return `<strong>${escapeHtml(item.roleName || app.jobs.find(job => job.id === item.jobId)?.name || '已分配')}</strong><small>${item.assignmentSource === 'manual-confirmation' ? '已人工确认' : '已自动分配'}</small>`;
+  if (item.jobId) return `<strong>${escapeHtml(item.roleName || app.jobs.find(job => job.id === item.jobId)?.name || '已分配')}</strong>`;
   const result = [...(item.matching?.results || [])].sort((left, right) => Number(right.score || 0) - Number(left.score || 0))[0];
   const state = assignmentState(item);
   const suggestedId = state === 'review' ? (item.matching?.suggestedJobId || item.matching?.jobId || result?.jobId || '') : '';
@@ -1349,7 +1358,7 @@ function assignmentCell(item) {
     : (!app.jobs.some(job => job.status !== 'closed') ? '当前没有在招岗位' : quality.level !== 'good' ? `简历关键信息不足：${quality.missing}` : score ? `最高匹配度仅 ${score} 分，未达到推荐标准` : '未识别到与在招岗位相关的经历');
   const options = app.jobs.filter(job => job.status !== 'closed').map(job => `<option value="${escapeHtml(job.id)}"${job.id === suggestedId ? ' selected' : ''}>${escapeHtml(job.name)}</option>`).join('');
   const expanded = expandedAssignmentId === item.id;
-  return `<div class="queue-assignment-summary"><span class="status warn">${status}</span><button class="link-action" type="button" data-toggle-assignment="${escapeHtml(item.id)}">${expanded ? '收起' : state === 'review' ? '确认岗位' : '手动分配'}</button></div><small>${escapeHtml(reason)}</small>${expanded ? `<div class="queue-assignment-editor"><span>${state === 'review' ? '系统推荐岗位，确认后才会正式分配' : '请选择合适岗位后确认分配'}</span><div class="queue-assignment"><select data-assignment-select="${escapeHtml(item.id)}"><option value="">选择岗位</option>${options}</select><button class="primary" type="button" data-confirm-assignment="${escapeHtml(item.id)}">确认分配</button></div></div>` : ''}`;
+  return `<div class="queue-assignment-summary"><span class="status warn">${status}</span><button class="link-action" type="button" data-toggle-assignment="${escapeHtml(item.id)}">${expanded ? '收起' : state === 'review' ? '确认岗位' : '手动分配'}</button></div>${expanded ? `<div class="queue-assignment-editor"><span>${escapeHtml(reason)}</span><div class="queue-assignment"><select data-assignment-select="${escapeHtml(item.id)}"><option value="">选择岗位</option>${options}</select><button class="primary" type="button" data-confirm-assignment="${escapeHtml(item.id)}">确认分配</button></div></div>` : ''}`;
 }
 
 function confirmCandidateAssignment(id) {
@@ -1746,6 +1755,7 @@ function applyJobMatch(candidate, match) {
   const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && score >= 60 && (!secondScore || score - secondScore >= 8);
   if (assignable) {
     candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
+    candidate.assignmentSource = 'automatic'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = candidate.assignedAt || new Date().toISOString();
   } else {
     candidate.jobId = ''; candidate.roleName = ''; candidate.jd = ''; candidate.rules = ''; candidate.keywords = [];
   }
