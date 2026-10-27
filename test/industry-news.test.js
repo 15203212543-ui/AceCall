@@ -53,5 +53,30 @@ test('homepage cards hide an empty period and do not call a filing an industry t
   assert.match(markup, /单条公告/);
   assert.match(markup, /不作为行业趋势/);
   assert.equal(markup.includes('>行业趋势<'), false);
+  assert.equal(markup.includes('上一页'), false);
   assert.equal(industryNewsMarkup(items, '30', Date.parse('2026-10-27T00:00:00Z')), '<div class="intelligence-home-empty">本期无外部动态。</div>');
+});
+
+test('homepage shows three filings per page', async () => {
+  const { industryNewsMarkup } = await import('../public/industry-news-cards.mjs');
+  const items = [1, 2, 3, 4].map(index => ({
+    title: `公告${index}`,
+    summary: '单条公告不作为行业趋势。',
+    company: '富途控股',
+    url: `https://www.sec.gov/Archives/${index}.htm`,
+    publishedAt: `2026-08-0${index}T00:00:00.000Z`,
+    intelligenceType: '外部公告',
+    trend: false
+  }));
+  const now = Date.parse('2026-10-27T00:00:00Z');
+  const first = industryNewsMarkup(items, 'all', now, '本期无外部动态。', 1);
+  assert.match(first, /公告1/);
+  assert.match(first, /公告3/);
+  assert.equal(first.includes('公告4'), false);
+  assert.match(first, /第 1 \/ 2 页/);
+  const second = industryNewsMarkup(items, 'all', now, '本期无外部动态。', 2);
+  assert.match(second, /公告4/);
+  assert.equal(second.includes('公告1'), false);
+  assert.match(second, /第 2 \/ 2 页/);
+  assert.equal((second.match(/intelligence-external-card/g) || []).length, 1);
 });
