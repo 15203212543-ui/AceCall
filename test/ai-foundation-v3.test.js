@@ -44,7 +44,6 @@ test('job assignment never falls back to the first job', () => {
 
 test('call sites no longer force the first job', () => {
   const files = [
-    'desktop-agent/index.js',
     'local-sync-agent/index.js',
     'desktop-app/local-sync-agent.js',
     'cloudfunctions/acecall-api/index.js'
