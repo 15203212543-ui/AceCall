@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
 const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
+const { actorFromMember, rememberCapture, attributeMokaOperator } = require('./capture-history');
 const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
@@ -1345,13 +1346,12 @@ async function saveCandidate(context, id, input) {
   const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome', 'assignmentSource', 'assignmentStatus', 'assignedAt', 'assignedBy']);
   candidate.id = id;
   candidate.tenantId = context.tenantId;
-  candidate.createdBy = context.uid;
   candidate.updatedBy = context.uid;
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
   const existingScreening = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
-  const previousScreening = existingScreening.data || {};
+  const previousScreening = Array.isArray(existingScreening.data) ? (existingScreening.data[0] || {}) : (existingScreening.data || {});
   if (previousScreening.tenantId) assertSameTenant(previousScreening, context);
   for (const key of ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) {
     if (screening[key] === undefined && previousScreening[key] !== undefined) screening[key] = previousScreening[key];
@@ -1359,24 +1359,32 @@ async function saveCandidate(context, id, input) {
   candidate.status = deriveStatus({ ...input, report: screening.report, communicationSummary: screening.communicationSummary, preparation: screening.preparation });
   screening.id = id;
   screening.tenantId = context.tenantId;
-  screening.createdBy = context.uid;
+  screening.createdBy = previousScreening.createdBy || context.uid;
   screening.updatedBy = context.uid;
   screening.candidateId = id;
   screening.jobId = input.jobId || '';
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
   const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
-  if (existingCandidate.data?.tenantId) assertSameTenant(existingCandidate.data, context);
-  const retainedResume = retainOriginalResume(candidate.resumeMeta, existingCandidate.data?.resumeMeta);
+  const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
+  if (storedCandidate?.tenantId) assertSameTenant(storedCandidate, context);
+  candidate.createdBy = storedCandidate?.createdBy || context.uid;
+  const actor = actorFromMember(context.member, context.uid);
+  const capture = rememberCapture(storedCandidate, candidate, actor, now);
+  if (capture.capturedBy) {
+    candidate.capturedBy = capture.capturedBy;
+    candidate.capturedAt = capture.capturedAt;
+  }
+  const retainedResume = retainOriginalResume(candidate.resumeMeta, storedCandidate?.resumeMeta);
   if (retainedResume) candidate.resumeMeta = retainedResume;
-  const mokaSync = await resolveMokaSync(context, existingCandidate.data?.mokaSync, { ...candidate, ...screening, reviewConfirmed: screening.report?.reviewConfirmed === true });
+  const mokaSync = await resolveMokaSync(context, storedCandidate?.mokaSync, { ...candidate, ...screening, reviewConfirmed: screening.report?.reviewConfirmed === true });
   if (mokaSync) candidate.mokaSync = mokaSync;
   await Promise.all([
     db.collection(COLLECTIONS.candidates).doc(id).set(candidate),
     db.collection(COLLECTIONS.screenings).doc(id).set(screening)
   ]);
   await audit(context, 'candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status, mokaSync: candidate.mokaSync?.status || '' });
-  return { ok: true, id, mokaSync: candidate.mokaSync || null };
+  return { ok: true, id, mokaSync: candidate.mokaSync || null, capturedBy: candidate.capturedBy || null, capturedAt: candidate.capturedAt || '' };
 }
 
 function hasScreeningResult(record) {
@@ -1409,7 +1417,9 @@ async function resolveMokaSync(context, previousSync, record) {
   if (plan.action === 'draft') return { status: '草稿', fingerprint: plan.fingerprint, reviewDecisionId: plan.reviewDecisionId };
   const fingerprint = plan.fingerprint;
   if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
-  const operatorEmail = chooseOperatorEmail(context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
+  const actor = actorFromMember(context.member, context.uid);
+  const operatorEmail = chooseOperatorEmail(actor.email || context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
+  const attributed = result => attributeMokaOperator(result, actor, operatorEmail);
   try {
     const jobResult = record.jobId ? await getDatabase().collection(COLLECTIONS.jobs).doc(record.jobId).get().catch(() => ({ data: null })) : { data: null };
     const job = jobResult.data && (!jobResult.data.tenantId || jobResult.data.tenantId === context.tenantId) ? jobResult.data : null;
@@ -1420,13 +1430,13 @@ async function resolveMokaSync(context, previousSync, record) {
         const buffer = await downloadCloudFile(fileId);
         if (buffer?.length) resumeFile = { buffer, fileName: record.resumeMeta.originalFileName || record.resumeMeta.fileName || 'resume.pdf', mimeType: record.resumeMeta.originalMimeType || 'application/octet-stream' };
       } catch (error) {
-        return { status: `简历原件读取失败：${String(error.message || '未知错误').slice(0, 80)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
+        return attributed({ status: `简历原件读取失败：${String(error.message || '未知错误').slice(0, 80)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() });
       }
     }
-    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail, previous, { mokaJobId: job?.mokaJobId || '', resumeFile });
-    return { ...result, fingerprint, reviewDecisionId: plan.reviewDecisionId };
+    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail, previous, { mokaJobId: job?.mokaJobId || '', resumeFile, operatorName: actor.name });
+    return attributed({ ...result, fingerprint, reviewDecisionId: plan.reviewDecisionId });
   } catch (error) {
-    return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
+    return attributed({ status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() });
   }
 }
 

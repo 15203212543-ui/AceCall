@@ -343,6 +343,12 @@ function syncResult(status, extra = {}) {
   return { status, syncedAt: new Date().toISOString(), ...extra };
 }
 
+function signedNote(note, name) {
+  const person = String(name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 40);
+  if (!person || !note) return note;
+  return `${note}\n\n操作人：${person}`.slice(0, 4000);
+}
+
 function commentSucceeded(comment) {
   const code = Number(comment.body?.code);
   const commentId = comment.body?.data?.commentId || comment.body?.commentId || '';
@@ -403,7 +409,7 @@ async function postApplicationComment(client, applicationId, email, content) {
   return commentSucceeded(comment);
 }
 
-async function writeScreeningNotes(client, application, email, candidate, salaryNote) {
+async function writeScreeningNotes(client, application, email, candidate, salaryNote, operatorName = '') {
   const applicationId = application?.applicationId || application?.id;
   const base = {
     applicationId: String(applicationId),
@@ -411,11 +417,11 @@ async function writeScreeningNotes(client, application, email, candidate, salary
     jobTitle: application.job?.jobTitle || application.jobTitle || '',
     mokaJobId: applicationJobId(application)
   };
-  const comment = await postApplicationComment(client, applicationId, email, buildScreeningNote(candidate));
+  const comment = await postApplicationComment(client, applicationId, email, signedNote(buildScreeningNote(candidate), operatorName));
   if (!comment.ok) return syncResult(`Moka 备注写入失败（${comment.message}）`, base);
   const synced = { ...base, commentId: comment.commentId };
   if (!salaryNote) return syncResult('已同步', synced);
-  const salary = await postApplicationComment(client, applicationId, email, salaryNote);
+  const salary = await postApplicationComment(client, applicationId, email, signedNote(salaryNote, operatorName));
   if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, synced);
   return syncResult('已同步', { ...synced, salaryCommentId: salary.commentId });
 }
@@ -430,12 +436,12 @@ async function syncScreeningComment(client, candidate = {}, operatorEmail = '', 
   const decisionId = String(candidate.report?.reviewDecisionId || candidate.reviewDecisionId || '');
   const retrySalary = previous?.status !== '已同步' && previous?.commentId && previous.applicationId && !previous.salaryCommentId && salaryNote && (!decisionId || !previous.reviewDecisionId || decisionId === previous.reviewDecisionId);
   if (retrySalary) {
-    const salary = await postApplicationComment(client, previous.applicationId, email, salaryNote);
+    const salary = await postApplicationComment(client, previous.applicationId, email, signedNote(salaryNote, delivery?.operatorName));
     if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, { applicationId: String(previous.applicationId), commentId: String(previous.commentId), candidateId: previous.candidateId || '', mokaJobId: previous.mokaJobId || '' });
     return syncResult('已同步', { applicationId: String(previous.applicationId), commentId: String(previous.commentId), salaryCommentId: salary.commentId, candidateId: previous.candidateId || '', jobTitle: previous.jobTitle || '', mokaJobId: previous.mokaJobId || '' });
   }
   const retryNote = previous?.applicationId && !previous.commentId && String(previous.status || '').includes('备注写入失败');
-  if (retryNote) return writeScreeningNotes(client, { applicationId: previous.applicationId, candidateId: previous.candidateId || '', job: { jobId: previous.mokaJobId || '', jobTitle: previous.jobTitle || '' }, jobTitle: previous.jobTitle || '' }, email, candidate, salaryNote);
+  if (retryNote) return writeScreeningNotes(client, { applicationId: previous.applicationId, candidateId: previous.candidateId || '', job: { jobId: previous.mokaJobId || '', jobTitle: previous.jobTitle || '' }, jobTitle: previous.jobTitle || '' }, email, candidate, salaryNote, delivery?.operatorName);
   if (!phone && !candidateEmail && !delivery?.resumeFile) return syncResult('缺少手机号或邮箱');
   let application = null;
   if (phone || candidateEmail) {
@@ -463,7 +469,7 @@ async function syncScreeningComment(client, candidate = {}, operatorEmail = '', 
     if (!uploaded.ok) return syncResult(`简历上传失败（${uploaded.message}）`, { mokaJobId });
     application = { applicationId: uploaded.applicationId, candidateId: uploaded.candidateId, job: { jobId: uploaded.jobId || mokaJobId, jobTitle: candidate.roleName || '' } };
   }
-  return writeScreeningNotes(client, application, email, candidate, salaryNote);
+  return writeScreeningNotes(client, application, email, candidate, salaryNote, delivery?.operatorName);
 }
 
 module.exports = {

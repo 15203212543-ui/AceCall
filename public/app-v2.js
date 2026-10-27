@@ -2,6 +2,7 @@ import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+es
 import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports, clearDeferredCaches, noteDeferredTenant } from './interviewer-page.js?v=__ACE_CALL_BUILD__';
 import { recordingDockVisible, recordingOnCallPage, recordingStatusLabel } from './recording-session.mjs?v=__ACE_CALL_BUILD__';
 import { industryNewsMarkup } from './industry-news-cards.mjs?v=__ACE_CALL_BUILD__';
+import { captureSourceLabel, historyEvents } from './history-events.mjs?v=__ACE_CALL_BUILD__';
 
 // auth-session.js 以普通脚本形式先于本文件加载，负责判定匿名身份。
 // 匿名令牌（publishable key 自动生成的 scope=anonymous / sub=anon）会被网关
@@ -1272,7 +1273,7 @@ function resumeQueueRow(item) {
   const quality = resumeQuality(item);
   const duplicateLabel = item.ingestStatus === '重复待确认' ? '<span class="status warn">疑似重复</span>' : '<span class="status">未发现</span>';
   const action = item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? `<button class="link-action" data-retry-import="${item.id}">重试</button>` : `<button class="link-action" data-open-candidate="${item.id}">查看 →</button>`;
-  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${assignmentCell(item)}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(item.ingestSource === 'folder-watch' ? '文件夹监听' : item.ingestSource === 'folder' ? '文件夹导入' : '手动导入')}</td><td>${action}</td></tr>`;
+  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${assignmentCell(item)}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(captureSourceLabel(item) || '手动导入')}<small>${escapeHtml(item.capturedBy?.name || '')}</small></td><td>${action}</td></tr>`;
 }
 
 function assignmentCell(item) {
@@ -1295,6 +1296,7 @@ function confirmCandidateAssignment(id) {
   candidate.matching = { ...(candidate.matching || {}), jobId: job.id, suggestedJobId: job.id, status: '已分配', assignmentReview: false, assignmentReviewReason: '', confirmedManually: true };
   candidate.ingestStatus = '已入库'; candidate.assignmentSource = 'manual-confirmation'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = new Date().toISOString(); candidate.updatedAt = candidate.assignedAt;
   persistCases(candidate); renderInbox(); toast(`已将${candidate.candidateName || '该候选人'}分配至${job.name}`);
+
 }
 
 function resumeQuality(item) {
@@ -1487,7 +1489,7 @@ function resultTab(item) {
 }
 
 function resumeTab(item) { const meta=item.resumeMeta||{}; const original = meta.originalFileId; const preview = meta.originalTempUrl; const originalView = original ? (meta.originalMimeType === 'application/pdf' && preview ? `<div class="resume-original"><iframe title="原始PDF简历" src="${escapeHtml(preview)}"></iframe></div>` : `<div class="resume-original resume-original-file"><p>Word 原文件已保存，可按原格式打开查看。</p><button class="secondary" data-resume-download type="button">打开 / 下载原简历</button></div>`) : ''; return `<div class="surface"><div class="surface-head"><div><h2>候选人简历</h2><p class="surface-subtitle">${original ? '原始文件优先，解析文本用于搜索和AI分析' : '文本录入'}</p></div><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'待确认')}${item.resumeMeta?.candidateNameStatus === '待确认' ? '（待确认）' : ''}</b></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'待确认')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'待确认')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'待确认')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'待确认')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'待确认')}</b></div></div>${originalView}<details class="resume-text-fallback" ${original ? '' : 'open'}><summary>查看解析文本</summary><pre>${escapeHtml(item.resume || '暂无简历内容')}</pre></details></div></div>`; }
-function historyTab(item) { const events = [['建立候选人档案',item.createdAt],(item.preparation || item.hasPreparation)&&['AI完成电话准备',item.createdAt],(item.communicationSummary || item.hasSummary)&&['生成沟通总结',item.updatedAt],(item.report || item.hasReport)&&['生成综合初筛结果',item.updatedAt],(item.report?.reviewConfirmed || item.reviewConfirmed)&&['招聘人员确认结果',item.updatedAt]].filter(Boolean); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact"><span>${formatDate(event[1])}</span><b>${event[0]}</b></div>`).join('')}</div></div>`; }
+function historyTab(item) { const events = historyEvents(item); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact history-fact"><span>${formatHistoryTime(event.at)}</span><b>${escapeHtml(event.detail ? `${event.title} · ${event.detail}` : event.title)}</b></div>`).join('') || '<div class="empty">暂无处理记录</div>'}</div></div>`; }
 
 function renderSettings() {
   const workspace = app.workspace || {}; const current = workspace.currentMember || {}; const members = workspace.members || [];
@@ -1560,7 +1562,7 @@ function openCandidateDialog() {
 }
 
 async function createCandidate(event) {
-  event.preventDefault(); const selectedJob = app.jobs.find(item => item.id === $('#candidateJobInput').value); const candidate = { id: crypto.randomUUID(), jobId: selectedJob?.id || '', candidateName: $('#candidateNameInput').value.trim(), roleName: selectedJob?.name || '', jd: selectedJob?.jd || '', rules: selectedJob?.rules || '', keywords: selectedJob?.keywords || [], resume: $('#candidateResumeInput').value.trim(), resumeMeta: app.resumeMeta, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  event.preventDefault(); const selectedJob = app.jobs.find(item => item.id === $('#candidateJobInput').value); const capturedAt = new Date().toISOString(); const candidate = { id: crypto.randomUUID(), jobId: selectedJob?.id || '', candidateName: $('#candidateNameInput').value.trim(), roleName: selectedJob?.name || '', jd: selectedJob?.jd || '', rules: selectedJob?.rules || '', keywords: selectedJob?.keywords || [], resume: $('#candidateResumeInput').value.trim(), resumeMeta: app.resumeMeta, createdAt: capturedAt, updatedAt: capturedAt, capturedAt, capturedBy: currentActor() };
   if (!candidate.candidateName || !candidate.resume) return toast('请填写候选人姓名和简历');
   if (!selectedJob) { const match = await matchResumeToJobs(candidate.resume, candidate.candidateName); applyJobMatch(candidate, match); }
   if (app.resumeFile) candidate.resumeMeta = await persistOriginalResume(candidate.id, app.resumeFile, candidate.resumeMeta || {});
@@ -1578,7 +1580,7 @@ async function importResumeBatch(files, options = {}) {
     const fileKey = fileKeyFor(file);
     if (importedFileKeys.has(fileKey)) continue;
     importedFileKeys.add(fileKey); importFileCache.set(fileKey, file); queued += 1;
-    const candidate = { id: crypto.randomUUID(), candidateName: '', roleName: '', jobId: '', jd: '', rules: '', keywords: [], resume: '', resumeMeta: null, ingestStatus: '解析中', ingestBatchId: batchId, ingestSource: options.source || 'manual', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const capturedAt = new Date().toISOString(); const candidate = { id: crypto.randomUUID(), candidateName: '', roleName: '', jobId: '', jd: '', rules: '', keywords: [], resume: '', resumeMeta: null, ingestStatus: '解析中', ingestBatchId: batchId, ingestSource: options.source || 'manual', createdAt: capturedAt, updatedAt: capturedAt, capturedAt, capturedBy: currentActor() };
     app.cases.unshift(candidate); renderCurrent();
     try {
       const result = await parseResumeFileForImport(file);
@@ -2199,12 +2201,15 @@ function scoreValue(item){const value=Number(item.matching?.score);if(Number.isF
 function scoreLabel(item){const value=scoreValue(item);return value==='—'?'<span class="score muted">—</span>':`<strong class="score">${value}分</strong>`;}
 function currentCandidate(){return app.cases.find(item=>item.id===app.candidateId);}
 function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch{return [];}}
-function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate);}
+function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate).then(result=>applyCaptureResult(candidate,result));}
+function currentActor(){const user=app.authUser||{};const member=app.workspace?.currentMember||{};const email=String(member.email||user.email||'');const username=String(member.username||user.username||'');const personal=/@/.test(email)?email.trim().toLowerCase():(/@/.test(username)?username.trim().toLowerCase():'');const name=String(member.displayName||user.displayName||(personal?personal.split('@')[0]:username)).trim();return {uid:String(member.uid||user.uid||''),name,email:personal};}
+function applyCaptureResult(candidate,result){if(!result||!candidate)return;if(result.mokaSync)candidate.mokaSync=result.mokaSync;if(result.capturedBy)candidate.capturedBy=result.capturedBy;if(result.capturedAt)candidate.capturedAt=result.capturedAt;if(app.view==='inbox')renderInbox();if(app.view==='candidate'&&app.candidateId===candidate.id&&app.detailTab==='history')renderCandidateDetail();}
 function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
 function seedJobs(){if(REMOTE_BACKEND||app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
 function resumeHint(item){const meta=item.resumeMeta||{};const facts=[meta.age?`${meta.age}岁`:'',meta.experienceYears?`${meta.experienceYears}年经验`:''].filter(Boolean);return facts.join(' · ')||meta.fileName||'简历已录入';}
 function formatDate(value){if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':`${date.getMonth()+1}月${date.getDate()}日`;}
+function formatHistoryTime(value){if(!value)return'—';const date=new Date(value);if(Number.isNaN(date.getTime()))return'—';return `${date.getMonth()+1}月${date.getDate()}日 ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;}
 function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt);}
 function infoLabel(key){return({currentCompanyRole:'当前公司及职位',location:'当前地点',currentSalary:'当前薪资',expectedSalary:'期望薪资',availability:'到岗时间',motivation:'求职动机',nonCompete:'竞业限制'}[key]||key);}
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
