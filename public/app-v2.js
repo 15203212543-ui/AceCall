@@ -78,7 +78,6 @@ let desktopAgentAvailable = false;
 let recordingSession = null;
 let recordingTicker = null;
 let recordingDismissTimer = null;
-let syncedRematchInFlight = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -91,7 +90,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   await hydrateState();
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
-  void rematchSyncedCandidates();
   void checkService();
   void restoreDesktopRecording();
 });
@@ -547,7 +545,6 @@ async function enterWorkspace(username = '', companyName = '') {
   await hydrateState();
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
-  void rematchSyncedCandidates();
   void checkService();
   void restoreDesktopRecording();
 }
@@ -1235,7 +1232,7 @@ function inferTalentProfile(item) {
 
 function renderInbox() {
   const pending = app.cases.filter(item => item.ingestStatus === '解析中').length;
-  const needsAssignment = app.cases.filter(needsAssignmentReview).length;
+  const needsAssignment = app.cases.filter(item => !item.jobId || item.matching?.status === '待分配').length;
   const failed = app.cases.filter(item => String(item.ingestStatus || '').startsWith('解析失败')).length;
   const duplicate = app.cases.filter(item => item.ingestStatus === '重复待确认').length;
   const batches = [...new Set(app.cases.map(item => item.ingestBatchId).filter(Boolean))].slice(0, 5);
@@ -1260,7 +1257,7 @@ function renderInbox() {
 
 function inboxQueueFilterMatches(item, filter) {
   if (filter === 'processing') return item.ingestStatus === '解析中';
-  if (filter === 'assignment') return needsAssignmentReview(item);
+  if (filter === 'assignment') return !item.jobId || item.matching?.status === '待分配';
   if (filter === 'duplicate') return item.ingestStatus === '重复待确认';
   if (filter === 'failed') return String(item.ingestStatus || '').startsWith('解析失败');
   return true;
@@ -1271,17 +1268,7 @@ function resumeQueueRow(item) {
   const quality = resumeQuality(item);
   const duplicateLabel = item.ingestStatus === '重复待确认' ? '<span class="status warn">疑似重复</span>' : '<span class="status">未发现</span>';
   const action = item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? `<button class="link-action" data-retry-import="${item.id}">重试</button>` : `<button class="link-action" data-open-candidate="${item.id}">查看 →</button>`;
-  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${escapeHtml(item.roleName || '待分配')} ${item.matching?.status === '待分配' ? '<span class="status warn">需确认</span>' : ''}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(resumeSourceLabel(item))}</td><td>${action}</td></tr>`;
-}
-
-function resumeSourceLabel(item = {}) {
-  const source = String(item.ingestSource || item.resumeMeta?.source || '').toLowerCase();
-  if (source === 'local-sync-agent') return '桌面助手自动同步';
-  if (source === 'folder-watch') return '文件夹自动监听';
-  if (source === 'folder') return '文件夹导入';
-  if (source === 'manual') return '手动导入';
-  if (source === 'moka') return 'Moka 自动同步';
-  return '历史数据';
+  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${escapeHtml(item.roleName || '待分配')} ${item.matching?.status === '待分配' ? '<span class="status warn">需确认</span>' : ''}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(item.ingestSource === 'folder-watch' ? '文件夹监听' : item.ingestSource === 'folder' ? '文件夹导入' : '手动导入')}</td><td>${action}</td></tr>`;
 }
 
 function resumeQuality(item) {
@@ -1323,7 +1310,7 @@ async function retryImport(id) {
   const candidate = app.cases.find(item => item.id === id); const file = importFileCache.get(candidate?.ingestFileKey);
   if (!candidate || !file) return toast('原文件已不在当前会话，请重新选择文件');
   candidate.ingestStatus = '解析中'; renderCurrent();
-  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = candidate.jobId ? '已入库' : '已解析待分配'; persistCases(candidate); renderCurrent(); toast(candidate.jobId ? '简历已重试成功并完成岗位分配' : '简历解析成功，岗位仍需人工确认'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
+  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
 }
 
 function renderCandidates() {
@@ -1637,36 +1624,6 @@ function applyJobMatch(candidate, match) {
   }
   const suggestedJobId = match?.suggestedJobId || primary?.id || match?.jobId || '';
   candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId, score, status: assignable ? '已分配' : (match?.status || '待分配'), assignmentReview: !assignable, assignmentReviewReason: assignable ? '' : (!suggestedJobId ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '需要人工确认岗位') };
-}
-
-async function rematchSyncedCandidates() {
-  if (syncedRematchInFlight || !REMOTE_BACKEND) return;
-  const pending = app.cases.filter(item => item.resumeMeta?.source === 'local-sync-agent' && needsAssignmentReview(item));
-  if (!pending.length) return;
-  syncedRematchInFlight = true;
-  let assigned = 0;
-  for (const candidate of pending) {
-    try {
-      if (!candidate.resume && candidate.documentId) {
-        const response = await authenticatedFetch(apiUrl(`/api/documents/${encodeURIComponent(candidate.documentId)}`));
-        const document = await response.json().catch(() => ({}));
-        if (response.ok) candidate.resume = document.cleanedText || document.rawText || '';
-      }
-      if (!candidate.resume) continue;
-      const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
-      applyJobMatch(candidate, match);
-      if (candidate.jobId) assigned += 1;
-      if (candidate.ingestStatus !== '重复待确认') candidate.ingestStatus = candidate.jobId ? '已入库' : '已解析待分配';
-      candidate.updatedAt = new Date().toISOString();
-      persistCases(candidate);
-    } catch (error) {
-      candidate.matching = { ...(candidate.matching || {}), assignmentReview: true, assignmentReviewReason: error.message || '重新匹配失败' };
-      persistCases(candidate);
-    }
-  }
-  syncedRematchInFlight = false;
-  renderCurrent();
-  if (assigned) toast(`桌面助手同步的 ${assigned} 份简历已自动完成岗位匹配`);
 }
 
 async function generatePreparation(candidate) {
@@ -2176,7 +2133,7 @@ function localMatch(payload) {
 
 function defaultQuestions(){return [['基本条件','请确认目前地点、期望工作地点、薪资和到岗时间。','确认基础可行性','必问'],['求职动机','为什么在这个时间点考虑新的机会？','判断动机与岗位内容是否一致','必问'],['核心项目','请选择最相关的项目，说明背景、职责和结果。','核实经历真实性','必问'],['职责边界','哪些决策由你直接负责？哪些工作是参与完成？','区分参与和主导','必问'],['项目结果','项目是否上线，有哪些可量化结果？','验证交付质量','必问'],['专业能力','你负责过哪些业务模块，如何与业务和研发协作？','验证岗位专业能力','建议问'],['风险核验','过去几次工作变动的主要原因分别是什么？','识别稳定性风险','风险追问'],['合规','是否存在竞业限制或其他入职约束？','识别入职风险','必问']].map(([category,question,reason,priority])=>({category,question,reason,priority,source:'初筛准备'}));}
 
-function needsAssignmentReview(item) { return Boolean(item.matching?.assignmentReview || !item.jobId || ['待分配', '待确认', '多岗位候选', '无法匹配'].includes(item.matching?.status)); }
+function needsAssignmentReview(item) { return Boolean(item.matching?.assignmentReview || !item.jobId || item.matching?.status === '待分配'); }
 function statusOf(item) { if (item.report?.reviewConfirmed || item.reviewConfirmed) return '已完成'; if (item.report || item.communicationSummary || item.hasReport || item.hasSummary) return '待确认'; if (item.preparation || item.hasPreparation) return '待电话'; return '待分析'; }
 function displayStatus(item) { const decision = item.report?.finalDecision || item.finalDecision; if (item.report?.reviewConfirmed || item.reviewConfirmed) return ({'推荐业务面试':'推荐面试','补充电话沟通':'补充沟通','暂不推进':'暂不推进'}[decision] || decision || '已完成'); return statusOf(item); }
 function finalAction(item) { return item.report?.finalDecision || item.report?.nextStep || item.finalDecision || item.nextStep || ''; }
