@@ -809,3 +809,13 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .ingest-queue-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 14px 12px;border-top:1px solid #e3e2dc}.ingest-queue-pager button{width:auto;height:28px;padding:0 10px;border:1px solid #d5ddd8;border-radius:4px;background:#fff;color:#35665d;font-size:10px}.ingest-queue-pager button:disabled{color:#9aa5b5;cursor:not-allowed}.ingest-queue-pager span{color:#7b899d;font-size:10px}
 .queue-assignment{display:flex;align-items:center;gap:5px}.queue-assignment select{width:128px;height:30px;padding:0 7px;border:1px solid #d9e1ec;border-radius:4px;background:#fff;color:#40516d;font-size:10px}.queue-assignment .status{flex:0 0 auto}.queue-assignment .link-action{padding:4px;white-space:nowrap}
 .ingest-kpis{grid-template-columns:repeat(6,1fr)}.queue-assignment-summary{display:flex;align-items:center;gap:7px}.queue-assignment-summary .link-action{padding:3px 0;white-space:nowrap}.queue-assignment-editor{display:grid;gap:7px;margin-top:8px;padding:9px;border:1px solid #e2e8e4;border-radius:5px;background:#f8faf9}.queue-assignment-editor>span{color:var(--muted);font-size:9px}.queue-assignment-editor .queue-assignment select{width:160px}.queue-assignment-editor .primary{height:30px;padding:0 10px;font-size:9px}.resume-source{display:flex!important;align-items:center;gap:5px;margin-top:4px;color:var(--muted)}.resume-duplicate{padding:2px 5px;font-size:8px}
+#candidatesView.active{display:flex;flex-direction:column;height:calc(100vh - 64px);overflow:hidden}
+.candidates-page{display:flex;flex-direction:column;flex:1;min-height:0;height:100%;padding-bottom:16px;box-sizing:border-box}
+#candidateTableSlot{flex:1 1 auto;min-height:0;display:flex}
+.candidate-pool{flex:1;min-height:0;width:100%;display:flex;flex-direction:column}
+.candidate-pool .table-wrap{flex:1 1 auto;min-height:0;overflow:auto}
+.candidate-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 14px 12px;border-top:1px solid #e3e2dc}
+.candidate-pager button{width:auto;height:28px;padding:0 10px;border:1px solid #d5ddd8;border-radius:4px;background:#fff;color:#35665d;font-size:10px}
+.candidate-pager button:disabled{color:#9aa5b5;cursor:not-allowed}
+.candidate-pager span{color:#7b899d;font-size:10px}
+@media(max-width:900px){#candidatesView.active{height:auto;overflow:visible}.candidates-page{height:auto;padding-bottom:45px}}

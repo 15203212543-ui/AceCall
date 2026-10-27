@@ -69,6 +69,9 @@ let inboxQueueFilter = '';
 let inboxQueuePage = 1;
 let inboxQueuePageSize = 6;
 let inboxQueueFitPasses = 0;
+let candidatePage = 1;
+let candidatePageSize = 8;
+let candidateFitPasses = 0;
 let expandedAssignmentId = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
@@ -1177,7 +1180,7 @@ function renderDashboard() {
     <div class="dashboard-layout"><div class="dashboard-main"><section class="surface progress-surface"><div class="surface-head"><div><h2>岗位推进</h2><p class="surface-subtitle">按岗位查看候选人在哪个环节停留</p></div><span>${activeJobs.length} 个活跃岗位</span></div><div class="surface-body job-progress-list">${activeJobs.length ? activeJobs.map(jobProgressRow).join('') : '<div class="empty">还没有活跃岗位，请先建立岗位标准。</div>'}</div></section><section class="surface action-surface"><div class="surface-head"><div><h2>优先处理</h2><p class="surface-subtitle">高匹配、待沟通和待审核候选人</p></div><button class="link-action" data-dashboard-filter="all">查看全部 →</button></div>${candidateTable(actionRows, '')}</section></div><aside class="dashboard-aside"><section class="surface structure-surface"><div class="surface-head"><div><h2>人才池结构</h2><p class="surface-subtitle">基于全部候选人统计</p></div><span>AI识别</span></div><div class="surface-body"><div class="structure-block"><div class="structure-heading"><strong>直接竞品经历</strong><span>${structures.competitor.known}/${total || 0} 人</span></div>${structureBar(structures.competitor, '竞品公司') }<p class="structure-note">按岗位 JD 与候选人最近 1-2 段经历识别</p></div><div class="structure-block"><div class="structure-heading"><strong>大厂经历</strong><span>${structures.major.known}/${total || 0} 人</span></div>${structureBar(structures.major, '行业前 5') }<p class="structure-note">同业务行业内按规模、业务体量和市场排名识别</p></div><div class="structure-block"><div class="structure-heading"><strong>学校层次</strong><span>${structures.school.known}/${total || 0} 人</span></div>${structureBar(structures.school, '985/211/双一流') }<p class="structure-note">优先读取简历教育经历，无法确认则保留未知</p></div><button class="structure-link" data-dashboard-filter="competitor">查看结构命中候选人 →</button></div></section><section class="surface funnel-surface"><div class="surface-head"><div><h2>招聘漏斗</h2><p class="surface-subtitle">全部岗位累计</p></div></div><div class="surface-body"><div class="funnel-row"><span>简历已导入</span><b>${total}</b></div><div class="funnel-row"><span>已完成解析</span><b>${app.cases.filter(item => item.resume).length}</b></div><div class="funnel-row"><span>已完成沟通</span><b>${app.cases.filter(item => item.communicationSummary || item.report).length}</b></div><div class="funnel-row"><span>已推荐面试</span><b>${recommended}</b></div></div></section></aside></div></div>`;
   bindCommonActions($('#dashboardView'));
   $('#dashboardJobFilter').addEventListener('change', filterDashboardJob);
-  $$('#dashboardView [data-dashboard-filter-job]').forEach(button => button.addEventListener('click', () => { app.dashboardFilter = 'job'; navigate('candidates'); requestAnimationFrame(() => { $('#candidateJobFilter').value = button.dataset.dashboardFilterJob; filterCandidates(); }); }));
+  $$('#dashboardView [data-dashboard-filter-job]').forEach(button => button.addEventListener('click', () => { app.dashboardFilter = 'job'; navigate('candidates'); requestAnimationFrame(() => { $('#candidateJobFilter').value = button.dataset.dashboardFilterJob; filterCandidates(true); }); }));
   $$('#dashboardView [data-dashboard-filter]').forEach(button => button.addEventListener('click', () => openDashboardFilter(button.dataset.dashboardFilter)));
   $('#dashboardView [data-dashboard-refresh]').addEventListener('click', () => { renderDashboard(); toast('工作台数据已刷新'); });
 }
@@ -1197,8 +1200,8 @@ function openDashboardFilter(filter) {
     else if (filter === 'assignment-review') input.value = '待确认岗位';
     else if (filter === 'high') input.value = '高匹配度';
     else if (filter === 'competitor') input.value = '竞品经历';
-    filterCandidates();
-    if (filter === 'all') { input.value = ''; status.value = ''; job.value = ''; filterCandidates(); }
+    filterCandidates(true);
+    if (filter === 'all') { input.value = ''; status.value = ''; job.value = ''; filterCandidates(true); }
   });
 }
 
@@ -1304,7 +1307,7 @@ function fitInboxQueue() {
   }
   inboxQueueFitPasses = 0;
 }
-window.addEventListener('resize', () => { inboxQueueFitPasses = 0; if (app.view === 'inbox') fitInboxQueue(); });
+window.addEventListener('resize', () => { inboxQueueFitPasses = 0; candidateFitPasses = 0; if (app.view === 'inbox') fitInboxQueue(); if (app.view === 'candidates') fitCandidatePage(); });
 function inboxQueueFilterMatches(item, filter) {
   if (filter === 'processing') return item.ingestStatus === '解析中';
   if (filter === 'confirmation') return assignmentState(item) === 'review';
@@ -1407,14 +1410,45 @@ function renderCandidates() {
   const counts = ['全部', '待分析', '待电话', '待确认', '推荐面试', '补充沟通', '已完成', '暂不推进'].map(status => ({ status, count: status === '全部' ? app.cases.length : app.cases.filter(item => displayStatus(item) === status).length }));
   $('#candidatesView').innerHTML = `<div class="page candidates-page"><div class="page-title"><div><span class="eyebrow">TALENT PIPELINE</span><h1>候选人</h1><p>管理已进入招聘流程的人才，不再处理原始文件导入。</p></div><button class="primary" data-add-candidate>＋ 手动添加候选人</button></div><div class="candidate-stages">${counts.map(item => `<button class="candidate-stage ${item.status === '全部' ? 'active' : ''}" data-stage-filter="${item.status}"><b>${item.count}</b><span>${item.status}</span></button>`).join('')}</div><div class="toolbar candidate-toolbar"><input id="candidateSearch" placeholder="搜索姓名、公司、学校或岗位"><select id="candidateJobFilter"><option value="">全部岗位</option>${app.jobs.map(job => `<option value="${job.id}">${escapeHtml(job.name)}</option>`).join('')}</select><select id="candidateStatusFilter"><option value="">全部阶段</option>${['待分析','待电话','待确认','推荐面试','补充沟通','已完成','暂不推进'].map(value => `<option>${value}</option>`).join('')}</select><select id="candidateTagFilter"><option value="">全部标签</option><option value="competitor">直接竞品</option><option value="major">行业前 5</option><option value="school">985/211/双一流</option><option value="quality">资料待补全</option><option value="moka">Moka待配置</option></select></div><div class="candidate-summary-line"><span>当前显示 <b id="candidateResultCount">${app.cases.length}</b> 人</span><span>统计包含已淘汰候选人 · 标签依据可在详情查看</span></div><div id="candidateTableSlot">${candidatePoolTable(app.cases)}</div></div>`;
   bindCommonActions($('#candidatesView'));
-  ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter', 'candidateTagFilter'].forEach(id => $(`#${id}`).addEventListener('input', filterCandidates));
-  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(); }));
+  ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter', 'candidateTagFilter'].forEach(id => $(`#${id}`).addEventListener('input', () => filterCandidates(true)));
+  $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(true); }));
+  bindCandidatePager();
+  requestAnimationFrame(fitCandidatePage);
 }
 
 function candidatePoolTable(items) {
-  return `<div class="surface"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${items.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div></div>`;
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / candidatePageSize) || 1);
+  candidatePage = Math.min(Math.max(1, candidatePage), pages);
+  const pageItems = items.slice((candidatePage - 1) * candidatePageSize, candidatePage * candidatePageSize);
+  const pager = total > candidatePageSize ? `<div class="candidate-pager"><button type="button" data-candidate-page="${candidatePage - 1}"${candidatePage <= 1 ? ' disabled' : ''}>上一页</button><span>第 ${candidatePage} / ${pages} 页</span><button type="button" data-candidate-page="${candidatePage + 1}"${candidatePage >= pages ? ' disabled' : ''}>下一页</button></div>` : '';
+  return `<div class="surface candidate-pool"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${pageItems.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div>${pager}</div>`;
 }
 
+
+function bindCandidatePager() {
+  $$('#candidateTableSlot [data-candidate-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; candidateFitPasses = 0; candidatePage = Number(button.dataset.candidatePage) || 1; filterCandidates(); }));
+}
+function fitCandidatePage() {
+  if (window.innerWidth <= 900 || app.view !== 'candidates') return;
+  const pool = document.querySelector('#candidateTableSlot .candidate-pool');
+  const sample = pool?.querySelector('tbody tr');
+  if (!pool || !sample || sample.querySelector('.empty')) return;
+  const rows = [...pool.querySelectorAll('tbody tr')];
+  const rowHeight = Math.max(...rows.map(row => row.getBoundingClientRect().height));
+  if (pool.clientHeight < 120 || rowHeight < 8) return;
+  const pager = pool.querySelector('.candidate-pager')?.offsetHeight || 0;
+  const thead = pool.querySelector('thead')?.offsetHeight || 0;
+  const reservePager = pager || (rows.length >= candidatePageSize ? 44 : 0);
+  const fit = Math.max(1, Math.floor((pool.clientHeight - thead - reservePager) / rowHeight));
+  if (fit !== candidatePageSize && candidateFitPasses < 3) {
+    candidateFitPasses += 1;
+    candidatePageSize = fit;
+    filterCandidates();
+    return;
+  }
+  candidateFitPasses = 0;
+}
 function candidateTags(item) {
   const profile = inferTalentProfile(item); const tags = [];
   if (profile.competitor === true) tags.push({ label: profile.competitorCompanies?.length ? `竞品·${profile.competitorCompanies[0]}` : '竞品', tone: 'tag-positive' });
@@ -1426,7 +1460,8 @@ function candidateTags(item) {
 
 function mokaStatusLabel(item) { return item.mokaSync?.status ? `Moka：${item.mokaSync.status}` : 'Moka：接口待配置'; }
 
-function filterCandidates() {
+function filterCandidates(resetPage) {
+  if (resetPage) { candidatePage = 1; candidateFitPasses = 0; }
   const search = $('#candidateSearch').value.trim().toLowerCase();
   const jobId = $('#candidateJobFilter').value;
   const status = $('#candidateStatusFilter').value;
@@ -1444,6 +1479,8 @@ function filterCandidates() {
   $('#candidateResultCount').textContent = filtered.length;
   $('#candidateTableSlot').innerHTML = candidatePoolTable(filtered);
   bindCommonActions($('#candidateTableSlot'));
+  bindCandidatePager();
+  requestAnimationFrame(fitCandidatePage);
 }
 
 function candidateTable(items, title) {
