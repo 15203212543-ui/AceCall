@@ -1,0 +1,11 @@
+/* Selective visual anchors: key pages, section headers and KPI cards only. */
+.page-title-with-icon,.section-title-with-icon{display:flex;align-items:center;gap:8px}
+.page-title-icon,.section-icon,.metric-visual-icon{display:inline-grid;place-items:center;flex:0 0 auto;color:#365fd4;background:#edf3ff}
+.page-title-icon{width:30px;height:30px;border-radius:8px}
+.section-icon{width:25px;height:25px;border-radius:7px}
+.metric-visual-icon{position:absolute;top:13px;right:13px;width:30px;height:30px;border-radius:8px;transition:transform .16s ease}
+.page-title-icon svg{width:17px;height:17px}.section-icon svg{width:14px;height:14px}.metric-visual-icon svg{width:16px;height:16px}
+.tone-violet{color:#7251cf;background:#f2edff}.tone-cyan{color:#257e9b;background:#eaf7fb}.tone-green{color:#2d846a;background:#eaf7f1}.tone-amber{color:#a16d19;background:#fff5df}.tone-red{color:#bd5260;background:#fff0f1}
+.visual-metric{position:relative;padding-right:52px!important}
+.visual-metric:hover .metric-visual-icon{transform:translateY(-1px)}
+@media(max-width:620px){.page-title-icon{width:27px;height:27px}.metric-visual-icon{width:27px;height:27px;top:11px;right:11px}.visual-metric{padding-right:45px!important}}
