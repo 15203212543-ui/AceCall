@@ -63,11 +63,14 @@ test('all job scores stay in the 0 to 100 range', () => {
   }
 });
 
-test('frontend trusts valid backend assignments and rematches only review candidates', () => {
+test('frontend trusts valid backend assignments and rematches only desktop-synced review candidates', () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app-v2.js'), 'utf8');
   assert.match(source, /\['自动匹配', '已分配'\]\.includes\(match\?\.status\)/);
   assert.match(source, /score >= 60/);
-  assert.match(source, /function rematchPendingCandidates\(\)/);
-  assert.match(source, /!item\.jobId \|\| item\.matching\?\.assignmentReview/);
+  assert.match(source, /function rematchSyncedCandidates\(\)/);
+  assert.match(source, /item\.resumeMeta\?\.source === 'local-sync-agent' && needsAssignmentReview\(item\)/);
+  assert.match(source, /api\/documents\/\$\{encodeURIComponent\(candidate\.documentId\)\}/);
+  assert.match(source, /if \(source === 'local-sync-agent'\) return '桌面助手自动同步'/);
+  assert.doesNotMatch(source, /id="rematchPendingButton"/);
   assert.doesNotMatch(source, /match\?\.confidence === '低'/);
 });
