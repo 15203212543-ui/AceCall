@@ -1,6 +1,6 @@
 {
   "name": "acecall-sync-desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "AceCall local resume sync desktop app",
   "main": "main.js",

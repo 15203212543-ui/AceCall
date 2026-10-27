@@ -15,7 +15,8 @@ const SUPPORTED = /\.(pdf|docx?|txt|md|rtf|vtt|srt|json|mp3|wav|pcm|amr|m4a|webm
 const AUDIO = /\.(mp3|wav|pcm|amr|m4a|webm|ogg|mp4)$/i;
 const TEMPORARY = /\.(crdownload|part|tmp|download)$/i;
 const signals = ['简历', '个人信息', '工作经历', '教育经历', '项目经历', '任职', '工作经验', '学历', '邮箱', '手机', '电话', 'resume', 'experience', 'education'];
-const transcriptSignals = ['面试转写', '面试记录', '面试录音', 'transcript', 'transcription', 'interview', 'subtitle', 'caption', 'speaker', '发言人', 'webvtt'];
+const transcriptNameSignals = ['面试转写', '面试记录', '面试录音', 'transcript', 'transcription', 'subtitle', 'caption', 'webvtt'];
+const transcriptBodySignals = ['面试转写', '面试录音', '发言人', 'webvtt', '会议已开启实时转写', '机器识别结果仅供参考'];
 const TEXT_TRANSCRIPT = /\.(txt|md|vtt|srt|json)$/i;
 
 function platformPolicy() {
@@ -71,8 +72,10 @@ function looksLikeTranscript(filePath, text) {
   if (normalized.length < 20) return false;
   if (/\.(vtt|srt)$/i.test(filePath)) return true;
   const name = path.basename(filePath).toLowerCase();
-  const blob = `${name} ${normalized.toLowerCase()}`;
-  return transcriptSignals.some(signal => blob.includes(signal.toLowerCase())) || /面试官\s*[:：]/.test(normalized) || /发言人\s*[:：]/.test(normalized);
+  const body = normalized.toLowerCase();
+  if (transcriptNameSignals.some(signal => name.includes(signal.toLowerCase()))) return true;
+  if (transcriptBodySignals.some(signal => body.includes(signal.toLowerCase()))) return true;
+  return /面试官\s*[:：]/.test(normalized) || /发言人\s*[:：]/.test(normalized);
 }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
