@@ -28,3 +28,13 @@ test('later saves keep a stored original when the new payload omits it', () => {
   assert.equal(replaced.originalFile, undefined);
   assert.deepEqual(retainOriginalResume(undefined, stored).originalFileId, 'cloud://file');
 });
+
+test('job assignment saves drop browser preview links and keep the cloud file', () => {
+  const stored = { fileName: '演示.pdf', originalFileId: 'cloud://file', originalFileName: '演示.pdf', originalMimeType: 'application/pdf', originalFileSize: 8 };
+  const kept = retainOriginalResume({ fileName: '演示.pdf', originalFileId: 'blob:https://preview/1', originalTempUrl: 'blob:https://preview/1' }, stored);
+  assert.equal(kept.originalFileId, 'cloud://file');
+  assert.equal(kept.originalTempUrl, undefined);
+  const stripped = retainOriginalResume({ fileName: '演示.pdf', originalFileId: 'cloud://file', originalTempUrl: 'blob:https://preview/1' }, stored);
+  assert.equal(stripped.originalFileId, 'cloud://file');
+  assert.equal(stripped.originalTempUrl, undefined);
+});

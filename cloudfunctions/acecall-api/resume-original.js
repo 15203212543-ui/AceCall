@@ -29,11 +29,23 @@ function originalResumeMeta(fileName, buffer, fileId) {
   };
 }
 
-function retainOriginalResume(incoming, stored) {
-  const previous = stored && typeof stored === 'object' ? stored : null;
-  if (!incoming || typeof incoming !== 'object') return previous ? { ...previous } : incoming;
-  const next = { ...incoming };
+function isEphemeralFileId(value) {
+  return /^(?:blob:|data:|https?:)/i.test(String(value || '').trim());
+}
+
+function withoutPreviewUrl(meta) {
+  if (!meta || typeof meta !== 'object') return meta;
+  const next = { ...meta };
   delete next.originalFile;
+  delete next.originalTempUrl;
+  if (isEphemeralFileId(next.originalFileId)) delete next.originalFileId;
+  return next;
+}
+
+function retainOriginalResume(incoming, stored) {
+  const previous = withoutPreviewUrl(stored && typeof stored === 'object' ? stored : null);
+  if (!incoming || typeof incoming !== 'object') return previous || incoming;
+  const next = withoutPreviewUrl(incoming);
   if (!previous?.originalFileId || next.originalFileId) return next;
   return {
     ...next,
