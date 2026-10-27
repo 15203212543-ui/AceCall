@@ -24,6 +24,13 @@ export function historyEvents(item = {}) {
   } else if (item.createdAt) {
     events.push({ at: item.createdAt, title: '建立候选人档案', detail: '' });
   }
+  if (item.jobId && item.assignedAt) {
+    events.push({
+      at: item.assignedAt,
+      title: item.assignmentSource === 'manual-confirmation' ? '人工确认岗位' : '自动分配岗位',
+      detail: item.roleName || ''
+    });
+  }
   if (item.preparation || item.hasPreparation) events.push({ at: item.createdAt || '', title: 'AI完成电话准备', detail: '' });
   if (item.communicationSummary || item.hasSummary) events.push({ at: item.updatedAt || '', title: '生成沟通总结', detail: '' });
   if (item.report || item.hasReport) events.push({ at: item.updatedAt || '', title: '生成综合初筛结果', detail: '' });
