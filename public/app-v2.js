@@ -66,6 +66,9 @@ let folderWatchPolicy = null;
 let folderWatchBaselineKeys = new Set();
 let folderWatchSeenKeys = new Set();
 let inboxQueueFilter = '';
+let inboxQueuePage = 1;
+let inboxQueuePageSize = 6;
+let inboxQueueFitPasses = 0;
 let expandedAssignmentId = '';
 const fileStability = new Map();
 const FOLDER_SCAN_INTERVAL_MS = 300000;
@@ -1246,9 +1249,13 @@ function renderInbox() {
   const watchStatus = folderWatchTimer ? '监听中' : '未启动';
   const watchLabel = policy.defaultMode === 'downloads' ? '选择 Downloads 并开始监听' : '选择文件夹并开始监听';
   const filterCases = inboxQueueFilter ? app.cases.filter(item => inboxQueueFilterMatches(item, inboxQueueFilter)) : app.cases;
-  const queue = [...filterCases].sort(byUpdated).slice(0, inboxQueueFilter ? filterCases.length : 30);
+  const sortedQueue = [...filterCases].sort(byUpdated);
+  const queuePages = Math.max(1, Math.ceil(sortedQueue.length / inboxQueuePageSize) || 1);
+  inboxQueuePage = Math.min(Math.max(1, inboxQueuePage), queuePages);
+  const queue = sortedQueue.slice((inboxQueuePage - 1) * inboxQueuePageSize, inboxQueuePage * inboxQueuePageSize);
+  const queuePager = sortedQueue.length > inboxQueuePageSize ? `<div class="ingest-queue-pager"><button type="button" data-inbox-page="${inboxQueuePage - 1}"${inboxQueuePage <= 1 ? ' disabled' : ''}>上一页</button><span>第 ${inboxQueuePage} / ${queuePages} 页</span><button type="button" data-inbox-page="${inboxQueuePage + 1}"${inboxQueuePage >= queuePages ? ' disabled' : ''}>下一页</button></div>` : '';
   const filterLabel = { all: '全部简历', processing: '解析中', confirmation: '岗位待确认', assignment: '待分配', duplicate: '重复待确认', failed: '解析异常' }[inboxQueueFilter] || '';
-  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><button class="metric metric-action ${!inboxQueueFilter ? 'active' : ''}" data-inbox-filter="all" type="button"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></button><button class="metric metric-action ${inboxQueueFilter === 'processing' ? 'active' : ''}" data-inbox-filter="processing" type="button"><b>${pending}</b><span>解析中</span><small>正在处理</small></button><button class="metric metric-action ${inboxQueueFilter === 'assignment' ? 'active' : ''}" data-inbox-filter="assignment" type="button"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></button><button class="metric metric-action ${inboxQueueFilter === 'duplicate' ? 'active' : ''}" data-inbox-filter="duplicate" type="button"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></button><button class="metric metric-action ${inboxQueueFilter === 'failed' ? 'active' : ''}" data-inbox-filter="failed" type="button"><b>${failed}</b><span>解析异常</span><small>支持重试</small></button></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">${filterLabel ? `当前筛选：${filterLabel}` : '这里处理文件，不在此管理电话和审核流程'}</p></div><span>${queue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">当前状态下没有简历</div></td></tr>'}</tbody></table></div></section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download>下载 Mac 桌面版</a><a class="secondary" href="downloads/AceCall-Sync-Windows-Setup.exe" download>下载 Windows 桌面版</a></div><small class="watch-started">Mac（Apple 芯片）：打开 DMG 后拖入“应用程序”，首次打开请在系统设置里允许。Windows：运行安装程序。</small></div></section></aside></div></div>`;
+  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><button class="metric metric-action ${!inboxQueueFilter ? 'active' : ''}" data-inbox-filter="all" type="button"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></button><button class="metric metric-action ${inboxQueueFilter === 'processing' ? 'active' : ''}" data-inbox-filter="processing" type="button"><b>${pending}</b><span>解析中</span><small>正在处理</small></button><button class="metric metric-action ${inboxQueueFilter === 'assignment' ? 'active' : ''}" data-inbox-filter="assignment" type="button"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></button><button class="metric metric-action ${inboxQueueFilter === 'duplicate' ? 'active' : ''}" data-inbox-filter="duplicate" type="button"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></button><button class="metric metric-action ${inboxQueueFilter === 'failed' ? 'active' : ''}" data-inbox-filter="failed" type="button"><b>${failed}</b><span>解析异常</span><small>支持重试</small></button></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">${filterLabel ? `当前筛选：${filterLabel}` : '这里处理文件，不在此管理电话和审核流程'}</p></div><span>${sortedQueue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">当前状态下没有简历</div></td></tr>'}</tbody></table></div>${queuePager}</section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download>下载 Mac 桌面版</a><a class="secondary" href="downloads/AceCall-Sync-Windows-Setup.exe" download>下载 Windows 桌面版</a></div><small class="watch-started">Mac（Apple 芯片）：打开 DMG 后拖入“应用程序”，首次打开请在系统设置里允许。Windows：运行安装程序。</small></div></section></aside></div></div>`;
   const assignmentMetric = $('#inboxView [data-inbox-filter="assignment"]');
   assignmentMetric.innerHTML = `<b>${needsAssignment}</b><span>待分配</span><small>暂无可靠岗位</small>`;
   assignmentMetric.insertAdjacentHTML('beforebegin', `<button class="metric metric-action ${inboxQueueFilter === 'confirmation' ? 'active' : ''}" data-inbox-filter="confirmation" type="button"><b>${assignmentReview}</b><span>岗位待确认</span><small>已有推荐岗位</small></button>`);
@@ -1259,6 +1266,8 @@ function renderInbox() {
   $('#watchFolderButton').addEventListener('click', startFolderWatch);
   $$('#inboxView [data-inbox-filter]').forEach(button => button.addEventListener('click', () => {
     inboxQueueFilter = button.dataset.inboxFilter === 'all' ? '' : button.dataset.inboxFilter;
+    inboxQueuePage = 1;
+    inboxQueueFitPasses = 0;
     renderInbox();
     $('#inboxView .ingest-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
@@ -1269,8 +1278,33 @@ function renderInbox() {
   }));
   $$('#inboxView [data-confirm-assignment]').forEach(button => button.addEventListener('click', () => confirmCandidateAssignment(button.dataset.confirmAssignment)));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
+  $$('#inboxView [data-inbox-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; inboxQueueFitPasses = 0; inboxQueuePage = Number(button.dataset.inboxPage) || 1; renderInbox(); }));
+  requestAnimationFrame(fitInboxQueue);
 }
 
+
+function fitInboxQueue() {
+  if (window.innerWidth <= 980 || app.view !== 'inbox') return;
+  const queue = document.querySelector('#inboxView .ingest-queue');
+  const sample = queue?.querySelector('tbody tr');
+  if (!queue || !sample || sample.querySelector('.empty')) return;
+  const rows = [...queue.querySelectorAll('tbody tr')];
+  const rowHeight = Math.max(...rows.map(row => row.getBoundingClientRect().height));
+  if (queue.clientHeight < 120 || rowHeight < 8) return;
+  const head = queue.querySelector('.surface-head')?.offsetHeight || 0;
+  const pager = queue.querySelector('.ingest-queue-pager')?.offsetHeight || 0;
+  const thead = queue.querySelector('thead')?.offsetHeight || 0;
+  const reservePager = pager || (document.querySelectorAll('#inboxView .ingest-queue tbody tr').length >= inboxQueuePageSize ? 44 : 0);
+  const fit = Math.max(1, Math.floor((queue.clientHeight - head - thead - reservePager) / rowHeight));
+  if (fit !== inboxQueuePageSize && inboxQueueFitPasses < 3) {
+    inboxQueueFitPasses += 1;
+    inboxQueuePageSize = fit;
+    renderInbox();
+    return;
+  }
+  inboxQueueFitPasses = 0;
+}
+window.addEventListener('resize', () => { inboxQueueFitPasses = 0; if (app.view === 'inbox') fitInboxQueue(); });
 function inboxQueueFilterMatches(item, filter) {
   if (filter === 'processing') return item.ingestStatus === '解析中';
   if (filter === 'confirmation') return assignmentState(item) === 'review';
