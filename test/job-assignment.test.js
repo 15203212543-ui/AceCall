@@ -63,10 +63,16 @@ test('all job scores stay in the 0 to 100 range', () => {
   }
 });
 
-test('frontend trusts valid backend assignments without changing the resume center workflow', () => {
+test('frontend completes automatic and manual assignment paths in the assignment column', () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app-v2.js'), 'utf8');
   assert.match(source, /\['自动匹配', '已分配'\]\.includes\(match\?\.status\)/);
   assert.match(source, /score >= 60/);
+  assert.match(source, /function assignmentCell\(item\)/);
+  assert.match(source, /data-confirm-assignment/);
+  assert.match(source, /function confirmCandidateAssignment\(id\)/);
+  assert.match(source, /function reconcilePendingAssignments\(\)/);
+  assert.match(source, /item\.resumeMeta\?\.source === 'local-sync-agent'/);
+  assert.match(source, /assignmentSource = 'manual-confirmation'/);
   assert.doesNotMatch(source, /rematchPendingCandidates|rematchSyncedCandidates|rematchPendingButton/);
   assert.doesNotMatch(source, /match\?\.confidence === '低'/);
 });
