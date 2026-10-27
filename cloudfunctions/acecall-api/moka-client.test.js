@@ -107,6 +107,14 @@ async function runSyncCases() {
   assert.match(calls[0].body.content, /薪资信息：/);
 
   calls.length = 0;
+  const named = await syncScreeningComment(client, candidate, 'owner@example.com', null, { operatorName: '演示HR' });
+  assert.equal(named.status, '已同步');
+  assert.match(calls[1].body.content, /操作人：演示HR/);
+  assert.doesNotMatch(calls[1].body.content, /期望薪资/);
+  assert.match(calls[2].body.content, /操作人：演示HR/);
+  assert.equal(calls[1].body.operatorEmail, 'owner@example.com');
+
+  calls.length = 0;
   const missingContact = await syncScreeningComment(client, { ...candidate, resumeMeta: {} }, 'owner@example.com');
   assert.equal(missingContact.status, '缺少手机号或邮箱');
   assert.equal(calls.length, 0);
