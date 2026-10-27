@@ -1,3 +1,5 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { platformPolicy, isCandidateFile, looksLikeResume, fileKey } = require('../local-sync-agent');
@@ -31,6 +33,20 @@ test('local sync agent recognizes interview transcripts', () => {
   assert.equal(looksLikeTranscript('/tmp/周宁-面试转写.txt', '候选人：周宁\n面试官：魏欣欣\n请介绍项目结果？'), true);
   assert.equal(looksLikeTranscript('/tmp/interview.vtt', 'WEBVTT\n\n00:00.000 --> 00:02.000\n请介绍一个你负责的项目。'), true);
   assert.equal(looksLikeTranscript('/tmp/notes.txt', '会议纪要：下周一开会讨论项目进度和负责人安排'), false);
+});
+
+test('desktop app bundles job assignment and can load without the cloud function directory', () => {
+  const root = path.join(__dirname, '..');
+  const agent = fs.readFileSync(path.join(root, 'desktop-app/local-sync-agent.js'), 'utf8');
+  assert.equal(agent.includes("require('../cloudfunctions/"), false);
+  assert.equal(fs.readFileSync(path.join(root, 'desktop-app/job-assignment.js'), 'utf8'), fs.readFileSync(path.join(root, 'cloudfunctions/acecall-api/job-assignment.js'), 'utf8'));
+  const { SyncAgent } = require('../desktop-app/local-sync-agent');
+  const candidate = { jobId: 'old', roleName: '旧岗位' };
+  const { applyJobAssignment } = require('../desktop-app/job-assignment');
+  applyJobAssignment(candidate, [{ id: 'job-1', name: '法务BP', status: 'active' }], { result: { jobId: '', status: '无法匹配' } });
+  assert.equal(candidate.jobId, '');
+  assert.equal(candidate.ingestStatus, '无法匹配');
+  assert.equal(typeof SyncAgent, 'function');
 });
 
 test('local sync agent file key changes when the file changes', () => {

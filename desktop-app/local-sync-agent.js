@@ -5,7 +5,7 @@ const fsp = fs.promises;
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { applyJobAssignment } = require('../cloudfunctions/acecall-api/job-assignment');
+const { applyJobAssignment } = require('./job-assignment');
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const STABLE_MS = 10 * 1000;

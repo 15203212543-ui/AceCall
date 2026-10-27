@@ -1,21 +1,21 @@
 {
   "name": "acecall-sync-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "AceCall local resume sync desktop app",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist:mac": "electron-builder --mac dmg",
-    "dist:win": "electron-builder --win nsis",
+    "dist:win": "electron-builder --win nsis --x64",
     "dist": "electron-builder"
   },
   "build": {
     "appId": "com.acecall.sync",
     "productName": "AceCall Sync",
-    "files": ["main.js", "preload.js", "renderer.html", "recorder.html", "recorder-preload.js", "local-sync-agent.js"],
+    "files": ["main.js", "preload.js", "renderer.html", "recorder.html", "recorder-preload.js", "local-sync-agent.js", "job-assignment.js"],
     "mac": { "category": "public.app-category.productivity", "target": ["dmg"], "extendInfo": { "NSMicrophoneUsageDescription": "AceCall 仅在你点击开始录音并完成告知后采集电话沟通声音。" } },
-    "win": { "target": ["nsis"] },
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
   },
   "devDependencies": { "electron": "^31.7.7", "electron-builder": "^24.13.3" }
