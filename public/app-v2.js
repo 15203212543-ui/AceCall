@@ -79,6 +79,7 @@ let desktopAgentAvailable = false;
 let recordingSession = null;
 let recordingTicker = null;
 let recordingDismissTimer = null;
+let assignmentReconcileInFlight = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -91,6 +92,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await hydrateState();
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
+  void reconcilePendingAssignments();
   void checkService();
   void restoreDesktopRecording();
 });
@@ -546,6 +548,7 @@ async function enterWorkspace(username = '', companyName = '') {
   await hydrateState();
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
+  void reconcilePendingAssignments();
   void checkService();
   void restoreDesktopRecording();
 }
@@ -1253,6 +1256,7 @@ function renderInbox() {
     $('#inboxView .ingest-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
   bindCommonActions($('#inboxView'));
+  $$('#inboxView [data-confirm-assignment]').forEach(button => button.addEventListener('click', () => confirmCandidateAssignment(button.dataset.confirmAssignment)));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
 }
 
@@ -1269,7 +1273,30 @@ function resumeQueueRow(item) {
   const quality = resumeQuality(item);
   const duplicateLabel = item.ingestStatus === '重复待确认' ? '<span class="status warn">疑似重复</span>' : '<span class="status">未发现</span>';
   const action = item.ingestStatus?.startsWith('解析失败') && importFileCache.has(item.ingestFileKey) ? `<button class="link-action" data-retry-import="${item.id}">重试</button>` : `<button class="link-action" data-open-candidate="${item.id}">查看 →</button>`;
-  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${escapeHtml(item.roleName || '待分配')} ${item.matching?.status === '待分配' ? '<span class="status warn">需确认</span>' : ''}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(captureSourceLabel(item) || '手动导入')}<small>${escapeHtml(item.capturedBy?.name || '')}</small></td><td>${action}</td></tr>`;
+  return `<tr><td><strong>${escapeHtml(meta.fileName || '文本录入')}</strong><small>${escapeHtml(item.candidateName || '姓名待确认')}</small></td><td>${assignmentCell(item)}</td><td><span class="quality quality-${quality.level}">${quality.label}</span><small>${quality.missing ? `缺少：${escapeHtml(quality.missing)}` : '基础字段完整'}</small></td><td>${duplicateLabel}</td><td>${escapeHtml(captureSourceLabel(item) || '手动导入')}<small>${escapeHtml(item.capturedBy?.name || '')}</small></td><td>${action}</td></tr>`;
+}
+
+function assignmentCell(item) {
+  if (item.jobId) return `<strong>${escapeHtml(item.roleName || app.jobs.find(job => job.id === item.jobId)?.name || '已分配')}</strong><small>${item.assignmentSource === 'manual-confirmation' ? '已人工确认' : '已自动分配'}</small>`;
+  const result = [...(item.matching?.results || [])].sort((left, right) => Number(right.score || 0) - Number(left.score || 0))[0];
+  const suggestedId = item.matching?.suggestedJobId || (Number(result?.score || 0) >= 45 ? result?.jobId : '') || '';
+  const status = item.matching?.status === '待确认' || item.matching?.status === '多岗位候选' ? '待确认' : '待分配';
+  const score = Number(item.matching?.score || result?.score || 0);
+  const reason = item.matching?.assignmentReviewReason || (!app.jobs.some(job => job.status !== 'closed') ? '当前没有在招岗位' : score ? `最高匹配度 ${score} 分，需确认岗位` : '尚未识别到可靠岗位');
+  const options = app.jobs.filter(job => job.status !== 'closed').map(job => `<option value="${escapeHtml(job.id)}"${job.id === suggestedId ? ' selected' : ''}>${escapeHtml(job.name)}</option>`).join('');
+  return `<div class="queue-assignment"><span class="status warn">${status}</span><select data-assignment-select="${escapeHtml(item.id)}"><option value="">选择岗位</option>${options}</select><button class="link-action" type="button" data-confirm-assignment="${escapeHtml(item.id)}">确认</button></div><small>${escapeHtml(reason)}</small>`;
+}
+
+function confirmCandidateAssignment(id) {
+  const candidate = app.cases.find(item => item.id === id);
+  const select = $(`[data-assignment-select="${CSS.escape(id)}"]`);
+  const job = app.jobs.find(item => item.id === select?.value);
+  if (!candidate || !job) return toast('请先选择岗位');
+  candidate.jobId = job.id; candidate.roleName = job.name; candidate.jd = job.jd || ''; candidate.rules = job.rules || ''; candidate.keywords = job.keywords || [];
+  candidate.matching = { ...(candidate.matching || {}), jobId: job.id, suggestedJobId: job.id, status: '已分配', assignmentReview: false, assignmentReviewReason: '', confirmedManually: true };
+  candidate.ingestStatus = '已入库'; candidate.assignmentSource = 'manual-confirmation'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = new Date().toISOString(); candidate.updatedAt = candidate.assignedAt;
+  persistCases(candidate); renderInbox(); toast(`已将${candidate.candidateName || '该候选人'}分配至${job.name}`);
+
 }
 
 function resumeQuality(item) {
@@ -1625,6 +1652,34 @@ function applyJobMatch(candidate, match) {
   }
   const suggestedJobId = match?.suggestedJobId || primary?.id || match?.jobId || '';
   candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId, score, status: assignable ? '已分配' : (match?.status || '待分配'), assignmentReview: !assignable, assignmentReviewReason: assignable ? '' : (!suggestedJobId ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '需要人工确认岗位') };
+}
+
+async function reconcilePendingAssignments() {
+  if (assignmentReconcileInFlight || !REMOTE_BACKEND) return;
+  const pending = app.cases.filter(item => !item.jobId && item.resumeMeta?.source === 'local-sync-agent' && item.documentId);
+  if (!pending.length) return;
+  assignmentReconcileInFlight = true;
+  let assigned = 0;
+  try {
+    for (const candidate of pending) {
+      try {
+        const documentResponse = await authenticatedFetch(apiUrl(`/api/documents/${encodeURIComponent(candidate.documentId)}`));
+        const document = await documentResponse.json().catch(() => ({}));
+        const resume = documentResponse.ok ? (document.cleanedText || document.rawText || '') : '';
+        if (!resume) continue;
+        const match = await matchResumeToJobs(resume, candidate.candidateName);
+        applyJobMatch(candidate, match);
+        if (!candidate.jobId) continue;
+        candidate.ingestStatus = '已入库'; candidate.assignmentSource = 'automatic'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = new Date().toISOString(); candidate.updatedAt = candidate.assignedAt;
+        persistCases(candidate); assigned += 1;
+      } catch (error) {
+        console.warn('[AceCall assignment reconcile candidate]', candidate.id, error);
+      }
+    }
+  } finally {
+    assignmentReconcileInFlight = false;
+  }
+  if (assigned) { renderCurrent(); toast(`已自动完成 ${assigned} 份简历的岗位分配`); }
 }
 
 async function generatePreparation(candidate) {
