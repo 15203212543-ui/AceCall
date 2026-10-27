@@ -27,6 +27,7 @@ const {
   extractContextualCandidateName,
   extractLabeledCandidateName,
   extractNameFromFileName,
+  extractExperienceYearsFromFileName,
   chooseCandidateName
 } = require('./resume-text');
 const { classifyTranscription, presentTranscriptionStatus } = require('./transcription-route');
@@ -1753,7 +1754,6 @@ async function parseResumeFile(fileName, buffer) {
   if (text.length < 20) throw serviceError('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR', 422, { code: 'RESUME_TEXT_EMPTY', hint: '该文件可能是扫描件、图片型 PDF 或受保护文档' });
   const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
   const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
-  const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
   const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
   const resumeLines = text.split('\n').map(line => line.trim()).filter(Boolean);
@@ -1765,7 +1765,7 @@ async function parseResumeFile(fileName, buffer) {
   const displayedName = chooseDisplayedName(nameCandidates);
   const candidateName = displayedName.candidateName || chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
   const profile = extractProfileFields(text);
-  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears, education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
+  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears || extractExperienceYearsFromFileName(fileName), education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
 }
 
 let baiduAccessToken = { value: '', expiresAt: 0 };
