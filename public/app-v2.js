@@ -1232,7 +1232,7 @@ function inferTalentProfile(item) {
 
 function renderInbox() {
   const pending = app.cases.filter(item => item.ingestStatus === '解析中').length;
-  const needsAssignment = app.cases.filter(item => !item.jobId || item.matching?.status === '待分配').length;
+  const needsAssignment = app.cases.filter(needsAssignmentReview).length;
   const failed = app.cases.filter(item => String(item.ingestStatus || '').startsWith('解析失败')).length;
   const duplicate = app.cases.filter(item => item.ingestStatus === '重复待确认').length;
   const batches = [...new Set(app.cases.map(item => item.ingestBatchId).filter(Boolean))].slice(0, 5);
@@ -1242,10 +1242,11 @@ function renderInbox() {
   const filterCases = inboxQueueFilter ? app.cases.filter(item => inboxQueueFilterMatches(item, inboxQueueFilter)) : app.cases;
   const queue = [...filterCases].sort(byUpdated).slice(0, inboxQueueFilter ? filterCases.length : 30);
   const filterLabel = { all: '全部简历', processing: '解析中', assignment: '待岗位确认', duplicate: '重复待确认', failed: '解析异常' }[inboxQueueFilter] || '';
-  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions"><label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><button class="metric metric-action ${!inboxQueueFilter ? 'active' : ''}" data-inbox-filter="all" type="button"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></button><button class="metric metric-action ${inboxQueueFilter === 'processing' ? 'active' : ''}" data-inbox-filter="processing" type="button"><b>${pending}</b><span>解析中</span><small>正在处理</small></button><button class="metric metric-action ${inboxQueueFilter === 'assignment' ? 'active' : ''}" data-inbox-filter="assignment" type="button"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></button><button class="metric metric-action ${inboxQueueFilter === 'duplicate' ? 'active' : ''}" data-inbox-filter="duplicate" type="button"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></button><button class="metric metric-action ${inboxQueueFilter === 'failed' ? 'active' : ''}" data-inbox-filter="failed" type="button"><b>${failed}</b><span>解析异常</span><small>支持重试</small></button></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">${filterLabel ? `当前筛选：${filterLabel}` : '这里处理文件，不在此管理电话和审核流程'}</p></div><span>${queue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">当前状态下没有简历</div></td></tr>'}</tbody></table></div></section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download>下载 Mac 桌面版</a><a class="secondary" href="downloads/AceCall-Sync-Windows-Setup.exe" download>下载 Windows 桌面版</a></div><small class="watch-started">Mac（Apple 芯片）：打开 DMG 后拖入“应用程序”，首次打开请在系统设置里允许。Windows：运行安装程序。</small></div></section></aside></div></div>`;
+  $('#inboxView').innerHTML = `<div class="page resume-center-page"><div class="page-title"><div><span class="eyebrow">INGESTION & QUALITY</span><h1>简历中心</h1><p>管理文件进入 AceCall 的导入、解析、岗位分配和异常处理。</p></div><div class="import-actions">${needsAssignment ? '<button class="secondary" id="rematchPendingButton" type="button">重新匹配待确认简历</button>' : ''}<label class="primary upload-trigger"><span class="button-icon" aria-hidden="true">+</span><span>批量导入简历</span><input id="batchResumeInput" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" multiple hidden></label><label class="secondary upload-trigger"><span class="button-icon" aria-hidden="true">&#8943;</span><span>选择文件夹</span><input id="folderResumeInput" type="file" webkitdirectory directory multiple hidden></label></div></div><div class="ingest-kpis"><button class="metric metric-action ${!inboxQueueFilter ? 'active' : ''}" data-inbox-filter="all" type="button"><b>${app.cases.length}</b><span>已建立档案</span><small>进入候选人池</small></button><button class="metric metric-action ${inboxQueueFilter === 'processing' ? 'active' : ''}" data-inbox-filter="processing" type="button"><b>${pending}</b><span>解析中</span><small>正在处理</small></button><button class="metric metric-action ${inboxQueueFilter === 'assignment' ? 'active' : ''}" data-inbox-filter="assignment" type="button"><b>${needsAssignment}</b><span>待岗位确认</span><small>无法高置信分配</small></button><button class="metric metric-action ${inboxQueueFilter === 'duplicate' ? 'active' : ''}" data-inbox-filter="duplicate" type="button"><b>${duplicate}</b><span>重复待确认</span><small>需要合并或更新</small></button><button class="metric metric-action ${inboxQueueFilter === 'failed' ? 'active' : ''}" data-inbox-filter="failed" type="button"><b>${failed}</b><span>解析异常</span><small>支持重试</small></button></div><div class="ingest-layout"><div class="ingest-main"><section class="surface ingest-queue"><div class="surface-head"><div><h2>文件处理队列</h2><p class="surface-subtitle">${filterLabel ? `当前筛选：${filterLabel}` : '这里处理文件，不在此管理电话和审核流程'}</p></div><span>${queue.length} 条记录</span></div><div class="table-wrap"><table><thead><tr><th>文件 / 候选人</th><th>岗位分配</th><th>解析质量</th><th>重复检查</th><th>来源</th><th>操作</th></tr></thead><tbody>${queue.map(resumeQueueRow).join('') || '<tr><td colspan="6"><div class="empty">当前状态下没有简历</div></td></tr>'}</tbody></table></div></section></div><aside class="ingest-aside"><section class="surface watch-panel"><div class="surface-head"><div><h2>文件来源</h2><p class="surface-subtitle">本机文件持续进入队列</p></div><span>${watchStatus}</span></div><div class="surface-body"><div class="watch-facts"><span>设备：<b>${policy.label}</b></span><span>扫描：<b>每 5 分钟</b></span></div><p class="muted-text">${policy.platform === 'mac' ? 'Mac 默认监听 Downloads，需在系统选择器中授权。' : 'Windows 请选择授权文件夹。'} 只处理监听启动后新增的简历文件。</p><button class="secondary" id="watchFolderButton" type="button"><span class="button-icon" aria-hidden="true">${folderWatchTimer ? '&#9632;' : '&#9654;'}</span><span>${folderWatchTimer ? '停止页面监听' : watchLabel}</span></button></div></section><section class="surface batch-surface"><div class="surface-head"><div><h2>导入批次</h2><p class="surface-subtitle">最近批次处理结果</p></div><span>${batches.length} 个</span></div><div class="surface-body">${batches.map(id => { const items = app.cases.filter(item => item.ingestBatchId === id); return `<div class="batch-row"><span>${formatDate(items[0]?.createdAt)} · ${items.length} 份</span><b>${items.filter(item => item.ingestStatus === '已入库').length} 成功</b></div>`; }).join('') || '<div class="empty">导入后显示批次结果</div>'}</div></section><section class="surface desktop-agent-panel"><div class="surface-head"><div><h2>桌面同步助手</h2><p class="surface-subtitle">页面关闭后继续监听</p></div><span>推荐</span></div><div class="surface-body"><p class="muted-text">安装桌面版后，可在页面关闭时继续监听文件，并从网页控制本机录音。首次录音时请允许麦克风权限。</p><div class="desktop-agent-actions"><a class="primary" href="downloads/AceCall-Sync-Mac.dmg" download>下载 Mac 桌面版</a><a class="secondary" href="downloads/AceCall-Sync-Windows-Setup.exe" download>下载 Windows 桌面版</a></div><small class="watch-started">Mac（Apple 芯片）：打开 DMG 后拖入“应用程序”，首次打开请在系统设置里允许。Windows：运行安装程序。</small></div></section></aside></div></div>`;
   $('#batchResumeInput').addEventListener('change', event => importResumeBatch(event.target.files, { source: 'manual' }));
   $('#folderResumeInput').addEventListener('change', event => importResumeBatch(event.target.files, { source: 'folder' }));
   $('#watchFolderButton').addEventListener('click', startFolderWatch);
+  $('#rematchPendingButton')?.addEventListener('click', rematchPendingCandidates);
   $$('#inboxView [data-inbox-filter]').forEach(button => button.addEventListener('click', () => {
     inboxQueueFilter = button.dataset.inboxFilter === 'all' ? '' : button.dataset.inboxFilter;
     renderInbox();
@@ -1257,7 +1258,7 @@ function renderInbox() {
 
 function inboxQueueFilterMatches(item, filter) {
   if (filter === 'processing') return item.ingestStatus === '解析中';
-  if (filter === 'assignment') return !item.jobId || item.matching?.status === '待分配';
+  if (filter === 'assignment') return needsAssignmentReview(item);
   if (filter === 'duplicate') return item.ingestStatus === '重复待确认';
   if (filter === 'failed') return String(item.ingestStatus || '').startsWith('解析失败');
   return true;
@@ -1310,7 +1311,7 @@ async function retryImport(id) {
   const candidate = app.cases.find(item => item.id === id); const file = importFileCache.get(candidate?.ingestFileKey);
   if (!candidate || !file) return toast('原文件已不在当前会话，请重新选择文件');
   candidate.ingestStatus = '解析中'; renderCurrent();
-  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = '已入库'; persistCases(candidate); renderCurrent(); toast('简历已重试成功'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
+  try { const result = await parseResumeFileForImport(file); candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, result.metadata?.originalFile, result.metadata); candidate.candidateName = result.metadata.candidateName || candidate.candidateName; applyJobMatch(candidate, await matchResumeToJobs(candidate.resume, candidate.candidateName)); candidate.ingestStatus = candidate.jobId ? '已入库' : '已解析待分配'; persistCases(candidate); renderCurrent(); toast(candidate.jobId ? '简历已重试成功并完成岗位分配' : '简历解析成功，岗位仍需人工确认'); } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; persistCases(candidate); renderCurrent(); toast(error.message); }
 }
 
 function renderCandidates() {
@@ -1608,7 +1609,7 @@ async function parseResumeFileForImport(file) {
 }
 
 async function matchResumeToJobs(resume, candidateName = '') {
-  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, rules: job.rules })) });
+  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, required: job.required, bonus: job.bonus, exclusions: job.exclusions, verify: job.verify, profile: job.profile, rules: job.rules })) });
   return response;
 }
 
@@ -1616,13 +1617,39 @@ function applyJobMatch(candidate, match) {
   const primary = app.jobs.find(job => job.id === match?.jobId);
   const score = normalizedMatchScore(match, candidate.resume, primary || {});
   const secondScore = Number(match?.alternativeJobs?.[0]?.score || 0);
-  const ambiguous = !primary || match?.status === '待分配' || score < 60 || (secondScore > 0 && score - secondScore < 8) || match?.confidence === '低';
-  if (primary && !ambiguous) {
+  const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && score >= 60 && (!secondScore || score - secondScore >= 8);
+  if (assignable) {
     candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
   } else {
     candidate.jobId = ''; candidate.roleName = ''; candidate.jd = ''; candidate.rules = ''; candidate.keywords = [];
   }
-  candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId: primary?.id || match?.jobId || '', score, status: ambiguous ? '待分配' : '已分配', assignmentReview: ambiguous, assignmentReviewReason: ambiguous ? (!primary ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '匹配置信度较低') : '' };
+  const suggestedJobId = match?.suggestedJobId || primary?.id || match?.jobId || '';
+  candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId, score, status: assignable ? '已分配' : (match?.status || '待分配'), assignmentReview: !assignable, assignmentReviewReason: assignable ? '' : (!suggestedJobId ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '需要人工确认岗位') };
+}
+
+async function rematchPendingCandidates() {
+  const button = $('#rematchPendingButton');
+  const pending = app.cases.filter(item => item.resume && (!item.jobId || item.matching?.assignmentReview || ['待分配', '待确认', '多岗位候选', '无法匹配'].includes(item.matching?.status)));
+  if (!pending.length) return toast('当前没有需要重新匹配的简历');
+  if (button) { button.disabled = true; button.textContent = `正在重新匹配 0/${pending.length}`; }
+  let assigned = 0;
+  for (let index = 0; index < pending.length; index += 1) {
+    const candidate = pending[index];
+    try {
+      const match = await matchResumeToJobs(candidate.resume, candidate.candidateName);
+      applyJobMatch(candidate, match);
+      if (candidate.jobId) assigned += 1;
+      if (candidate.ingestStatus !== '重复待确认') candidate.ingestStatus = candidate.jobId ? '已入库' : '已解析待分配';
+      candidate.updatedAt = new Date().toISOString();
+      persistCases(candidate);
+    } catch (error) {
+      candidate.matching = { ...(candidate.matching || {}), assignmentReview: true, assignmentReviewReason: error.message || '重新匹配失败' };
+      persistCases(candidate);
+    }
+    if (button) button.textContent = `正在重新匹配 ${index + 1}/${pending.length}`;
+  }
+  renderCurrent();
+  toast(`重新匹配完成：${assigned} 份已分配，${pending.length - assigned} 份仍需人工确认`);
 }
 
 async function generatePreparation(candidate) {
@@ -2132,7 +2159,7 @@ function localMatch(payload) {
 
 function defaultQuestions(){return [['基本条件','请确认目前地点、期望工作地点、薪资和到岗时间。','确认基础可行性','必问'],['求职动机','为什么在这个时间点考虑新的机会？','判断动机与岗位内容是否一致','必问'],['核心项目','请选择最相关的项目，说明背景、职责和结果。','核实经历真实性','必问'],['职责边界','哪些决策由你直接负责？哪些工作是参与完成？','区分参与和主导','必问'],['项目结果','项目是否上线，有哪些可量化结果？','验证交付质量','必问'],['专业能力','你负责过哪些业务模块，如何与业务和研发协作？','验证岗位专业能力','建议问'],['风险核验','过去几次工作变动的主要原因分别是什么？','识别稳定性风险','风险追问'],['合规','是否存在竞业限制或其他入职约束？','识别入职风险','必问']].map(([category,question,reason,priority])=>({category,question,reason,priority,source:'初筛准备'}));}
 
-function needsAssignmentReview(item) { return Boolean(item.matching?.assignmentReview || !item.jobId || item.matching?.status === '待分配'); }
+function needsAssignmentReview(item) { return Boolean(item.matching?.assignmentReview || !item.jobId || ['待分配', '待确认', '多岗位候选', '无法匹配'].includes(item.matching?.status)); }
 function statusOf(item) { if (item.report?.reviewConfirmed || item.reviewConfirmed) return '已完成'; if (item.report || item.communicationSummary || item.hasReport || item.hasSummary) return '待确认'; if (item.preparation || item.hasPreparation) return '待电话'; return '待分析'; }
 function displayStatus(item) { const decision = item.report?.finalDecision || item.finalDecision; if (item.report?.reviewConfirmed || item.reviewConfirmed) return ({'推荐业务面试':'推荐面试','补充电话沟通':'补充沟通','暂不推进':'暂不推进'}[decision] || decision || '已完成'); return statusOf(item); }
 function finalAction(item) { return item.report?.finalDecision || item.report?.nextStep || item.finalDecision || item.nextStep || ''; }
