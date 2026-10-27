@@ -1239,17 +1239,24 @@ async function loadState(context) {
   const db = getDatabase();
   const [jobs, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
     listTenantJobs(context.tenantId),
-    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('createdAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get()
   ]);
   const screenings = new Map();
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
-  const cases = (candidatesResult.data || []).map(candidate => {
+  const cases = (candidatesResult.data || []).filter(isMeaningfulCandidateRecord).map(candidate => {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument(presentCaseSummary(candidate, screening));
   });
   return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+}
+
+function isMeaningfulCandidateRecord(candidate = {}) {
+  return Boolean(String(candidate.candidateName || '').trim()
+    || String(candidate.resumeMeta?.fileName || '').trim()
+    || String(candidate.documentId || '').trim()
+    || String(candidate.resumeSummary || candidate.resume || '').trim());
 }
 
 async function loadCandidateScreening(context, id) {
@@ -1349,6 +1356,7 @@ async function saveCandidate(context, id, input) {
   candidate.updatedBy = context.uid;
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
+  if (!isMeaningfulCandidateRecord(candidate)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
   const existingScreening = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
   const previousScreening = Array.isArray(existingScreening.data) ? (existingScreening.data[0] || {}) : (existingScreening.data || {});

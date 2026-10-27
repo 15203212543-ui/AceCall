@@ -1255,8 +1255,9 @@ function renderInbox() {
   const policy = getPlatformPolicy();
   const watchStatus = folderWatchTimer ? '监听中' : '未启动';
   const watchLabel = policy.defaultMode === 'downloads' ? '选择 Downloads 并开始监听' : '选择文件夹并开始监听';
-  const filterCases = inboxQueueFilter ? app.cases.filter(item => inboxQueueFilterMatches(item, inboxQueueFilter)) : app.cases;
-  const sortedQueue = [...filterCases].sort(byUpdated);
+  const visibleCases = app.cases.filter(isMeaningfulCandidate);
+  const filterCases = inboxQueueFilter ? visibleCases.filter(item => inboxQueueFilterMatches(item, inboxQueueFilter)) : visibleCases;
+  const sortedQueue = [...filterCases].sort(byImported);
   const queuePages = Math.max(1, Math.ceil(sortedQueue.length / inboxQueuePageSize) || 1);
   inboxQueuePage = Math.min(Math.max(1, inboxQueuePage), queuePages);
   const queue = sortedQueue.slice((inboxQueuePage - 1) * inboxQueuePageSize, inboxQueuePage * inboxQueuePageSize);
@@ -1430,10 +1431,11 @@ function renderCandidates() {
 }
 
 function candidatePoolTable(items) {
-  const total = items.length;
+  const orderedItems = items.filter(isMeaningfulCandidate).sort(byImported);
+  const total = orderedItems.length;
   const pages = Math.max(1, Math.ceil(total / candidatePageSize) || 1);
   candidatePage = Math.min(Math.max(1, candidatePage), pages);
-  const pageItems = items.slice((candidatePage - 1) * candidatePageSize, candidatePage * candidatePageSize);
+  const pageItems = orderedItems.slice((candidatePage - 1) * candidatePageSize, candidatePage * candidatePageSize);
   const pager = total > candidatePageSize ? `<div class="candidate-pager"><button type="button" data-candidate-page="${candidatePage - 1}"${candidatePage <= 1 ? ' disabled' : ''}>上一页</button><span>第 ${candidatePage} / ${pages} 页</span><button type="button" data-candidate-page="${candidatePage + 1}"${candidatePage >= pages ? ' disabled' : ''}>下一页</button></div>` : '';
   return `<div class="surface candidate-pool"><div class="table-wrap"><table><thead><tr><th>候选人</th><th>岗位</th><th>匹配度</th><th>人才标签</th><th>当前阶段</th><th>资料 / Moka</th><th>下一步</th></tr></thead><tbody>${pageItems.map(item => { const tags = candidateTags(item); const quality = resumeQuality(item); return `<tr><td><strong>${escapeHtml(item.candidateName || '姓名待确认')}</strong><small>${escapeHtml(item.resumeMeta?.fileName || '文本录入')}</small></td><td>${escapeHtml(item.roleName || '待分配')}</td><td>${scoreLabel(item)}</td><td><div class="candidate-tags">${tags.map(tag => `<span class="mini-tag ${tag.tone}">${escapeHtml(tag.label)}</span>`).join('') || '<span class="muted-text">待识别</span>'}</div></td><td><span class="status ${statusClass(displayStatus(item))}">${displayStatus(item)}</span><small>${formatDate(item.updatedAt || item.createdAt)}</small></td><td><span class="quality quality-${quality.level}">${quality.label}</span><small class="moka-placeholder">${mokaStatusLabel(item)}</small></td><td><button class="link-action" data-open-candidate="${item.id}">${nextAction(item)} →</button></td></tr>`; }).join('') || '<tr><td colspan="7"><div class="empty">没有符合条件的候选人</div></td></tr>'}</tbody></table></div>${pager}</div>`;
 }
@@ -2359,6 +2361,9 @@ function resumeHint(item){const meta=item.resumeMeta||{};const facts=[meta.age?`
 function formatDate(value){if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':`${date.getMonth()+1}月${date.getDate()}日`;}
 function formatHistoryTime(value){if(!value)return'—';const date=new Date(value);if(Number.isNaN(date.getTime()))return'—';return `${date.getMonth()+1}月${date.getDate()}日 ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;}
 function byUpdated(a,b){return new Date(b.updatedAt||b.createdAt)-new Date(a.updatedAt||a.createdAt);}
+function importedTimestamp(item){const value=item?.capturedAt||item?.createdAt||item?.resumeMeta?.uploadedAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
+function byImported(a,b){return importedTimestamp(b)-importedTimestamp(a)||String(b?.id||b?._id||'').localeCompare(String(a?.id||a?._id||''));}
+function isMeaningfulCandidate(item){return Boolean(String(item?.candidateName||'').trim()||String(item?.resumeMeta?.fileName||'').trim()||String(item?.documentId||'').trim()||String(item?.resumeSummary||item?.resume||'').trim());}
 function infoLabel(key){return({currentCompanyRole:'当前公司及职位',location:'当前地点',currentSalary:'当前薪资',expectedSalary:'期望薪资',availability:'到岗时间',motivation:'求职动机',nonCompete:'竞业限制'}[key]||key);}
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
@@ -2369,7 +2374,7 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关或认证服务暂时不可用',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:remote.cases||[],rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=app.remoteState.cases;teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);return copy;}
