@@ -1,5 +1,6 @@
 import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+esm';
 import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports, clearDeferredCaches, noteDeferredTenant } from './interviewer-page.js?v=__ACE_CALL_BUILD__';
+import { recordingDockVisible, recordingOnCallPage, recordingStatusLabel } from './recording-session.mjs?v=__ACE_CALL_BUILD__';
 
 // auth-session.js 以普通脚本形式先于本文件加载，负责判定匿名身份。
 // 匿名令牌（publishable key 自动生成的 scope=anonymous / sub=anon）会被网关
@@ -71,7 +72,11 @@ const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
+const RECORDING_SESSION_KEY = 'acecall.recordingSession';
 let desktopAgentAvailable = false;
+let recordingSession = null;
+let recordingTicker = null;
+let recordingDismissTimer = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
@@ -85,6 +90,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
   void checkService();
+  void restoreDesktopRecording();
 });
 
 let shellBound = false;
@@ -107,6 +113,8 @@ function bindShell() {
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
+  $('#recordingDockStop')?.addEventListener('click', stopBrowserRecording);
+  $('#recordingDockReturn')?.addEventListener('click', returnToRecordingCall);
   bindAccountMenu();
   bindGlobalCandidateSearch();
   $('#applyJobRuleLibrary').addEventListener('click', applySelectedTeamRule);
@@ -537,6 +545,7 @@ async function enterWorkspace(username = '', companyName = '') {
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
   void checkService();
+  void restoreDesktopRecording();
 }
 
 async function signOut() {
@@ -567,6 +576,7 @@ function navigate(view, updateHash = true) {
   if (updateHash) history.replaceState(null, '', `#${view}`);
   ensureDeferredViewData(view);
   renderCurrent();
+  syncRecordingDock();
 }
 
 function ensureDeferredViewData(view) {
@@ -1224,6 +1234,7 @@ function renderCandidateDetail() {
   $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
   bindCommonActions($('#candidateDetailView'));
+  syncRecordingChrome();
 }
 
 function renderDetailTab(item) {
@@ -1257,7 +1268,12 @@ function callTab(item) {
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
   const recordingLabel = draft?.file ? `${draft.file.name} · ${formatBytes(draft.file.size)}` : item.callRecording?.fileName || '尚未添加录音';
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><label class="recording-consent"><input type="checkbox" id="recordingConsent"><span>已告知候选人本次沟通会录音，并取得同意。未同意时不开始录音，可以继续手工记录。</span></label><button class="secondary" type="button" id="startRecording">开始录音</button><button class="secondary" type="button" id="stopRecording" disabled>停止录音</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingLabel)}。录音前请先向候选人告知并取得同意。</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  const liveRecording = recordingSession?.candidateId === item.id ? recordingSession : null;
+  const recordingNow = liveRecording?.phase === 'recording';
+  const recordingBusy = liveRecording?.phase === 'stopping';
+  const otherRecording = Boolean(recordingSession && ['recording', 'stopping'].includes(recordingSession.phase) && recordingSession.candidateId !== item.id);
+  const recordingStatusText = recordingNow ? recordingStatusLabel(recordingSession) : recordingBusy ? (recordingSession.message || '正在停止录音，请稍候…') : `${recordingLabel}。录音前请先向候选人告知并取得同意。`;
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><label class="recording-consent"><input type="checkbox" id="recordingConsent" ${recordingNow || recordingBusy || item.recordingConsent?.accepted ? 'checked' : ''}><span>已告知候选人本次沟通会录音，并取得同意。未同意时不开始录音，可以继续手工记录。</span></label><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {
@@ -1455,39 +1471,195 @@ let activeRecorder = null;
 let activeRecorderChunks = [];
 let recorderStopping = false;
 
-function setRecordingFile(file) {
+function currentRecordingView() {
+  return { view: app.view, candidateId: app.candidateId, detailTab: app.detailTab };
+}
+
+function rememberRecordingSession() {
+  try {
+    if (recordingSession?.source === 'desktop' && recordingSession.phase === 'recording' && recordingSession.candidateId && recordingSession.startedAt) {
+      sessionStorage.setItem(RECORDING_SESSION_KEY, JSON.stringify({ candidateId: recordingSession.candidateId, candidateName: recordingSession.candidateName, startedAt: recordingSession.startedAt }));
+      return;
+    }
+    sessionStorage.removeItem(RECORDING_SESSION_KEY);
+  } catch {}
+}
+
+function beginRecordingSession(candidate, source, startedAt) {
+  clearTimeout(recordingDismissTimer);
+  recordingSession = { candidateId: candidate?.id || '', candidateName: candidate?.candidateName || '未命名候选人', source, startedAt: startedAt || new Date().toISOString(), phase: 'recording', message: '' };
+  rememberRecordingSession();
+  if (!recordingTicker) recordingTicker = setInterval(syncRecordingClock, 1000);
+  syncRecordingChrome();
+}
+
+function setRecordingPhase(phase, message = '') {
+  if (!recordingSession) return;
+  recordingSession.phase = phase;
+  if (message) recordingSession.message = message;
+  if (phase !== 'recording') {
+    clearInterval(recordingTicker);
+    recordingTicker = null;
+    try { sessionStorage.removeItem(RECORDING_SESSION_KEY); } catch {}
+  }
+  syncRecordingChrome();
+  if (phase === 'transcribing' || phase === 'failed') {
+    clearTimeout(recordingDismissTimer);
+    recordingDismissTimer = setTimeout(() => { if (recordingSession?.phase === phase) clearRecordingSession(); }, phase === 'transcribing' ? 2500 : 4000);
+  }
+}
+
+function clearRecordingSession() {
+  clearTimeout(recordingDismissTimer);
+  clearInterval(recordingTicker);
+  recordingTicker = null;
+  recordingSession = null;
+  try { sessionStorage.removeItem(RECORDING_SESSION_KEY); } catch {}
+  syncRecordingChrome();
+}
+
+function syncRecordingClock() {
+  if (recordingSession?.phase !== 'recording') return;
+  const label = recordingStatusLabel(recordingSession);
+  if (recordingOnCallPage(recordingSession, currentRecordingView())) {
+    const status = $('#recordingStatus');
+    if (status) status.textContent = label;
+  }
+  const meta = $('#recordingDockMeta');
+  if (meta && recordingDockVisible(recordingSession, currentRecordingView())) meta.textContent = label;
+}
+
+function syncRecordingControls() {
+  const start = $('#startRecording');
+  const stop = $('#stopRecording');
+  if (!start && !stop) return;
+  const owns = Boolean(recordingSession && currentCandidate()?.id === recordingSession.candidateId);
+  const blocked = Boolean(recordingSession && ['recording', 'stopping'].includes(recordingSession.phase));
+  const recordingNow = owns && recordingSession.phase === 'recording';
+  const stopping = owns && recordingSession.phase === 'stopping';
+  if (start) start.disabled = recordingNow || stopping || (blocked && !owns);
+  if (stop) { stop.disabled = !recordingNow; stop.textContent = stopping ? '正在停止…' : '停止录音'; }
+  const status = $('#recordingStatus');
+  if (status && recordingNow) status.textContent = recordingStatusLabel(recordingSession);
+  if (status && stopping) status.textContent = recordingSession.message || '正在停止录音，请稍候…';
+}
+
+function syncRecordingDock() {
+  const dock = $('#recordingDock');
+  if (!dock) return;
+  const view = currentRecordingView();
+  const visible = recordingDockVisible(recordingSession, view);
+  dock.hidden = !visible;
+  dock.classList.toggle('is-recording', recordingSession?.phase === 'recording');
+  dock.classList.toggle('is-stopping', recordingSession?.phase === 'stopping');
+  dock.classList.toggle('is-transcribing', recordingSession?.phase === 'transcribing');
+  dock.classList.toggle('is-failed', recordingSession?.phase === 'failed');
+  if (!visible) return;
+  const name = $('#recordingDockName');
+  const meta = $('#recordingDockMeta');
+  if (name) name.textContent = recordingSession.candidateName || '未命名候选人';
+  if (meta) meta.textContent = recordingStatusLabel(recordingSession);
+  const stop = $('#recordingDockStop');
+  const back = $('#recordingDockReturn');
+  if (stop) { stop.disabled = recordingSession.phase !== 'recording'; stop.textContent = recordingSession.phase === 'stopping' ? '正在停止…' : '停止录音'; }
+  if (back) back.hidden = !recordingSession.candidateId;
+}
+
+function syncRecordingChrome() {
+  syncRecordingControls();
+  syncRecordingDock();
+}
+
+function returnToRecordingCall() {
+  if (!recordingSession?.candidateId) return;
+  const candidate = app.cases.find(item => item.id === recordingSession.candidateId);
+  if (!candidate) return toast('找不到这条录音对应的候选人');
+  app.candidateId = candidate.id;
+  app.detailTab = 'call';
+  navigate('candidate');
+}
+
+function noteRecordingProgress(message) {
+  const ownerId = recordingSession?.candidateId || recordingDraft.candidateId;
+  const viewingCall = app.view === 'candidate' && app.detailTab === 'call' && (!ownerId || app.candidateId === ownerId);
+  const status = $('#recordingStatus');
+  if (status && viewingCall) status.textContent = message;
+  if (!recordingSession) return;
+  recordingSession.message = message;
+  if (!recordingDockVisible(recordingSession, currentRecordingView())) return;
+  const meta = $('#recordingDockMeta');
+  if (meta) meta.textContent = recordingSession.phase === 'transcribing' ? '已停止，转写中' : message;
+}
+
+async function restoreDesktopRecording() {
+  if (recordingSession?.phase === 'recording' || recordingSession?.phase === 'stopping') return;
+  try {
+    const response = await fetch(`${DESKTOP_AGENT_URL}/status`, { signal: AbortSignal.timeout(900) });
+    if (!response.ok) return;
+    const data = await response.json().catch(() => ({}));
+    const recording = data.recording || {};
+    if (recording.status !== 'recording' || !recording.startedAt) {
+      try { sessionStorage.removeItem(RECORDING_SESSION_KEY); } catch {}
+      return;
+    }
+    desktopAgentAvailable = true;
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(RECORDING_SESSION_KEY) || 'null'); } catch { saved = null; }
+    const matched = Boolean(saved && saved.startedAt === recording.startedAt && saved.candidateId);
+    const candidate = matched ? app.cases.find(item => item.id === saved.candidateId) : null;
+    activeRecorder = 'desktop';
+    recorderStopping = false;
+    beginRecordingSession({ id: matched ? saved.candidateId : '', candidateName: candidate?.candidateName || (matched ? saved.candidateName : '') || '未识别候选人' }, 'desktop', recording.startedAt);
+  } catch {}
+}
+
+function setRecordingFile(file, candidateId) {
   if (!file) return;
-  if (file.size > RECORDING_MAX_BYTES) return toast('录音文件不能超过 500MB');
+  if (file.size > RECORDING_MAX_BYTES) {
+    if (recordingSession?.phase === 'stopping') setRecordingPhase('failed', '录音文件不能超过 500MB');
+    return toast('录音文件不能超过 500MB');
+  }
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
   const supportedAudio = ['mp3', 'wav', 'pcm', 'amr', 'm4a', 'webm'];
-  if (file.type && !file.type.startsWith('audio/') && !supportedAudio.includes(extension)) return toast('请选择音频文件');
+  if (file.type && !file.type.startsWith('audio/') && !supportedAudio.includes(extension)) {
+    if (recordingSession?.phase === 'stopping') setRecordingPhase('failed', '请选择音频文件');
+    return toast('请选择音频文件');
+  }
+  const ownerId = candidateId || (recordingSession?.phase === 'stopping' ? recordingSession.candidateId : '') || app.candidateId;
+  if (!ownerId) {
+    clearRecordingSession();
+    return toast('录音已停止，但无法确认对应候选人，这次录音没有上传');
+  }
   if (recordingDraft.url) URL.revokeObjectURL(recordingDraft.url);
-  recordingDraft = { candidateId: app.candidateId, file, url: URL.createObjectURL(file), source: 'upload', taskId: '', recordingId: '', uploaded: false };
-  renderCandidateDetail();
+  const source = recordingSession?.phase === 'stopping' && recordingSession.candidateId === ownerId ? (recordingSession.source || 'upload') : 'upload';
+  recordingDraft = { candidateId: ownerId, file, url: URL.createObjectURL(file), source, taskId: '', recordingId: '', uploaded: false };
+  if (app.view === 'candidate' && app.candidateId === ownerId) renderCandidateDetail();
+  else syncRecordingDock();
   transcribeRecording(file);
 }
 
 async function transcribeRecording(file) {
   const status = $('#recordingStatus');
   if (!REMOTE_BACKEND) {
+    if (recordingSession?.phase === 'stopping') clearRecordingSession();
     if (status) status.textContent = `${file.name} · 已添加；登录在线版后可进行异步转写`;
     return toast('请登录在线版后上传录音进行异步转写');
   }
   try {
     if (!cloudbaseClient?.uploadFile) throw new Error('CloudBase存储未初始化，请重新登录后重试');
     if (file.size > RECORDING_MAX_BYTES) throw new Error('录音文件不能超过 500MB');
-    if (status) status.textContent = `${file.name} · 正在创建录音任务…`;
-    const initResponse = await authenticatedFetch(apiUrl('/api/recordings/init'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId: app.candidateId, fileName: file.name, mimeType: file.type || 'audio/webm', size: file.size }) });
+    noteRecordingProgress(`${file.name} · 正在创建录音任务…`);
+    const initResponse = await authenticatedFetch(apiUrl('/api/recordings/init'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidateId: recordingDraft.candidateId, fileName: file.name, mimeType: file.type || 'audio/webm', size: file.size }) });
     const initData = await initResponse.json().catch(() => ({}));
     if (!initResponse.ok) throw new Error(initData.error || '录音任务创建失败');
     const { recordingId, taskId, storagePrefix, chunkSize = RECORDING_CHUNK_SIZE } = initData;
     recordingDraft.taskId = taskId; recordingDraft.recordingId = recordingId;
     for (let offset = 0, index = 0; offset < file.size; offset += chunkSize, index += 1) {
-      if (recordingDraft.candidateId !== app.candidateId) return;
+      if (recordingDraft.file !== file) return;
       const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size), file.type || 'application/octet-stream');
       const extension = file.name.split('.').pop()?.toLowerCase() || 'webm';
       const cloudPath = `${storagePrefix}/part-${String(index).padStart(5, '0')}.${extension}`;
-      if (status) status.textContent = `${file.name} · 正在上传录音 ${Math.round(((offset + chunk.size) / file.size) * 100)}%`;
+      noteRecordingProgress(`${file.name} · 正在上传录音 ${Math.round(((offset + chunk.size) / file.size) * 100)}%`);
       const uploadedPart = await cloudbaseClient.uploadFile({ cloudPath, filePath: chunk });
       const partResponse = await authenticatedFetch(apiUrl(`/api/recordings/${recordingId}/parts/complete`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ index, path: cloudPath, fileId: uploadedPart.fileID || uploadedPart.fileId || '', size: chunk.size, final: offset + chunk.size >= file.size }) });
       const partData = await partResponse.json().catch(() => ({}));
@@ -1496,12 +1668,15 @@ async function transcribeRecording(file) {
     const queueResponse = await authenticatedFetch(apiUrl('/api/transcription-tasks'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, taskId }) });
     const queueData = await queueResponse.json().catch(() => ({}));
     if (!queueResponse.ok) throw new Error(queueData.error || '录音转写排队失败');
-    if (status) status.textContent = `${file.name} · 已上传，等待异步转写服务处理`;
+    noteRecordingProgress(`${file.name} · 已上传，等待异步转写服务处理`);
     recordingDraft.uploaded = true;
+    if (recordingSession?.phase === 'stopping') setRecordingPhase('transcribing');
     toast('录音已上传，已进入异步转写队列');
     pollTranscriptionTask(taskId, file.name);
   } catch (error) {
-    if (status) status.textContent = `${file.name} · 自动转写失败：${error.message}`;
+    const message = `${file.name} · 自动转写失败：${error.message}`;
+    noteRecordingProgress(message);
+    if (recordingSession?.phase === 'stopping') setRecordingPhase('failed', message);
     toast(error.message || '自动转写失败，可手动粘贴转写内容');
   }
 }
@@ -1509,19 +1684,27 @@ async function transcribeRecording(file) {
 async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
   if (!taskId || attempts > 100) return;
   await sleep(3000);
-  if (recordingDraft.taskId !== taskId || recordingDraft.candidateId !== app.candidateId) return;
+  if (recordingDraft.taskId !== taskId) return;
+  const ownerId = recordingDraft.candidateId;
+  const viewing = app.view === 'candidate' && app.candidateId === ownerId && app.detailTab === 'call';
   try {
     const response = await authenticatedFetch(apiUrl(`/api/transcription-tasks/${taskId}`));
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || '转写任务查询失败');
     const task = data.task || {};
-    const status = $('#recordingStatus');
+    const status = viewing ? $('#recordingStatus') : null;
     if (['created', 'uploading', 'uploaded', 'queued', 'converting', 'transcribing', 'merging'].includes(task.status)) {
       if (status) status.textContent = `${fileName} · ${task.status === 'queued' ? '排队等待转写服务' : `转写处理中（${task.status}）`}`;
       return pollTranscriptionTask(taskId, fileName, attempts + 1);
     }
     if (task.status === 'completed' && task.result?.text) {
-      const transcript = $('#callTranscript');
+      const owner = app.cases.find(item => item.id === ownerId);
+      const transcript = viewing ? $('#callTranscript') : null;
+      if (!(transcript && transcript.value.trim()) && owner && !String(owner.transcript || '').trim()) {
+        owner.transcript = task.result.text;
+        owner.updatedAt = new Date().toISOString();
+        persistCases(owner);
+      }
       if (transcript && !transcript.value.trim()) transcript.value = task.result.text;
       if (status) status.textContent = `${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`;
       return toast('录音已自动转写到电话记录');
@@ -1529,7 +1712,7 @@ async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
     if (status) status.textContent = `${fileName} · 转写失败：${task.error || '请稍后重试'}`;
   } catch (error) {
     if (attempts < 3) return pollTranscriptionTask(taskId, fileName, attempts + 1);
-    const status = $('#recordingStatus');
+    const status = viewing ? $('#recordingStatus') : null;
     if (status) status.textContent = `${fileName} · 转写状态查询失败：${error.message}`;
   }
 }
@@ -1560,11 +1743,18 @@ async function startBrowserRecording() {
   const consent = $('#recordingConsent');
   if (consent && !consent.checked) return toast('请先告知候选人并取得同意后再录音。未同意时请直接填写电话记录。');
   const candidate = currentCandidate();
-  if (candidate) candidate.recordingConsent = { accepted: true, at: new Date().toISOString(), candidateId: candidate.id || '', session: app.authUser?.email || app.authUser?.username || '' };
+  if (!candidate) return toast('请先打开候选人再录音');
+  if (recordingSession && ['recording', 'stopping'].includes(recordingSession.phase)) return toast('当前已经在录音中');
+  candidate.recordingConsent = { accepted: true, at: new Date().toISOString(), candidateId: candidate.id || '', session: app.authUser?.email || app.authUser?.username || '' };
   let desktopReady = false;
   try {
     const response = await fetch(`${DESKTOP_AGENT_URL}/status`, { signal: AbortSignal.timeout(900) });
     if (response.ok) {
+      const statusData = await response.json().catch(() => ({}));
+      if (statusData.recording?.status === 'recording') {
+        if (recordingSession?.phase !== 'recording') await restoreDesktopRecording();
+        return toast('当前已经在录音中');
+      }
       desktopReady = true;
       desktopAgentAvailable = true;
       const command = await fetch(`${DESKTOP_AGENT_URL}/recording/start`, { method: 'POST', signal: AbortSignal.timeout(15000) });
@@ -1572,8 +1762,7 @@ async function startBrowserRecording() {
       if (!command.ok) throw new Error(result.error || '桌面助手无法开始录音');
       activeRecorder = 'desktop';
       recorderStopping = false;
-      $('#startRecording').disabled = true; $('#stopRecording').disabled = false;
-      $('#recordingStatus').textContent = '桌面助手正在后台录音，网页可安全切换或最小化。';
+      beginRecordingSession(candidate, 'desktop', result.startedAt);
       return;
     }
   } catch (error) {
@@ -1585,7 +1774,7 @@ async function startBrowserRecording() {
     }
   }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('当前浏览器不支持录音，请上传录音文件');
-  if (activeRecorder && activeRecorder.state !== 'inactive') return toast('当前已经在录音中');
+  if (activeRecorder && activeRecorder !== 'desktop' && activeRecorder.state !== 'inactive') return toast('当前已经在录音中');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     activeRecorderChunks = [];
@@ -1595,9 +1784,7 @@ async function startBrowserRecording() {
     activeRecorder.onerror = event => {
       stream.getTracks().forEach(track => track.stop());
       activeRecorder = null; recorderStopping = false;
-      const start = $('#startRecording'); const stop = $('#stopRecording');
-      if (start) start.disabled = false; if (stop) stop.disabled = true;
-      if (stop) stop.textContent = '停止录音';
+      clearRecordingSession();
       if ($('#recordingStatus')) $('#recordingStatus').textContent = '录音异常结束，请重试或上传录音文件。';
       toast(event.error?.message || '录音发生异常，请重试');
     };
@@ -1606,34 +1793,31 @@ async function startBrowserRecording() {
       const blob = new Blob(activeRecorderChunks, { type: activeRecorder.mimeType || 'audio/webm' });
       const extension = blob.type.includes('mp4') || blob.type.includes('m4a') ? 'm4a' : 'webm';
       activeRecorder = null; recorderStopping = false;
-      const start = $('#startRecording'); const stop = $('#stopRecording');
-      if (start) start.disabled = false; if (stop) stop.disabled = true;
-      if ($('#recordingStatus')) $('#recordingStatus').textContent = '录音已停止，正在准备语音解析…';
       if (blob.size) setRecordingFile(new File([blob], `call-${Date.now()}.${extension}`, { type: blob.type }));
-      else { if ($('#recordingStatus')) $('#recordingStatus').textContent = '未检测到有效录音内容，请重试。'; toast('未检测到有效录音内容'); }
+      else {
+        clearRecordingSession();
+        if ($('#recordingStatus')) $('#recordingStatus').textContent = '未检测到有效录音内容，请重试。';
+        toast('未检测到有效录音内容');
+      }
     };
-    activeRecorder.onstart = () => { if ($('#recordingStatus')) $('#recordingStatus').textContent = '正在录音，请在通话结束后点击停止录音。'; };
     activeRecorder.start();
-    $('#startRecording').disabled = true; $('#stopRecording').disabled = false; $('#recordingStatus').textContent = '正在录音，请在通话结束后停止录音。';
+    beginRecordingSession(candidate, 'browser');
   } catch (error) { activeRecorder = null; recorderStopping = false; toast(error.name === 'NotAllowedError' ? '浏览器未获得麦克风权限' : `无法开始录音：${error.message || '请重试'}`); }
 }
 
 function stopBrowserRecording() {
-  if (activeRecorder === 'desktop') return stopDesktopRecording();
+  if (activeRecorder === 'desktop' || recordingSession?.source === 'desktop') return stopDesktopRecording();
   if (!activeRecorder || activeRecorder.state === 'inactive') return toast('当前没有正在进行的录音');
   if (recorderStopping) return;
   recorderStopping = true;
   const recorder = activeRecorder;
-  const start = $('#startRecording'); const stop = $('#stopRecording');
-  if (start) start.disabled = true; if (stop) { stop.disabled = true; stop.textContent = '正在停止…'; }
-  if ($('#recordingStatus')) $('#recordingStatus').textContent = '正在停止录音，请稍候…';
+  setRecordingPhase('stopping', '正在停止录音，请稍候…');
   try {
     if (recorder.state === 'recording') recorder.requestData?.();
     recorder.stop();
   } catch (error) {
     recorderStopping = false; activeRecorder = null;
-    if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
-    if ($('#recordingStatus')) $('#recordingStatus').textContent = '停止录音失败，请重试。';
+    setRecordingPhase('failed', '停止录音失败，请重试。');
     toast(`停止录音失败：${error.message || '请重试'}`);
   }
 }
@@ -1641,8 +1825,7 @@ function stopBrowserRecording() {
 async function stopDesktopRecording() {
   if (recorderStopping) return;
   recorderStopping = true;
-  const start = $('#startRecording'); const stop = $('#stopRecording');
-  if (start) start.disabled = true; if (stop) { stop.disabled = true; stop.textContent = '正在停止…'; }
+  setRecordingPhase('stopping', '正在停止录音，请稍候…');
   try {
     const response = await fetch(`${DESKTOP_AGENT_URL}/recording/stop`, { method: 'POST', signal: AbortSignal.timeout(12000) });
     const result = await response.json().catch(() => ({}));
@@ -1651,12 +1834,12 @@ async function stopDesktopRecording() {
     if (!fileResponse.ok) throw new Error('桌面助手录音文件读取失败');
     const blob = await fileResponse.blob();
     activeRecorder = null; recorderStopping = false;
-    if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
     setRecordingFile(new File([blob], `call-${Date.now()}.webm`, { type: 'audio/webm' }));
   } catch (error) {
     activeRecorder = null; recorderStopping = false;
-    if (start) start.disabled = false; if (stop) { stop.disabled = true; stop.textContent = '停止录音'; }
-    $('#recordingStatus').textContent = `桌面助手录音失败：${error.message}`;
+    const message = `桌面助手录音失败：${error.message}`;
+    setRecordingPhase('failed', message);
+    if ($('#recordingStatus')) $('#recordingStatus').textContent = message;
     toast(error.message || '桌面助手录音失败');
   }
 }
