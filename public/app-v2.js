@@ -1712,7 +1712,8 @@ async function createCandidate(event) {
   if (!candidate.candidateName || !candidate.resume) return toast('请填写候选人姓名和简历');
   if (!selectedJob) { const match = await matchResumeToJobs(candidate.resume, candidate.candidateName, candidate.resumeMeta?.fileName); applyJobMatch(candidate, match); }
   if (app.resumeFile) candidate.resumeMeta = await persistOriginalResume(candidate.id, app.resumeFile, candidate.resumeMeta || {});
-  app.cases.unshift(candidate); persistCases(candidate); $('#candidateDialog').close(); app.candidateId = candidate.id; app.detailTab = 'overview'; navigate('candidate');
+  app.cases.unshift(candidate); const saved = await persistCases(candidate); $('#candidateDialog').close(); app.candidateId = saved?.duplicate ? saved.canonicalCandidateId : candidate.id; app.detailTab = 'overview'; navigate('candidate');
+  if (saved?.duplicate) return;
   await generatePreparation(candidate);
 }
 
@@ -1734,7 +1735,7 @@ async function importResumeBatch(files, options = {}) {
       candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, file, result.metadata); candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
       const sameContact = app.cases.find(item => item.id !== candidate.id && ((result.metadata.phone && item.resumeMeta?.phone === result.metadata.phone) || (result.metadata.email && item.resumeMeta?.email && item.resumeMeta.email.toLowerCase() === result.metadata.email.toLowerCase())));
       const match = await matchResumeToJobs(candidate.resume, candidate.candidateName, candidate.resumeMeta?.fileName || file.name);
-      applyJobMatch(candidate, match); candidate.ingestStatus = sameContact ? '重复待确认' : '已入库'; candidate.duplicateOf = sameContact?.id || ''; candidate.updatedAt = new Date().toISOString(); persistCases(candidate);
+      applyJobMatch(candidate, match); candidate.ingestStatus = sameContact ? '正在核对重复记录' : '已入库'; candidate.duplicateOf = sameContact?.id || ''; candidate.updatedAt = new Date().toISOString(); await persistCases(candidate);
     } catch (error) { candidate.ingestStatus = `解析失败：${error.message}`; candidate.ingestFileKey = fileKey; candidate.updatedAt = new Date().toISOString(); persistCases(candidate); }
     renderCurrent();
   }
@@ -2351,9 +2352,9 @@ function scoreValue(item){const value=Number(item.matching?.score);if(Number.isF
 function scoreLabel(item){const value=scoreValue(item);return value==='—'?'<span class="score muted">—</span>':`<strong class="score">${value}分</strong>`;}
 function currentCandidate(){return app.cases.find(item=>item.id===app.candidateId);}
 function readStore(key){try{return JSON.parse(localStorage.getItem(key)||'[]');}catch{return [];}}
-function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(REMOTE_BACKEND&&candidate)saveRemote(`/api/candidates/${candidate.id}`,candidate).then(result=>applyCaptureResult(candidate,result));}
+function persistCases(candidate){localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;if(!REMOTE_BACKEND||!candidate)return Promise.resolve(null);return saveRemote(`/api/candidates/${candidate.id}`,candidate).then(result=>{applyCaptureResult(candidate,result);return result;});}
 function currentActor(){const user=app.authUser||{};const member=app.workspace?.currentMember||{};const email=String(member.email||user.email||'');const username=String(member.username||user.username||'');const personal=/@/.test(email)?email.trim().toLowerCase():(/@/.test(username)?username.trim().toLowerCase():'');const name=String(member.displayName||user.displayName||(personal?personal.split('@')[0]:username)).trim();return {uid:String(member.uid||user.uid||''),name,email:personal};}
-function applyCaptureResult(candidate,result){if(!result||!candidate)return;if(result.mokaSync)candidate.mokaSync=result.mokaSync;if(result.capturedBy)candidate.capturedBy=result.capturedBy;if(result.capturedAt)candidate.capturedAt=result.capturedAt;if(app.view==='inbox')renderInbox();if(app.view==='candidate'&&app.candidateId===candidate.id&&app.detailTab==='history')renderCandidateDetail();}
+function applyCaptureResult(candidate,result){if(!result||!candidate)return;if(result.duplicate&&result.canonicalCandidateId){app.cases=app.cases.filter(item=>item.id!==candidate.id);if(app.candidateId===candidate.id)app.candidateId=result.canonicalCandidateId;localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));const count=$('#candidateNavCount');if(count)count.textContent=app.cases.length;renderCurrent();toast('该简历已存在，未重复创建');return;}if(result.mokaSync)candidate.mokaSync=result.mokaSync;if(result.capturedBy)candidate.capturedBy=result.capturedBy;if(result.capturedAt)candidate.capturedAt=result.capturedAt;if(app.view==='inbox')renderInbox();if(app.view==='candidate'&&app.candidateId===candidate.id&&app.detailTab==='history')renderCandidateDetail();}
 function persistJobs(job){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));if(REMOTE_BACKEND&&job)saveRemote(`/api/jobs/${job.id}`,job);}
 function parseKeywords(value=''){return [...new Set(value.split(/[、,，;；\n]/).map(v=>v.trim()).filter(Boolean))];}
 function seedJobs(){if(REMOTE_BACKEND||app.jobs.length)return;const job={id:crypto.randomUUID(),industry:'金融',name:'场外期权产品经理',jd:'负责场外期权RFQ、交易簿记和生命周期管理产品规划，推动交易、风控和研发团队协作上线。',keywords:['场外期权','RFQ','交易簿记','生命周期管理'],rules:'重点核实个人职责、项目上线结果、业务规模和团队分工。',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};app.jobs=[job];persistJobs(job);}
