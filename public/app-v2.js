@@ -1163,7 +1163,7 @@ function renderTalentMarket() {
    if (/资深|高级|初级|工程师|产品经理|项目经理|开发|设计师|分析师|顾问|总监|主管|岗位|职位|部门|负责|参与|包含|个人信息|基本信息|教育背景|工作经历|项目经历|专业技能|自我评价/.test(name)) return false;
    if (/^(公司|集团|科技|银行|证券|基金|保险|资本|教育|医疗|互联网|软件|信息|业务|产品|行业|未知|暂无|无)$/i.test(name)) return false;
    return /^[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9 .&-]+$/.test(name);
- }
+}
 function renderConnections() { $('#connectionsView').innerHTML = `<div class="page research-page"><div class="page-title"><div><span class="eyebrow">DATA CONNECTIONS</span><h1>数据连接</h1><p>集中管理外部招聘系统的授权状态、同步范围和数据责任边界。</p></div></div><section class="connection-hero"><div class="connection-logo">M</div><div><span class="eyebrow">ATS CONNECTOR</span><h2>Moka 企业招聘系统</h2><p>读取岗位、候选人、面试安排和面试结果；AceCall 负责分析与回写备注。</p></div><span class="connection-status">未连接</span></section><div class="research-grid"><section class="surface"><div class="surface-head"><div><h2>接入范围</h2><p class="surface-subtitle">获得企业 API 后按需开启</p></div></div><div class="surface-body connector-list"><p><b>读取：</b>岗位信息、候选人简历、流程状态、面试安排、面试结果</p><p><b>分析：</b>录用偏好、筛选通过标准、面试官表现、行业线索</p><p><b>回写：</b>候选人备注、沟通总结、推荐理由、分析标签</p><p><b>不做：</b>不自动淘汰候选人，不覆盖 Moka 原始记录，不保存 Moka 登录密码</p></div></section><section class="surface"><div class="surface-head"><div><h2>授权准备清单</h2><p class="surface-subtitle">连接前由管理员确认</p></div></div><div class="surface-body checklist"><label><input type="checkbox" disabled> 企业 ID / 租户标识</label><label><input type="checkbox" disabled> API Client ID 与密钥</label><label><input type="checkbox" disabled> 允许读取的业务范围</label><label><input type="checkbox" disabled> 备注回写权限与审计要求</label></div></section></div><section class="surface connector-note"><div class="surface-head"><div><h2>当前开发状态</h2><p class="surface-subtitle">接口适配层已预留，等待真实凭证后联调</p></div><span class="readonly-badge">Moka API 待接入</span></div><div class="surface-body"><p class="muted-text">本页面不会发起 Moka 请求。拿到企业 API 后，将先在测试环境完成只读同步，再开启备注回写，并保留同步日志和失败重试队列。</p></div></section></div>`; }
 
 function renderDashboard() {
@@ -1251,7 +1251,7 @@ function renderInbox() {
   const needsAssignment = app.cases.filter(item => assignmentState(item) === 'unassigned').length;
   const failed = app.cases.filter(item => String(item.ingestStatus || '').startsWith('解析失败')).length;
   const duplicate = app.cases.filter(item => item.ingestStatus === '重复待确认').length;
-  const batches = [...new Set(app.cases.map(item => item.ingestBatchId).filter(Boolean))].slice(0, 5);
+  const batches = [...new Set(app.cases.map(item => item.ingestBatchId).filter(Boolean))];
   const policy = getPlatformPolicy();
   const watchStatus = folderWatchTimer ? '监听中' : '未启动';
   const watchLabel = policy.defaultMode === 'downloads' ? '选择 Downloads 并开始监听' : '选择文件夹并开始监听';
@@ -1297,19 +1297,20 @@ function renderInbox() {
 function fitInboxQueue() {
   if (window.innerWidth <= 980 || app.view !== 'inbox') return;
   const queue = document.querySelector('#inboxView .ingest-queue');
-  const sample = queue?.querySelector('tbody tr');
-  if (!queue || !sample || sample.querySelector('.empty')) return;
-  const rows = [...queue.querySelectorAll('tbody tr')];
-  const rowHeight = Math.max(...rows.map(row => row.getBoundingClientRect().height));
-  if (queue.clientHeight < 120 || rowHeight < 8) return;
-  const head = queue.querySelector('.surface-head')?.offsetHeight || 0;
-  const pager = queue.querySelector('.ingest-queue-pager')?.offsetHeight || 0;
-  const thead = queue.querySelector('thead')?.offsetHeight || 0;
-  const reservePager = pager || (document.querySelectorAll('#inboxView .ingest-queue tbody tr').length >= inboxQueuePageSize ? 44 : 0);
-  const fit = Math.max(1, Math.floor((queue.clientHeight - head - thead - reservePager) / rowHeight));
-  if (fit !== inboxQueuePageSize && inboxQueueFitPasses < 3) {
+  const wrap = queue?.querySelector('.table-wrap');
+  const rows = [...(wrap?.querySelectorAll('tbody tr') || [])];
+  if (!queue || !wrap || !rows.length || rows[0].querySelector('.empty') || queue.clientHeight < 120) return;
+  const heights = rows.map(row => row.getBoundingClientRect().height).filter(height => height >= 8);
+  if (!heights.length) return;
+  const typical = heights.slice().sort((left, right) => left - right)[Math.floor((heights.length - 1) / 2)];
+  const used = heights.reduce((sum, height) => sum + height, 0);
+  const spare = wrap.clientHeight - (wrap.querySelector('thead')?.offsetHeight || 0) - used;
+  let next = inboxQueuePageSize;
+  if (spare >= typical && rows.length >= inboxQueuePageSize) next += Math.floor(spare / typical);
+  else if (spare < -2) next = Math.max(1, inboxQueuePageSize - Math.ceil(Math.abs(spare) / typical));
+  if (next !== inboxQueuePageSize && inboxQueueFitPasses < 4) {
     inboxQueueFitPasses += 1;
-    inboxQueuePageSize = fit;
+    inboxQueuePageSize = next;
     renderInbox();
     return;
   }
