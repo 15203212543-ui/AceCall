@@ -476,6 +476,7 @@ module.exports = {
   chooseOperatorEmail,
   buildScreeningNote,
   buildSalaryNote,
+  isSalaryText,
   chooseMokaApplication,
   chooseMokaApplicationForJob,
   syncScreeningComment
