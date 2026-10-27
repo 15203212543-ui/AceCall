@@ -132,6 +132,16 @@
     </form>
   </dialog>
 
+  <div class="recording-dock" id="recordingDock" hidden>
+    <span class="recording-dock-dot" aria-hidden="true"></span>
+    <div class="recording-dock-copy">
+      <strong id="recordingDockName">候选人</strong>
+      <small id="recordingDockMeta">正在录音 · 00:00:00</small>
+    </div>
+    <button class="secondary" id="recordingDockStart" type="button" disabled title="请在电话初筛页告知候选人后再开始">开始录音</button>
+    <button class="primary" id="recordingDockStop" type="button">停止录音</button>
+    <button class="secondary" id="recordingDockReturn" type="button">返回电话</button>
+  </div>
   <div class="toast" id="toast" role="status"></div>
   <script src="./config.js?v=__ACE_CALL_BUILD__"></script>
   <script src="./auth-session.js?v=__ACE_CALL_BUILD__"></script>
