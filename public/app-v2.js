@@ -2320,7 +2320,7 @@ function apiUrl(path){return `${API_BASE}${path}`;}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function cloudError(status, body = {}) {
   if (body.error) return body.error;
-  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'登录凭证未被接受，请退出后重新登录',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
+  return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关没有放行这次请求，请稍后重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
 async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
@@ -2369,17 +2369,11 @@ async function authenticatedFetch(url, options = {}) {
     if (![429,502,503,504].includes(response.status) || attempt === 2) break;
     await sleep(500 * 2 ** attempt);
   }
-  if (response.status === 401 || response.status === 443) {
+  if (response.status === 401) {
     const refreshed = await cloudbaseAuth.refreshSession().catch(() => null);
     const freshToken = refreshed?.data?.session?.access_token;
-    const freshSession = refreshed?.data?.session;
-    if (freshToken && freshToken !== token && !isAnonymousAccessToken(freshToken) && !isAnonymousSession(freshSession)) response = await request(freshToken);
-    else if (response.status === 401) throw new Error('登录已过期，请重新登录');
-  }
-  if (response.status === 443) {
-    const error = new Error('登录凭证未被接受，请退出后重新登录');
-    error.authRequired = true;
-    throw error;
+    if (freshToken && !isAnonymousAccessToken(freshToken)) response = await request(freshToken);
+    else throw new Error('登录已过期，请重新登录');
   }
   return response;
 }
@@ -2398,7 +2392,7 @@ async function hydrateWorkspace(username = '', companyName = '') {
       const body = await response.json().catch(() => ({}));
       const error = new Error(cloudError(response.status, body));
       // 401 说明凭据不被接受，继续请求其他接口只会重复失败，交给上层回登录页。
-      if (response.status === 401 || response.status === 443) error.authRequired = true;
+      if (response.status === 401) error.authRequired = true;
       throw error;
     }
     const workspace = await response.json();
