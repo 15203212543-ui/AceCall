@@ -1725,7 +1725,7 @@ async function parseResumeFileForImport(file) {
 }
 
 async function matchResumeToJobs(resume, candidateName = '', fileName = '') {
-  const response = await generate({ action: 'match', candidateName, fileName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, location: job.location, industry: job.industry, jd: job.jd, keywords: job.keywords, required: job.required, bonus: job.bonus, exclusions: job.exclusions, verify: job.verify, profile: job.profile, rules: job.rules })) });
+  const response = await generate({ action: 'match', candidateName, fileName, resume, jobs: app.jobs.filter(job => job.status !== 'closed' && job.matchingEligible !== false).map(job => ({ id: job.id, name: job.name, location: job.location, industry: job.industry, jd: job.jd, keywords: job.keywords, required: job.required, bonus: job.bonus, exclusions: job.exclusions, verify: job.verify, profile: job.profile, rules: job.rules })) });
   return response;
 }
 

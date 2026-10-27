@@ -175,6 +175,22 @@ function dedupeStoredJobs(jobs = []) {
   return [...map.values()];
 }
 
+function isAutomaticAssignmentJob(job = {}) {
+  if (!job.id || job.status === 'closed' || job.status === 'archived') return false;
+  if (job.source === 'screening') return false;
+  // Historical Moka interview/application records are not evidence that a
+  // requisition is currently open. Only a job confirmed by the current Moka
+  // job feed may enter the automatic assignment pool.
+  if (job.source === 'moka') return job.mokaCurrent === true && Boolean(job.mokaJobId);
+  // Explicitly maintained active workspace jobs remain a safe fallback while
+  // the tenant's Moka job-list endpoint is unavailable.
+  return true;
+}
+
+function automaticAssignmentJobs(jobs = []) {
+  return dedupeStoredJobs(jobs).filter(isAutomaticAssignmentJob);
+}
+
 module.exports = {
   SCREENING_JOBS,
   SCREENING_RULES,
@@ -182,5 +198,7 @@ module.exports = {
   screeningJobByName,
   applyScreeningProfile,
   jobRichness,
-  dedupeStoredJobs
+  dedupeStoredJobs,
+  isAutomaticAssignmentJob,
+  automaticAssignmentJobs
 };
