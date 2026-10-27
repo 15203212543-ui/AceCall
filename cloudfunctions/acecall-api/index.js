@@ -15,6 +15,7 @@ const { classifyInterviewQuestions, analyzeInterviewQuestions } = require('./int
 const { buildAiTaskRecord } = require('./ai-task');
 const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
 const { listIndustryNews } = require('./industry-news');
+const { prepareTenantInterviewReminders, readInterviewReminders } = require('./interview-reminder');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, presentCaseSummary, buildLegacyDocument } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
@@ -263,6 +264,18 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/industry-news') {
       await getRequestContext(request);
       return sendJson(response, 200, await listIndustryNews({ database: getDatabase() }));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/interview-reminders') {
+      const context = await getRequestContext(request);
+      return sendJson(response, 200, await readInterviewReminders({ database: getDatabase(), tenantId: context.tenantId }));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/interview-reminders/prepare') {
+      const context = await getRequestContext(request);
+      return sendJson(response, 200, await prepareTenantInterviewReminders({
+        database: getDatabase(),
+        tenantId: context.tenantId,
+        client: createMokaClient({ timeoutMs: Math.max(3000, Number(process.env.MOKA_REQUEST_TIMEOUT_MS || 8000)) })
+      }));
     }
     if (request.method === 'GET' && url.pathname === '/api/interviewers') {
       return sendJson(response, 200, await listInterviewers(await getRequestContext(request)));
