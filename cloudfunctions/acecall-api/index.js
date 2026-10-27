@@ -1907,7 +1907,7 @@ function synthesisSchema() {
 
 function finalizeGeneratedResult(payload, generated) {
   if (payload.action === 'match') {
-    const decision = evaluateJobMatches({ resume: payload.resume, jobs: payload.jobs || [], conflicts: payload.conflicts || [] });
+    const decision = evaluateJobMatches({ resume: payload.resume, fileName: payload.fileName || '', jobs: payload.jobs || [], conflicts: payload.conflicts || [] });
     return { ...generated, ...decision, jobId: decision.jobId, status: decision.status, score: decision.score };
   }
   if (payload.action === 'prepare') {
