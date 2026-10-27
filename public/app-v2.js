@@ -828,10 +828,25 @@ function renderTalentMarket() {
    loadIndustryNews(app.intelligencePeriod);
  }
 
+ function paintIndustryNews(period = 'all') {
+   const current = $('#industryNewsBody');
+   if (!current) return;
+   current.innerHTML = industryNewsMarkup(app.industryNews?.items || [], period, Date.now(), app.industryNews?.unavailable ? '公开公告暂时没有更新。' : '本期无外部动态。', app.industryNewsPage || 1);
+   current.querySelectorAll('[data-industry-news-page]').forEach(button => button.addEventListener('click', () => {
+     if (button.disabled) return;
+     app.industryNewsPage = Number(button.dataset.industryNewsPage) || 1;
+     paintIndustryNews(period);
+   }));
+ }
+
  async function loadIndustryNews(period = 'all') {
    const body = $('#industryNewsBody');
    if (!body) return;
-   if (!REMOTE_BACKEND) { body.innerHTML = industryNewsMarkup([], period); return; }
+   if (app.industryNewsPeriod !== period) {
+     app.industryNewsPeriod = period;
+     app.industryNewsPage = 1;
+   }
+   if (!REMOTE_BACKEND) { paintIndustryNews(period); return; }
    try {
      if (!app.industryNews || Date.now() - app.industryNews.at > 10 * 60 * 1000) {
        const response = await authenticatedFetch(apiUrl('/api/industry-news'));
@@ -843,8 +858,7 @@ function renderTalentMarket() {
      console.warn('[AceCall industry news]', error);
      app.industryNews = app.industryNews?.items?.length ? app.industryNews : { at: Date.now(), items: [], unavailable: true };
    }
-   const current = $('#industryNewsBody');
-   if (current) current.innerHTML = industryNewsMarkup(app.industryNews?.items || [], period, Date.now(), app.industryNews?.unavailable ? '公开公告暂时没有更新。' : '本期无外部动态。');
+   paintIndustryNews(period);
  }
 
  function renderIntelligence() {
