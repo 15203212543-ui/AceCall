@@ -33,6 +33,12 @@ test('local sync agent recognizes interview transcripts', () => {
   assert.equal(looksLikeTranscript('/tmp/周宁-面试转写.txt', '候选人：周宁\n面试官：魏欣欣\n请介绍项目结果？'), true);
   assert.equal(looksLikeTranscript('/tmp/interview.vtt', 'WEBVTT\n\n00:00.000 --> 00:02.000\n请介绍一个你负责的项目。'), true);
   assert.equal(looksLikeTranscript('/tmp/notes.txt', '会议纪要：下周一开会讨论项目进度和负责人安排'), false);
+  const resume = '姓名 简历\n项目经历：Candidate Engagement & Interview Scheduling，负责候选人沟通。\n学历：本科';
+  assert.equal(looksLikeTranscript('/tmp/【人力管培_北京 12-24K】应届生.pdf', resume), false);
+  assert.equal(looksLikeResume(resume), true);
+  assert.equal(looksLikeTranscript('/tmp/notes.docx', '2026-10-22 14:00:38 会议已开启实时转写,机器识别结果仅供参考\n请介绍一个你负责的项目。'), true);
+  const { looksLikeTranscript: desktopLooksLikeTranscript } = require('../desktop-app/local-sync-agent');
+  assert.equal(desktopLooksLikeTranscript('/tmp/【人力管培_北京 12-24K】应届生.pdf', resume), false);
 });
 
 test('desktop app bundles job assignment and can load without the cloud function directory', () => {
