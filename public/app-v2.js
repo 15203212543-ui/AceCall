@@ -1788,7 +1788,8 @@ function applyJobMatch(candidate, match) {
   const primary = app.jobs.find(job => job.id === match?.jobId);
   const score = normalizedMatchScore(match, candidate.resume, primary || {});
   const secondScore = Number(match?.alternativeJobs?.[0]?.score || 0);
-  const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && score >= 60 && (!secondScore || score - secondScore >= 8);
+  const filenameTitleMatch = match?.matchingBasis === 'filename-title';
+  const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && score >= 60 && (filenameTitleMatch || !secondScore || score - secondScore >= 8);
   if (assignable) {
     candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
     candidate.assignmentSource = 'automatic'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = candidate.assignedAt || new Date().toISOString();
@@ -1802,7 +1803,7 @@ function applyJobMatch(candidate, match) {
 
 async function reconcilePendingAssignments() {
   if (assignmentReconcileInFlight || !REMOTE_BACKEND) return;
-  const pending = app.cases.filter(item => item.documentId && !['manual', 'manual-confirmation'].includes(item.assignmentSource) && Number(item.matching?.ruleVersion || 0) < 2).slice(0, 30);
+  const pending = app.cases.filter(item => item.documentId && !['manual', 'manual-confirmation'].includes(item.assignmentSource) && Number(item.matching?.ruleVersion || 0) < 3).slice(0, 100);
   if (!pending.length) return;
   assignmentReconcileInFlight = true;
   let assigned = 0;

@@ -78,7 +78,7 @@ const ROLE_FAMILIES = [
   ['backend', /后端|服务端|后台开发/],
   ['risk-development', /风控开发/],
   ['risk', /风控/],
-  ['product', /产品经理|产品岗/],
+  ['product', /产品总监|产品负责人|产品专家|产品经理|产品岗/],
   ['analytics', /数据分析|商业分析|数据岗|\bbi\b/i],
   ['operations', /运营/],
   ['trading', /交易员/],
@@ -193,17 +193,17 @@ function evaluateJobMatches({ resume = '', fileName = '', jobs = [], conflicts =
   const first = results[0];
   const second = results[1];
   const alternatives = results.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score }));
-  if (first?.titleScore >= 90) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'filename-title', ruleVersion: 2, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (first?.titleScore >= 90) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'filename-title', ruleVersion: 3, alternativeJobs: alternatives, results, ageIgnored: true };
   if (filenameFamily) {
     const compatible = results.filter(item => item.titleFamily === filenameFamily && !item.titleConflict);
     const compatibleFirst = compatible[0];
-    if (compatibleFirst?.score >= 45) return { status: '待确认', jobId: '', suggestedJobId: compatibleFirst.jobId, score: compatibleFirst.score, matchingBasis: 'filename-family', ruleVersion: 2, alternativeJobs: compatible.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score })), results, ageIgnored: true };
-    return { status: '待分配', jobId: '', suggestedJobId: '', score: 0, matchingBasis: 'filename-family-unmatched', ruleVersion: 2, results, ageIgnored: true };
+    if (compatibleFirst?.score >= 45) return { status: '待确认', jobId: '', suggestedJobId: compatibleFirst.jobId, score: compatibleFirst.score, matchingBasis: 'filename-family', ruleVersion: 3, alternativeJobs: compatible.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score })), results, ageIgnored: true };
+    return { status: '待分配', jobId: '', suggestedJobId: '', score: 0, matchingBasis: 'filename-family-unmatched', ruleVersion: 3, results, ageIgnored: true };
   }
-  if (first?.score >= 60 && (!second || first.score - second.score >= 8)) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'resume-content', ruleVersion: 2, alternativeJobs: alternatives, results, ageIgnored: true };
-  if (first?.score >= 45 || (first?.score >= 60 && second && first.score - second.score < 8)) return { status: second && first.score - second.score < 8 ? '多岗位候选' : '待确认', jobId: '', suggestedJobId: first.jobId, score: first.score, matchingBasis: 'resume-content', ruleVersion: 2, alternativeJobs: alternatives, results, ageIgnored: true };
-  if (results.length && results.every(item => item.status === '无法匹配')) return { status: '无法匹配', jobId: '', suggestedJobId: first?.jobId || '', score: first?.score || 0, matchingBasis: 'resume-content', ruleVersion: 2, results, ageIgnored: true };
-  return { status: '待分配', jobId: '', score: 0, matchingBasis: 'resume-content', ruleVersion: 2, results, ageIgnored: true };
+  if (first?.score >= 60 && (!second || first.score - second.score >= 8)) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'resume-content', ruleVersion: 3, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (first?.score >= 45 || (first?.score >= 60 && second && first.score - second.score < 8)) return { status: second && first.score - second.score < 8 ? '多岗位候选' : '待确认', jobId: '', suggestedJobId: first.jobId, score: first.score, matchingBasis: 'resume-content', ruleVersion: 3, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (results.length && results.every(item => item.status === '无法匹配')) return { status: '无法匹配', jobId: '', suggestedJobId: first?.jobId || '', score: first?.score || 0, matchingBasis: 'resume-content', ruleVersion: 3, results, ageIgnored: true };
+  return { status: '待分配', jobId: '', score: 0, matchingBasis: 'resume-content', ruleVersion: 3, results, ageIgnored: true };
 }
 
 module.exports = {

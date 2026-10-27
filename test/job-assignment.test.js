@@ -114,10 +114,27 @@ test('explicit product or quant filename never auto-assigns an analytics role', 
   assert.equal(quant.status, '待分配');
 });
 
+test('product director filename stays inside product roles when there is no exact title', () => {
+  const decision = evaluateJobMatches({
+    fileName: '【产品总监_北京 40-70K】李某 10年.pdf',
+    resume: '负责数据分析、团队管理和产品规划',
+    jobs: [
+      { id: 'product', name: 'OTC交易产品经理', keywords: ['产品规划'] },
+      { id: 'data', name: '数据分析师（商业分析）', keywords: ['数据分析'] },
+      { id: 'hr', name: '人力管培', keywords: ['团队管理'] }
+    ]
+  });
+  assert.equal(decision.jobId, '');
+  assert.equal(decision.status, '待确认');
+  assert.equal(decision.suggestedJobId, 'product');
+  assert.equal(decision.matchingBasis, 'filename-family');
+});
+
 test('frontend completes automatic and manual assignment paths in the assignment column', () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app-v2.js'), 'utf8');
   assert.match(source, /\['自动匹配', '已分配'\]\.includes\(match\?\.status\)/);
   assert.match(source, /score >= 60/);
+  assert.match(source, /filenameTitleMatch \|\| !secondScore/);
   assert.match(source, /function assignmentCell\(item\)/);
   assert.match(source, /data-confirm-assignment/);
   assert.match(source, /function confirmCandidateAssignment\(id\)/);
