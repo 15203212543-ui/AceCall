@@ -63,6 +63,57 @@ test('all job scores stay in the 0 to 100 range', () => {
   }
 });
 
+test('filename exact title overrides unrelated resume keywords', () => {
+  const decision = evaluateJobMatches({
+    fileName: '【人力管培_北京 12-24K】陈某 26年应届生.pdf',
+    resume: '参与数据整理、商业分析和报表制作',
+    jobs: [
+      { id: 'hr', name: '人力管培', keywords: ['招聘', '人力'] },
+      { id: 'data', name: '数据分析师（商业分析）', keywords: ['数据', '商业分析'] }
+    ]
+  });
+  assert.equal(decision.status, '自动匹配');
+  assert.equal(decision.jobId, 'hr');
+  assert.equal(decision.matchingBasis, 'filename-title');
+});
+
+test('legal title in filename maps to legal role even with duplicate job records', () => {
+  const decision = evaluateJobMatches({
+    fileName: '【法务bp_北京 15-30K】王锦 7年.pdf',
+    resume: '合同审核、劳动争议及业务支持',
+    jobs: [
+      { id: 'legal-a', name: '法务BP' },
+      { id: 'legal-b', name: '法务BP' },
+      { id: 'data', name: '数据分析师' }
+    ]
+  });
+  assert.equal(decision.status, '自动匹配');
+  assert.equal(decision.jobId, 'legal-a');
+});
+
+test('backend and server-side titles are aliases but risk development is not', () => {
+  const decision = evaluateJobMatches({
+    fileName: '【券商后端开发-Golang_北京 25-50K】吕某 9年.pdf',
+    resume: 'Golang Java MySQL Redis 风控系统开发',
+    jobs: [
+      { id: 'server-bj', name: '服务端开发（北京）', location: '北京' },
+      { id: 'server-cs', name: '服务端开发（长沙）', location: '长沙' },
+      { id: 'risk', name: '风控开发', keywords: ['Golang'] }
+    ]
+  });
+  assert.equal(decision.status, '自动匹配');
+  assert.equal(decision.jobId, 'server-bj');
+});
+
+test('explicit product or quant filename never auto-assigns an analytics role', () => {
+  const product = evaluateJobMatches({ fileName: '【证券系统产品经理（港美股APP）】Coco.pdf', resume: '数据分析 系统建设', jobs: [{ id: 'data', name: '数据分析师（商业分析）', keywords: ['数据分析', '系统'] }] });
+  const quant = evaluateJobMatches({ fileName: '【量化研究员_深圳】李某.pdf', resume: 'Python 数据分析', jobs: [{ id: 'data', name: '数据分析师', keywords: ['Python', '数据分析'] }] });
+  assert.equal(product.jobId, '');
+  assert.equal(product.status, '待分配');
+  assert.equal(quant.jobId, '');
+  assert.equal(quant.status, '待分配');
+});
+
 test('frontend completes automatic and manual assignment paths in the assignment column', () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app-v2.js'), 'utf8');
   assert.match(source, /\['自动匹配', '已分配'\]\.includes\(match\?\.status\)/);
@@ -71,7 +122,8 @@ test('frontend completes automatic and manual assignment paths in the assignment
   assert.match(source, /data-confirm-assignment/);
   assert.match(source, /function confirmCandidateAssignment\(id\)/);
   assert.match(source, /function reconcilePendingAssignments\(\)/);
-  assert.match(source, /item\.resumeMeta\?\.source === 'local-sync-agent'/);
+  assert.match(source, /fileName, resume, jobs/);
+  assert.match(source, /matching\?\.ruleVersion/);
   assert.match(source, /assignmentSource = 'manual-confirmation'/);
   assert.doesNotMatch(source, /rematchPendingCandidates|rematchSyncedCandidates|rematchPendingButton/);
   assert.doesNotMatch(source, /match\?\.confidence === '低'/);

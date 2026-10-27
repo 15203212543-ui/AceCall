@@ -69,6 +69,66 @@ function normalizeForMatch(value = '') {
   return String(value).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
 }
 
+const LOCATIONS = ['北京', '上海', '深圳', '广州', '长沙', '杭州', '成都', '武汉', '南京', '苏州', '西安', '香港'];
+const ROLE_FAMILIES = [
+  ['legal', /法务|legal/i],
+  ['hr', /人力|人事|招聘|hrbp|hr管培/i],
+  ['settlement', /清结算|结算/],
+  ['quant', /量化/],
+  ['backend', /后端|服务端|后台开发/],
+  ['risk-development', /风控开发/],
+  ['risk', /风控/],
+  ['product', /产品经理|产品岗/],
+  ['analytics', /数据分析|商业分析|数据岗|\bbi\b/i],
+  ['operations', /运营/],
+  ['trading', /交易员/],
+  ['testing', /测试工程师|测试开发/],
+  ['design', /设计师|视觉设计|交互设计/]
+];
+
+function locationFrom(value = '') {
+  return LOCATIONS.find(location => String(value).includes(location)) || '';
+}
+
+function roleFamily(value = '') {
+  return ROLE_FAMILIES.find(([, pattern]) => pattern.test(String(value)))?.[0] || '';
+}
+
+function rawRoleTitle(value = '') {
+  return normalizeForMatch(String(value).replace(/\.[a-z0-9]{1,6}$/i, ''));
+}
+
+function canonicalRoleTitle(value = '') {
+  return normalizeForMatch(String(value)
+    .replace(/\.[a-z0-9]{1,6}$/i, '')
+    .replace(/[（(](?:北京|上海|深圳|广州|长沙|杭州|成都|武汉|南京|苏州|西安|香港|港美股)[）)]/g, '')
+    .replace(/服务端|后台开发/g, '后端')
+    .replace(/券商业务|券商|证券系统/g, '')
+    .replace(/工程师|职位|岗位/g, ''));
+}
+
+function filenameTitleSignal(fileName = '', job = {}) {
+  const fileRaw = rawRoleTitle(fileName);
+  const jobRaw = rawRoleTitle(job.name);
+  const fileLocation = locationFrom(fileName);
+  const jobLocation = locationFrom(`${job.name || ''} ${job.location || ''}`);
+  if (!fileRaw || !jobRaw || (fileLocation && jobLocation && fileLocation !== jobLocation)) return 0;
+  if (fileRaw.includes(jobRaw)) return 100;
+  const fileCanonical = canonicalRoleTitle(fileName);
+  const jobCanonical = canonicalRoleTitle(job.name);
+  if (jobCanonical.length >= 3 && fileCanonical.includes(jobCanonical)) return 92 + (fileLocation && jobLocation === fileLocation ? 4 : 0);
+  return 0;
+}
+
+function dedupeJobs(jobs = []) {
+  const uniqueJobs = new Map();
+  for (const job of jobs.filter(job => job && job.id && job.status !== 'archived' && job.status !== 'closed')) {
+    const key = `${rawRoleTitle(job.name)}:${locationFrom(`${job.name || ''} ${job.location || ''}`)}`;
+    if (!uniqueJobs.has(key)) uniqueJobs.set(key, job);
+  }
+  return [...uniqueJobs.values()];
+}
+
 function matchableTerms(value = '') {
   const text = String(value || '');
   const terms = text.match(/[a-zA-Z][a-zA-Z0-9+#.-]{1,}|[\u4e00-\u9fff]{2,}/g) || [];
@@ -118,15 +178,32 @@ function evaluateJob(resume, job, conflicts = []) {
   return { jobId: job.id, name: job.name || '', status, items: [...required, ...pendingItems, ...bonus], score, dimensions: { requiredCoverage: Math.round(requiredCoverage * 100), bonusCoverage: Math.round(bonusCoverage * 100), relevanceCoverage: Math.round(relevanceCoverage * 100) }, evidenceTerms: relevanceHits.slice(0, 8), snapshot: profile };
 }
 
-function evaluateJobMatches({ resume = '', jobs = [], conflicts = [] } = {}) {
-  const active = jobs.filter(job => job && job.id && job.status !== 'archived');
-  const results = active.map(job => evaluateJob(resume, job, conflicts)).sort((left, right) => right.score - left.score);
+function evaluateJobMatches({ resume = '', fileName = '', jobs = [], conflicts = [] } = {}) {
+  const active = dedupeJobs(jobs);
+  const filenameFamily = roleFamily(fileName);
+  const results = active.map(job => {
+    const evaluated = evaluateJob(resume, job, conflicts);
+    const titleScore = filenameTitleSignal(fileName, job);
+    const jobFamily = roleFamily(job.name);
+    if (filenameFamily && jobFamily && filenameFamily !== jobFamily && !titleScore) {
+      return { ...evaluated, score: 0, status: '无法匹配', titleScore: 0, titleConflict: true };
+    }
+    return { ...evaluated, score: Math.max(evaluated.score, titleScore), titleScore, titleFamily: jobFamily };
+  }).sort((left, right) => right.titleScore - left.titleScore || right.score - left.score);
   const first = results[0];
   const second = results[1];
-  if (first?.score >= 60 && (!second || first.score - second.score >= 8)) return { status: '自动匹配', jobId: first.jobId, score: first.score, alternativeJobs: results.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score })), results, ageIgnored: true };
-  if (first?.score >= 45 || (first?.score >= 60 && second && first.score - second.score < 8)) return { status: second && first.score - second.score < 8 ? '多岗位候选' : '待确认', jobId: '', suggestedJobId: first.jobId, score: first.score, alternativeJobs: results.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score })), results, ageIgnored: true };
-  if (results.length && results.every(item => item.status === '无法匹配')) return { status: '无法匹配', jobId: '', suggestedJobId: first?.jobId || '', score: first?.score || 0, results, ageIgnored: true };
-  return { status: '待分配', jobId: '', score: 0, results, ageIgnored: true };
+  const alternatives = results.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score }));
+  if (first?.titleScore >= 90) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'filename-title', ruleVersion: 2, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (filenameFamily) {
+    const compatible = results.filter(item => item.titleFamily === filenameFamily && !item.titleConflict);
+    const compatibleFirst = compatible[0];
+    if (compatibleFirst?.score >= 45) return { status: '待确认', jobId: '', suggestedJobId: compatibleFirst.jobId, score: compatibleFirst.score, matchingBasis: 'filename-family', ruleVersion: 2, alternativeJobs: compatible.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score })), results, ageIgnored: true };
+    return { status: '待分配', jobId: '', suggestedJobId: '', score: 0, matchingBasis: 'filename-family-unmatched', ruleVersion: 2, results, ageIgnored: true };
+  }
+  if (first?.score >= 60 && (!second || first.score - second.score >= 8)) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'resume-content', ruleVersion: 2, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (first?.score >= 45 || (first?.score >= 60 && second && first.score - second.score < 8)) return { status: second && first.score - second.score < 8 ? '多岗位候选' : '待确认', jobId: '', suggestedJobId: first.jobId, score: first.score, matchingBasis: 'resume-content', ruleVersion: 2, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (results.length && results.every(item => item.status === '无法匹配')) return { status: '无法匹配', jobId: '', suggestedJobId: first?.jobId || '', score: first?.score || 0, matchingBasis: 'resume-content', ruleVersion: 2, results, ageIgnored: true };
+  return { status: '待分配', jobId: '', score: 0, matchingBasis: 'resume-content', ruleVersion: 2, results, ageIgnored: true };
 }
 
 module.exports = {
@@ -138,6 +215,8 @@ module.exports = {
   draftJobProfile,
   confirmJobProfile,
   resumeForMatch,
+  roleFamily,
+  filenameTitleSignal,
   evaluateJob,
   evaluateJobMatches
 };
