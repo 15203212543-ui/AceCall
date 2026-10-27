@@ -68,13 +68,10 @@ let folderWatchSeenKeys = new Set();
 let inboxQueueFilter = '';
 let inboxQueuePage = 1;
 let inboxQueuePageSize = 6;
-let inboxQueueFitPasses = 0;
 let candidatePage = 1;
 let candidatePageSize = 8;
-let candidateFitPasses = 0;
 let jobPage = 1;
 let jobPageSize = 4;
-let jobFitPasses = 0;
 let expandedAssignmentId = '';
 let expandedQualityId = '';
 const fileStability = new Map();
@@ -1275,7 +1272,6 @@ function renderInbox() {
   $$('#inboxView [data-inbox-filter]').forEach(button => button.addEventListener('click', () => {
     inboxQueueFilter = button.dataset.inboxFilter === 'all' ? '' : button.dataset.inboxFilter;
     inboxQueuePage = 1;
-    inboxQueueFitPasses = 0;
     renderInbox();
     $('#inboxView .ingest-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
@@ -1290,34 +1286,8 @@ function renderInbox() {
   }));
   $$('#inboxView [data-confirm-assignment]').forEach(button => button.addEventListener('click', () => confirmCandidateAssignment(button.dataset.confirmAssignment)));
   $$('#inboxView [data-retry-import]').forEach(button => button.addEventListener('click', () => retryImport(button.dataset.retryImport)));
-  $$('#inboxView [data-inbox-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; inboxQueueFitPasses = 0; inboxQueuePage = Number(button.dataset.inboxPage) || 1; renderInbox(); }));
-  requestAnimationFrame(fitInboxQueue);
+  $$('#inboxView [data-inbox-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; inboxQueuePage = Number(button.dataset.inboxPage) || 1; renderInbox(); }));
 }
-
-
-function fitInboxQueue() {
-  if (window.innerWidth <= 980 || app.view !== 'inbox') return;
-  const queue = document.querySelector('#inboxView .ingest-queue');
-  const wrap = queue?.querySelector('.table-wrap');
-  const rows = [...(wrap?.querySelectorAll('tbody tr') || [])];
-  if (!queue || !wrap || !rows.length || rows[0].querySelector('.empty') || queue.clientHeight < 120) return;
-  const heights = rows.map(row => row.getBoundingClientRect().height).filter(height => height >= 8);
-  if (!heights.length) return;
-  const typical = heights.slice().sort((left, right) => left - right)[Math.floor((heights.length - 1) / 2)];
-  const used = heights.reduce((sum, height) => sum + height, 0);
-  const spare = wrap.clientHeight - (wrap.querySelector('thead')?.offsetHeight || 0) - used;
-  let next = inboxQueuePageSize;
-  if (spare >= typical && rows.length >= inboxQueuePageSize) next += Math.floor(spare / typical);
-  else if (spare < -2) next = Math.max(1, inboxQueuePageSize - Math.ceil(Math.abs(spare) / typical));
-  if (next !== inboxQueuePageSize && inboxQueueFitPasses < 4) {
-    inboxQueueFitPasses += 1;
-    inboxQueuePageSize = next;
-    renderInbox();
-    return;
-  }
-  inboxQueueFitPasses = 0;
-}
-window.addEventListener('resize', () => { inboxQueueFitPasses = 0; candidateFitPasses = 0; jobFitPasses = 0; if (app.view === 'inbox') fitInboxQueue(); if (app.view === 'candidates') fitCandidatePage(); if (app.view === 'jobs') fitJobPage(); });
 function inboxQueueFilterMatches(item, filter) {
   if (filter === 'processing') return item.ingestStatus === '解析中';
   if (filter === 'confirmation') return assignmentState(item) === 'review';
@@ -1427,7 +1397,6 @@ function renderCandidates() {
   ['candidateSearch', 'candidateJobFilter', 'candidateStatusFilter', 'candidateTagFilter'].forEach(id => $(`#${id}`).addEventListener('input', () => filterCandidates(true)));
   $$('#candidatesView [data-stage-filter]').forEach(button => button.addEventListener('click', () => { $('#candidateStatusFilter').value = button.dataset.stageFilter === '全部' ? '' : button.dataset.stageFilter; $$('#candidatesView [data-stage-filter]').forEach(item => item.classList.toggle('active', item === button)); filterCandidates(true); }));
   bindCandidatePager();
-  requestAnimationFrame(fitCandidatePage);
 }
 
 function candidatePoolTable(items) {
@@ -1442,27 +1411,7 @@ function candidatePoolTable(items) {
 
 
 function bindCandidatePager() {
-  $$('#candidateTableSlot [data-candidate-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; candidateFitPasses = 0; candidatePage = Number(button.dataset.candidatePage) || 1; filterCandidates(); }));
-}
-function fitCandidatePage() {
-  if (window.innerWidth <= 900 || app.view !== 'candidates') return;
-  const pool = document.querySelector('#candidateTableSlot .candidate-pool');
-  const sample = pool?.querySelector('tbody tr');
-  if (!pool || !sample || sample.querySelector('.empty')) return;
-  const rows = [...pool.querySelectorAll('tbody tr')];
-  const rowHeight = Math.max(...rows.map(row => row.getBoundingClientRect().height));
-  if (pool.clientHeight < 120 || rowHeight < 8) return;
-  const pager = pool.querySelector('.candidate-pager')?.offsetHeight || 0;
-  const thead = pool.querySelector('thead')?.offsetHeight || 0;
-  const reservePager = pager || (rows.length >= candidatePageSize ? 44 : 0);
-  const fit = Math.max(1, Math.floor((pool.clientHeight - thead - reservePager) / rowHeight));
-  if (fit !== candidatePageSize && candidateFitPasses < 3) {
-    candidateFitPasses += 1;
-    candidatePageSize = fit;
-    filterCandidates();
-    return;
-  }
-  candidateFitPasses = 0;
+  $$('#candidateTableSlot [data-candidate-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; candidatePage = Number(button.dataset.candidatePage) || 1; filterCandidates(); }));
 }
 function candidateTags(item) {
   const profile = inferTalentProfile(item); const tags = [];
@@ -1476,7 +1425,7 @@ function candidateTags(item) {
 function mokaStatusLabel(item) { return item.mokaSync?.status ? `Moka：${item.mokaSync.status}` : 'Moka：接口待配置'; }
 
 function filterCandidates(resetPage) {
-  if (resetPage) { candidatePage = 1; candidateFitPasses = 0; }
+  if (resetPage) candidatePage = 1;
   const search = $('#candidateSearch').value.trim().toLowerCase();
   const jobId = $('#candidateJobFilter').value;
   const status = $('#candidateStatusFilter').value;
@@ -1495,7 +1444,6 @@ function filterCandidates(resetPage) {
   $('#candidateTableSlot').innerHTML = candidatePoolTable(filtered);
   bindCommonActions($('#candidateTableSlot'));
   bindCandidatePager();
-  requestAnimationFrame(fitCandidatePage);
 }
 
 function candidateTable(items, title) {
@@ -1520,7 +1468,7 @@ function jobCards(jobs) {
 }
 
 function filterJobs(resetPage) {
-  if (resetPage) { jobPage = 1; jobFitPasses = 0; }
+  if (resetPage) jobPage = 1;
   const board = $('#jobBoard'); if (!board) return;
   const query = $('#jobSearch').value.trim().toLowerCase(); const industry = $('#jobIndustryFilter').value; const status = $('#jobStatusFilter').value;
   const filtered = app.jobs.filter(job => (!industry || job.industry === industry) && (!status || (job.status === 'closed' ? 'closed' : 'active') === status) && (!query || `${job.name} ${job.industry} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
@@ -1530,30 +1478,7 @@ function filterJobs(resetPage) {
   const pager = filtered.length > jobPageSize ? `<div class="job-pager"><button type="button" data-job-page="${jobPage - 1}"${jobPage <= 1 ? ' disabled' : ''}>上一页</button><span>第 ${jobPage} / ${pages} 页</span><button type="button" data-job-page="${jobPage + 1}"${jobPage >= pages ? ' disabled' : ''}>下一页</button></div>` : '';
   board.innerHTML = `<div class="job-grid" id="jobGrid">${jobCards(pageItems)}</div>${pager}`;
   bindCommonActions(board);
-  $$('#jobBoard [data-job-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; jobFitPasses = 0; jobPage = Number(button.dataset.jobPage) || 1; filterJobs(); }));
-  requestAnimationFrame(fitJobPage);
-}
-function fitJobPage() {
-  if (window.innerWidth <= 900 || app.view !== 'jobs') return;
-  const board = document.querySelector('#jobsView .job-board');
-  const cards = [...(board?.querySelectorAll('.job-item') || [])];
-  if (!board || !cards.length || board.clientHeight < 120) return;
-  const cardHeight = Math.max(...cards.map(card => card.getBoundingClientRect().height));
-  if (cardHeight < 8) return;
-  const grid = board.querySelector('.job-grid');
-  const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
-  const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(part => part && part !== 'none').length || 1;
-  const pager = board.querySelector('.job-pager')?.offsetHeight || 0;
-  const reservePager = pager || (cards.length >= jobPageSize ? 44 : 0);
-  const rows = Math.max(1, Math.floor((board.clientHeight - reservePager + gap) / (cardHeight + gap)));
-  const fit = rows * columns;
-  if (fit !== jobPageSize && jobFitPasses < 3) {
-    jobFitPasses += 1;
-    jobPageSize = fit;
-    filterJobs();
-    return;
-  }
-  jobFitPasses = 0;
+  $$('#jobBoard [data-job-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; jobPage = Number(button.dataset.jobPage) || 1; filterJobs(); }));
 }
 
 function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); }
