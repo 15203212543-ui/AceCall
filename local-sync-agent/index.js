@@ -105,7 +105,8 @@ class SyncAgent {
     await fsp.mkdir(this.directory, { recursive: true });
     await this.loadState();
     const current = await listFiles(this.directory);
-    if (!this.state.baseline.length) this.state.baseline = current.map(item => fileKey(item.path, item.stat));
+    this.state.baseline = current.map(item => fileKey(item.path, item.stat));
+    this.state.watchedDirectory = this.directory;
     await this.saveState();
     console.log(`[AceCall] ${this.policy.label}监听已启动：${this.directory}`);
     console.log(`[AceCall] 仅处理启动后的新增文件，补偿扫描间隔 ${this.options.interval / 60000} 分钟`);

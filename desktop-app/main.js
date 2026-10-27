@@ -3,7 +3,6 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
-const os = require('node:os');
 const { SyncAgent, platformPolicy } = require('./local-sync-agent');
 
 const DEFAULT_API_BASE = 'https://yuxiaomiaochongwu-d2dsk55ef4b392-1382810550.ap-shanghai.app.tcloudbase.com/acecall-api-v2';
@@ -129,7 +128,6 @@ app.whenReady().then(async () => {
   app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true, args: ['--background'] });
   startLocalServer();
   if (!process.argv.includes('--background')) createWindow();
-  await startAgent(path.join(os.homedir(), 'Downloads')).catch(error => console.error(`[AceCall] 后台监听启动失败：${error.message}`));
   ipcMain.handle('platform', () => platformPolicy());
   ipcMain.handle('choose-directory', async () => { const result = await dialog.showOpenDialog(window, { title: '选择要监听的文件夹', properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? '' : result.filePaths[0]; });
   ipcMain.handle('start-sync', (_event, directory) => startAgent(directory));
