@@ -16,6 +16,8 @@ function getMokaConfig(env = process.env) {
     applicationsPath: String(env.MOKA_APPLICATIONS_PATH || '/api-platform/v1/applications').trim(),
     applicationsLookupPath: String(env.MOKA_APPLICATIONS_LOOKUP_PATH || '/api-platform/v3/applications/list_by_contact_or_id').trim(),
     commentPath: String(env.MOKA_COMMENT_PATH || '/api-platform/pipeline/v3/application/addComment').trim(),
+    resumeUploadPath: String(env.MOKA_RESUME_UPLOAD_PATH || '/api-platform/v3/candidate/uploadResume').trim(),
+    sourceId: String(env.MOKA_SOURCE_ID || '').trim(),
     operatorEmail: String(env.MOKA_OPERATOR_EMAIL || '').trim(),
     interviewInformationPath: String(env.MOKA_INTERVIEW_INFORMATION_PATH || '/api-platform/v1/interview/interview-information').trim(),
     interviewInfosV3Path: String(env.MOKA_INTERVIEW_INFOS_V3_PATH || '/api-platform/v3/getInterviewInfos').trim(),
@@ -48,10 +50,11 @@ function createMokaClient(options = {}) {
       if (!config.baseUrl) throw new Error('MOKA_BASE_URL is not configured');
       if (!config.apiKey) throw new Error('MOKA_API_KEY is not configured');
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const timer = setTimeout(() => controller.abort(), Number(requestOptions.timeoutMs) || timeoutMs);
       const headers = this.authHeaders(requestOptions.headers || {});
+      const { timeoutMs: _requestTimeout, ...fetchOptions } = requestOptions;
       try {
-        const response = await fetch(`${config.baseUrl}/${String(path).replace(/^\//, '')}`, { ...requestOptions, headers, signal: controller.signal });
+        const response = await fetch(`${config.baseUrl}/${String(path).replace(/^\//, '')}`, { ...fetchOptions, headers, signal: controller.signal });
         const contentType = response.headers.get('content-type') || '';
         const body = contentType.includes('application/json') ? await response.json() : await response.text();
         return { ok: response.ok, status: response.status, body };
@@ -303,6 +306,27 @@ function applicationTitle(item) {
   return String(item?.job?.jobTitle || item?.jobTitle || '').replace(/\s+/g, '').toLowerCase();
 }
 
+function applicationJobId(item) {
+  return String(item?.job?.jobId || item?.jobId || '');
+}
+
+function chooseMokaApplicationForJob(applications = [], roleName = '', mokaJobId = '') {
+  const records = applications.filter(Boolean);
+  const active = records.filter(item => item.archived !== true);
+  const pool = active.length ? active : records;
+  const wantedId = String(mokaJobId || '');
+  if (wantedId) {
+    const byId = pool.find(item => applicationJobId(item) === wantedId);
+    if (byId) return byId;
+  }
+  const wanted = String(roleName || '').replace(/\s+/g, '').toLowerCase();
+  if (!wanted) return null;
+  return pool.find(item => {
+    const title = applicationTitle(item);
+    return title && (title.includes(wanted) || wanted.includes(title));
+  }) || null;
+}
+
 function chooseMokaApplication(applications = [], roleName = '') {
   const records = applications.filter(Boolean);
   const active = records.filter(item => item.archived !== true);
@@ -325,6 +349,47 @@ function commentSucceeded(comment) {
   return { ok: Boolean(comment.ok) && !(Number.isFinite(code) && code !== 0 && code !== 200), commentId: String(commentId), message: comment.body?.msg || comment.status };
 }
 
+function responseJson(body) {
+  if (body && typeof body === 'object') return body;
+  if (typeof body !== 'string') return {};
+  try { return JSON.parse(body); } catch { return { msg: body.slice(0, 180) }; }
+}
+
+function resumeMultipart(fields, file) {
+  const boundary = `----AceCall${crypto.randomBytes(12).toString('hex')}`;
+  const chunks = [Buffer.from('')];
+  Object.entries(fields).forEach(([name, value]) => {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  });
+  const fileName = String(file.fileName || 'resume.pdf').replace(/[\r\n"]/g, '') || 'resume.pdf';
+  const mimeType = String(file.mimeType || 'application/octet-stream').replace(/[\r\n"]/g, '') || 'application/octet-stream';
+  chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="resume"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`));
+  chunks.push(Buffer.isBuffer(file.buffer) ? file.buffer : Buffer.from(file.buffer || ''));
+  chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+async function uploadResumeToJob(client, { email, sourceId, mokaJobId, resumeFile }) {
+  const form = resumeMultipart({
+    operateEmail: email,
+    sourceId: String(sourceId),
+    jobId: String(mokaJobId),
+    isBreakJobPermission: 'true'
+  }, resumeFile);
+  const response = await client.request(client.config.resumeUploadPath, {
+    method: 'POST',
+    headers: { 'Content-Type': form.contentType },
+    body: form.body,
+    timeoutMs: 45000
+  });
+  const body = responseJson(response.body);
+  const code = Number(body.code);
+  const application = body.data?.application || {};
+  const applicationId = application.id || body.data?.applicationId || '';
+  const ok = Boolean(response.ok) && Boolean(applicationId) && !(Number.isFinite(code) && code !== 0 && code !== 200);
+  return { ok, applicationId: String(applicationId || ''), candidateId: String(application.candidateId || ''), jobId: String(application.jobId || mokaJobId || ''), message: body.msg || response.status };
+}
+
 async function postApplicationComment(client, applicationId, email, content) {
   const comment = await client.request(client.config.commentPath, {
     method: 'POST',
@@ -338,45 +403,67 @@ async function postApplicationComment(client, applicationId, email, content) {
   return commentSucceeded(comment);
 }
 
-async function syncScreeningComment(client, candidate = {}, operatorEmail = '', previous = null) {
+async function writeScreeningNotes(client, application, email, candidate, salaryNote) {
+  const applicationId = application?.applicationId || application?.id;
+  const base = {
+    applicationId: String(applicationId),
+    candidateId: String(application.candidateBaseInfo?.candidateId || application.candidateId || ''),
+    jobTitle: application.job?.jobTitle || application.jobTitle || '',
+    mokaJobId: applicationJobId(application)
+  };
+  const comment = await postApplicationComment(client, applicationId, email, buildScreeningNote(candidate));
+  if (!comment.ok) return syncResult(`Moka 备注写入失败（${comment.message}）`, base);
+  const synced = { ...base, commentId: comment.commentId };
+  if (!salaryNote) return syncResult('已同步', synced);
+  const salary = await postApplicationComment(client, applicationId, email, salaryNote);
+  if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, synced);
+  return syncResult('已同步', { ...synced, salaryCommentId: salary.commentId });
+}
+
+async function syncScreeningComment(client, candidate = {}, operatorEmail = '', previous = null, delivery = null) {
   if (!client?.config?.baseUrl || !client?.config?.apiKey) return syncResult('未配置');
   const email = normalizeEmail(operatorEmail || client.config.operatorEmail);
   if (!email) return syncResult('缺少 Moka 操作人邮箱');
   const phone = normalizePhone(candidate.resumeMeta?.phone);
   const candidateEmail = normalizeEmail(candidate.resumeMeta?.email);
-  if (!phone && !candidateEmail) return syncResult('缺少手机号或邮箱');
   const salaryNote = buildSalaryNote(candidate);
   const decisionId = String(candidate.report?.reviewDecisionId || candidate.reviewDecisionId || '');
   const retrySalary = previous?.status !== '已同步' && previous?.commentId && previous.applicationId && !previous.salaryCommentId && salaryNote && (!decisionId || !previous.reviewDecisionId || decisionId === previous.reviewDecisionId);
   if (retrySalary) {
     const salary = await postApplicationComment(client, previous.applicationId, email, salaryNote);
-    if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, { applicationId: String(previous.applicationId), commentId: String(previous.commentId) });
-    return syncResult('已同步', { applicationId: String(previous.applicationId), commentId: String(previous.commentId), salaryCommentId: salary.commentId, candidateId: previous.candidateId || '', jobTitle: previous.jobTitle || '' });
+    if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, { applicationId: String(previous.applicationId), commentId: String(previous.commentId), candidateId: previous.candidateId || '', mokaJobId: previous.mokaJobId || '' });
+    return syncResult('已同步', { applicationId: String(previous.applicationId), commentId: String(previous.commentId), salaryCommentId: salary.commentId, candidateId: previous.candidateId || '', jobTitle: previous.jobTitle || '', mokaJobId: previous.mokaJobId || '' });
   }
-  const lookupBody = {};
-  if (phone) lookupBody.phoneList = [phone];
-  if (candidateEmail) lookupBody.emailList = [candidateEmail];
-  const lookup = await client.request(client.config.applicationsLookupPath, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(lookupBody)
-  });
-  if (!lookup.ok) return syncResult(`Moka 申请查询失败（${lookup.status}）`);
-  const application = chooseMokaApplication(applicationList(lookup.body), candidate.roleName);
-  const applicationId = application?.applicationId || application?.id;
-  if (!applicationId) return syncResult('未匹配到 Moka 申请');
-  const comment = await postApplicationComment(client, applicationId, email, buildScreeningNote(candidate));
-  if (!comment.ok) return syncResult(`Moka 备注写入失败（${comment.message}）`, { applicationId: String(applicationId) });
-  const synced = {
-    applicationId: String(applicationId),
-    candidateId: String(application.candidateBaseInfo?.candidateId || application.candidateId || ''),
-    commentId: comment.commentId,
-    jobTitle: application.job?.jobTitle || application.jobTitle || ''
-  };
-  if (!salaryNote) return syncResult('已同步', synced);
-  const salary = await postApplicationComment(client, applicationId, email, salaryNote);
-  if (!salary.ok) return syncResult(`薪资备注写入失败（${salary.message}）`, synced);
-  return syncResult('已同步', { ...synced, salaryCommentId: salary.commentId });
+  const retryNote = previous?.applicationId && !previous.commentId && String(previous.status || '').includes('备注写入失败');
+  if (retryNote) return writeScreeningNotes(client, { applicationId: previous.applicationId, candidateId: previous.candidateId || '', job: { jobId: previous.mokaJobId || '', jobTitle: previous.jobTitle || '' }, jobTitle: previous.jobTitle || '' }, email, candidate, salaryNote);
+  if (!phone && !candidateEmail && !delivery?.resumeFile) return syncResult('缺少手机号或邮箱');
+  let application = null;
+  if (phone || candidateEmail) {
+    const lookupBody = {};
+    if (phone) lookupBody.phoneList = [phone];
+    if (candidateEmail) lookupBody.emailList = [candidateEmail];
+    const lookup = await client.request(client.config.applicationsLookupPath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lookupBody)
+    });
+    if (!lookup.ok) return syncResult(`Moka 申请查询失败（${lookup.status}）`);
+    const found = applicationList(lookup.body);
+    const mokaJobId = String(delivery?.mokaJobId || '').trim();
+    application = mokaJobId ? chooseMokaApplicationForJob(found, candidate.roleName, mokaJobId) : chooseMokaApplication(found, candidate.roleName);
+  }
+  if (!application) {
+    const mokaJobId = String(delivery?.mokaJobId || '').trim();
+    const resumeFile = delivery?.resumeFile;
+    if (!mokaJobId) return syncResult(delivery && Object.prototype.hasOwnProperty.call(delivery, 'resumeFile') ? '岗位未关联 Moka' : '未匹配到 Moka 申请');
+    if (!resumeFile?.buffer?.length) return syncResult('缺少简历原件');
+    const sourceId = String(delivery?.sourceId || client.config.sourceId || '').trim();
+    if (!sourceId) return syncResult('缺少 Moka 渠道编号');
+    const uploaded = await uploadResumeToJob(client, { email, sourceId, mokaJobId, resumeFile });
+    if (!uploaded.ok) return syncResult(`简历上传失败（${uploaded.message}）`, { mokaJobId });
+    application = { applicationId: uploaded.applicationId, candidateId: uploaded.candidateId, job: { jobId: uploaded.jobId || mokaJobId, jobTitle: candidate.roleName || '' } };
+  }
+  return writeScreeningNotes(client, application, email, candidate, salaryNote);
 }
 
 module.exports = {
@@ -390,5 +477,6 @@ module.exports = {
   buildScreeningNote,
   buildSalaryNote,
   chooseMokaApplication,
+  chooseMokaApplicationForJob,
   syncScreeningComment
 };

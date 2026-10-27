@@ -3,7 +3,7 @@ const { getMokaConfig, mokaConnectionStatus, maskSecret, screeningFingerprint, b
 
 assert.deepEqual(getMokaConfig({}), {
   apiKey: '', baseUrl: '', enterpriseId: '', apiKeyHeader: 'Authorization', authMode: 'basic', apiKeyPrefix: '', interviewsPath: '/api-platform/v1/interviews', projectName: 'QS'
-  , jobsPath: '/api-platform/v1/jobs', requisitionsPath: '/api-platform/v1/requisitions', applicationsPath: '/api-platform/v1/applications', applicationsLookupPath: '/api-platform/v3/applications/list_by_contact_or_id', commentPath: '/api-platform/pipeline/v3/application/addComment', operatorEmail: '', interviewInformationPath: '/api-platform/v1/interview/interview-information', interviewInfosV3Path: '/api-platform/v3/getInterviewInfos', jobNames: ['法务BP', 'OTC交易产品经理', '交易产品经理', '清结算产品经理', '行情产品经理', '账户产品经理', '数据分析师', '券商服务端开发工程师（长沙）', '结算专员', '券商客服主管', '证券设计师', '证券运维工程师', '券商测试工程师', '券商业务后端开发工程师']
+  , jobsPath: '/api-platform/v1/jobs', requisitionsPath: '/api-platform/v1/requisitions', applicationsPath: '/api-platform/v1/applications', applicationsLookupPath: '/api-platform/v3/applications/list_by_contact_or_id', commentPath: '/api-platform/pipeline/v3/application/addComment', resumeUploadPath: '/api-platform/v3/candidate/uploadResume', sourceId: '', operatorEmail: '', interviewInformationPath: '/api-platform/v1/interview/interview-information', interviewInfosV3Path: '/api-platform/v3/getInterviewInfos', jobNames: ['法务BP', 'OTC交易产品经理', '交易产品经理', '清结算产品经理', '行情产品经理', '账户产品经理', '数据分析师', '券商服务端开发工程师（长沙）', '结算专员', '券商客服主管', '证券设计师', '证券运维工程师', '券商测试工程师', '券商业务后端开发工程师']
 });
 assert.equal(mokaConnectionStatus({ MOKA_BASE_URL: 'https://example.test/', MOKA_API_KEY: '1234567890' }).configured, true);
 assert.equal(mokaConnectionStatus({ MOKA_BASE_URL: 'https://example.test/' }).configured, false);
@@ -116,6 +116,47 @@ async function runSyncCases() {
     async request() { return { ok: true, status: 200, body: { data: { applicationList: [] } } }; }
   }, candidate, 'owner@example.com');
   assert.equal(unmatched.status, '未匹配到 Moka 申请');
+
+  const resumeFile = { buffer: Buffer.from('resume-bytes'), fileName: '林夏.pdf', mimeType: 'application/pdf' };
+  const uploadClient = {
+    config: { ...client.config, sourceId: '17' },
+    async request(path, options = {}) {
+      calls.push({ path, body: Buffer.isBuffer(options.body) ? options.body : JSON.parse(options.body), contentType: options.headers?.['Content-Type'] || '' });
+      if (String(path).includes('list_by_contact')) return { ok: true, status: 200, body: { data: { applicationList: [{ applicationId: 2, archived: false, updatedAt: 10, job: { jobId: 'other-job', jobTitle: '结算专员' } }] } } };
+      if (String(path).includes('uploadResume')) return { ok: true, status: 200, body: { code: 0, data: { application: { id: 88, candidateId: 9, jobId: 'moka-job-1' } } } };
+      return { ok: true, status: 200, body: { code: 200, data: { commentId: 70 + calls.filter(item => String(item.path).includes('addComment')).length } } };
+    }
+  };
+  calls.length = 0;
+  const uploaded = await syncScreeningComment(uploadClient, candidate, 'owner@example.com', null, { mokaJobId: 'moka-job-1', resumeFile });
+  assert.equal(uploaded.status, '已同步');
+  assert.equal(uploaded.applicationId, '88');
+  assert.equal(uploaded.mokaJobId, 'moka-job-1');
+  assert.equal(String(calls[1].path).includes('uploadResume'), true);
+  assert.equal(Buffer.isBuffer(calls[1].body), true);
+  assert.match(calls[1].body.toString('utf8'), /moka-job-1/);
+  assert.match(calls[1].body.toString('utf8'), /林夏\.pdf/);
+  assert.equal(calls[2].body.applicationId, 88);
+  assert.match(calls[2].body.content, /基本信息：/);
+
+  calls.length = 0;
+  const uploadFailed = await syncScreeningComment({
+    config: uploadClient.config,
+    async request(path) {
+      calls.push({ path });
+      if (String(path).includes('list_by_contact')) return { ok: true, status: 200, body: { data: { applicationList: [] } } };
+      return { ok: false, status: 400, body: { code: 400, msg: '渠道无效' } };
+    }
+  }, candidate, 'owner@example.com', null, { mokaJobId: 'moka-job-1', resumeFile });
+  assert.match(uploadFailed.status, /简历上传失败/);
+  assert.equal(calls.some(item => String(item.path).includes('addComment')), false);
+
+  calls.length = 0;
+  const noteRetry = await syncScreeningComment(client, candidate, 'owner@example.com', { status: 'Moka 备注写入失败（无权限）', applicationId: '88', mokaJobId: 'moka-job-1', reviewDecisionId: 'rd_same' });
+  assert.equal(noteRetry.status, '已同步');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].body.applicationId, 88);
+  assert.equal(calls.some(item => String(item.path).includes('uploadResume')), false);
 
   const failed = await syncScreeningComment({
     config: client.config,

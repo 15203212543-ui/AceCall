@@ -1361,6 +1361,22 @@ function hasScreeningResult(record) {
   return Boolean((summary && typeof summary === 'object' && Object.keys(summary).length) || (report && typeof report === 'object' && Object.keys(report).length));
 }
 
+async function downloadCloudFile(fileId) {
+  const app = getCloudbaseApp();
+  if (typeof app.downloadFile === 'function') {
+    const downloaded = await app.downloadFile({ fileID: fileId });
+    const content = downloaded?.fileContent || downloaded?.data;
+    if (content) return Buffer.from(content);
+  }
+  if (typeof app.getTempFileURL !== 'function') throw new Error('云存储不可用');
+  const listed = await app.getTempFileURL({ fileList: [fileId] });
+  const url = listed?.fileList?.[0]?.tempFileURL || listed?.fileList?.[0]?.download_url || '';
+  if (!url) throw new Error('简历原件下载失败');
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('简历原件下载失败');
+  return Buffer.from(await response.arrayBuffer());
+}
+
 async function resolveMokaSync(context, previousSync, record) {
   const previous = previousSync && typeof previousSync === 'object' ? previousSync : null;
   if (!hasScreeningResult(record)) return previous;
@@ -1371,7 +1387,19 @@ async function resolveMokaSync(context, previousSync, record) {
   if (previous?.status === '已同步' && previous.fingerprint === fingerprint) return previous;
   const operatorEmail = chooseOperatorEmail(context.member?.username, process.env.MOKA_OPERATOR_EMAIL);
   try {
-    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail, previous);
+    const jobResult = record.jobId ? await getDatabase().collection(COLLECTIONS.jobs).doc(record.jobId).get().catch(() => ({ data: null })) : { data: null };
+    const job = jobResult.data && (!jobResult.data.tenantId || jobResult.data.tenantId === context.tenantId) ? jobResult.data : null;
+    let resumeFile = null;
+    const fileId = record.resumeMeta?.originalFileId;
+    if (fileId) {
+      try {
+        const buffer = await downloadCloudFile(fileId);
+        if (buffer?.length) resumeFile = { buffer, fileName: record.resumeMeta.originalFileName || record.resumeMeta.fileName || 'resume.pdf', mimeType: record.resumeMeta.originalMimeType || 'application/octet-stream' };
+      } catch (error) {
+        return { status: `简历原件读取失败：${String(error.message || '未知错误').slice(0, 80)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
+      }
+    }
+    const result = await syncScreeningComment(createMokaClient(), record, operatorEmail, previous, { mokaJobId: job?.mokaJobId || '', resumeFile });
     return { ...result, fingerprint, reviewDecisionId: plan.reviewDecisionId };
   } catch (error) {
     return { status: `Moka 同步失败：${String(error.message || '未知错误').slice(0, 120)}`, fingerprint, reviewDecisionId: plan.reviewDecisionId, syncedAt: new Date().toISOString() };
