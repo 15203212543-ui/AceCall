@@ -42,12 +42,25 @@ function removeRepeatedWatermarkFragments(lines = []) {
 
 function parseResumeBasics(text = '') {
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-  const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
+  const phone = extractPhone(text);
   const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
   const years = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
   const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
   return { candidateName: extractCandidateName(lines), phone, email, age, experienceYears: years, education };
+}
+
+function extractPhone(text = '') {
+  const normalized = String(text).normalize('NFKC').replace(/[‐‑‒–—―−﹣－]/g, '-');
+  const match = normalized.match(/(?<!\d)(?:\+?86[\s-]*)?(1[3-9](?:[\s-]*\d){9})(?!\d)/);
+  return (match?.[1] || '').replace(/\D/g, '');
+}
+
+function extractExperienceYearsFromFileName(fileName = '') {
+  const base = path.basename(String(fileName), path.extname(String(fileName)));
+  const matches = [...base.matchAll(/(?:^|[\s】_)])(\d{1,2})\s*年(?:以上|经验)?(?=$|[\s(（])/g)];
+  const years = matches.map(match => Number(match[1])).filter(value => value >= 0 && value <= 15);
+  return years.length ? String(years[years.length - 1]) : '';
 }
 
 function extractCandidateName(lines = []) {
@@ -119,6 +132,8 @@ function chooseCandidateName(...values) {
 module.exports = {
   normalizeResumeText,
   parseResumeBasics,
+  extractPhone,
+  extractExperienceYearsFromFileName,
   extractCandidateName,
   extractContextualCandidateName,
   extractLabeledCandidateName,

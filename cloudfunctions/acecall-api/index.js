@@ -20,6 +20,7 @@ const { prepareTenantInterviewReminders, readInterviewReminders } = require('./i
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, mergeStoredCandidate } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
+const { findDuplicateCandidate } = require('./candidate-dedupe');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -27,6 +28,7 @@ const {
   extractContextualCandidateName,
   extractLabeledCandidateName,
   extractNameFromFileName,
+  extractExperienceYearsFromFileName,
   chooseCandidateName
 } = require('./resume-text');
 const { classifyTranscription, presentTranscriptionStatus } = require('./transcription-route');
@@ -1243,17 +1245,24 @@ async function loadState(context) {
   const db = getDatabase();
   const [jobs, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
     listTenantJobs(context.tenantId),
-    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('createdAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get()
   ]);
   const screenings = new Map();
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
-  const cases = (candidatesResult.data || []).map(candidate => {
+  const cases = (candidatesResult.data || []).filter(isMeaningfulCandidateRecord).map(candidate => {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument(presentCaseSummary(candidate, screening));
   });
   return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+}
+
+function isMeaningfulCandidateRecord(candidate = {}) {
+  return Boolean(String(candidate.candidateName || '').trim()
+    || String(candidate.resumeMeta?.fileName || '').trim()
+    || String(candidate.documentId || '').trim()
+    || String(candidate.resumeSummary || candidate.resume || '').trim());
 }
 
 async function loadCandidateScreening(context, id) {
@@ -1353,6 +1362,19 @@ async function saveCandidate(context, id, input) {
   incoming.updatedBy = context.uid;
   incoming.updatedAt = now;
   incoming.createdAt = incoming.createdAt || now;
+  if (!isMeaningfulCandidateRecord(incoming)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);
+  const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+  const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
+  if (storedCandidate?.tenantId) assertSameTenant(storedCandidate, context);
+  if (!storedCandidate) {
+    const tenantCandidates = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
+    const duplicate = findDuplicateCandidate(incoming, tenantCandidates.data || [], id);
+    if (duplicate) {
+      const canonicalCandidateId = duplicate.candidate.id || duplicate.candidate._id;
+      await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate.reason });
+      return { ok: true, duplicate: true, canonicalCandidateId, duplicateReason: duplicate.reason };
+    }
+  }
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
   const existingScreening = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
   const previousScreening = Array.isArray(existingScreening.data) ? (existingScreening.data[0] || {}) : (existingScreening.data || {});
@@ -1369,9 +1391,6 @@ async function saveCandidate(context, id, input) {
   screening.jobId = input.jobId || '';
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
-  const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
-  const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
-  if (storedCandidate?.tenantId) assertSameTenant(storedCandidate, context);
   const candidate = mergeStoredCandidate(storedCandidate, incoming);
   candidate.createdBy = storedCandidate?.createdBy || context.uid;
   const actor = actorFromMember(context.member, context.uid);
@@ -1786,7 +1805,6 @@ async function parseResumeFile(fileName, buffer) {
   if (text.length < 20) throw serviceError('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR', 422, { code: 'RESUME_TEXT_EMPTY', hint: '该文件可能是扫描件、图片型 PDF 或受保护文档' });
   const phone = (text.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
   const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
-  const experienceYears = text.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
   const age = text.match(/(?:年龄|Age)\s*[:：]?\s*(\d{2})(?:岁)?/i)?.[1] || text.match(/(?<!\d)(2[0-9]|3[0-9]|4[0-9])\s*岁/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => text.includes(level)) || '';
   const resumeLines = text.split('\n').map(line => line.trim()).filter(Boolean);
@@ -1798,7 +1816,7 @@ async function parseResumeFile(fileName, buffer) {
   const displayedName = chooseDisplayedName(nameCandidates);
   const candidateName = displayedName.candidateName || chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
   const profile = extractProfileFields(text);
-  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears, education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
+  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears || extractExperienceYearsFromFileName(fileName), education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
 }
 
 let baiduAccessToken = { value: '', expiresAt: 0 };
