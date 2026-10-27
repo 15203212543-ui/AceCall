@@ -29,6 +29,10 @@ function applyJobAssignment(candidate, jobs, match) {
   candidate.ingestStatus = decision.ingestStatus;
   if (!decision.assigned) {
     candidate.jobId = '';
+    candidate.roleName = '';
+    candidate.jd = '';
+    candidate.rules = '';
+    candidate.keywords = [];
     return candidate;
   }
   candidate.jobId = decision.job.id;
@@ -36,6 +40,19 @@ function applyJobAssignment(candidate, jobs, match) {
   candidate.jd = decision.job.jd || '';
   candidate.rules = decision.job.rules || '';
   candidate.keywords = decision.job.keywords || [];
+  return candidate;
+}
+
+function applyUploadedResumeAssignment(candidate, jobs = []) {
+  const fileName = candidate.resumeMeta?.fileName || candidate.resumeMeta?.originalFileName || '';
+  const decision = evaluateJobMatches({
+    resume: candidate.resume || '',
+    fileName,
+    jobs
+  });
+  applyJobAssignment(candidate, jobs, decision);
+  candidate.assignmentSource = decision.matchingBasis || 'automatic';
+  candidate.assignmentStatus = decision.status;
   return candidate;
 }
 
@@ -186,14 +203,14 @@ function evaluateJobMatches({ resume = '', fileName = '', jobs = [], conflicts =
     const titleScore = filenameTitleSignal(fileName, job);
     const jobFamily = roleFamily(job.name);
     if (filenameFamily && jobFamily && filenameFamily !== jobFamily && !titleScore) {
-      return { ...evaluated, score: 0, status: '无法匹配', titleScore: 0, titleConflict: true };
+      return { ...evaluated, contentScore: evaluated.score, score: 0, status: '无法匹配', titleScore: 0, titleConflict: true };
     }
-    return { ...evaluated, score: Math.max(evaluated.score, titleScore), titleScore, titleFamily: jobFamily };
+    return { ...evaluated, contentScore: evaluated.score, titleScore, titleFamily: jobFamily };
   }).sort((left, right) => right.titleScore - left.titleScore || right.score - left.score);
   const first = results[0];
   const second = results[1];
   const alternatives = results.slice(1, 3).map(item => ({ jobId: item.jobId, name: item.name, score: item.score }));
-  if (first?.titleScore >= 90) return { status: '自动匹配', jobId: first.jobId, score: first.score, matchingBasis: 'filename-title', ruleVersion: 3, alternativeJobs: alternatives, results, ageIgnored: true };
+  if (first?.titleScore >= 90) return { status: '自动匹配', jobId: first.jobId, score: first.contentScore, assignmentConfidence: first.titleScore, matchingBasis: 'filename-title', ruleVersion: 4, alternativeJobs: alternatives, results, ageIgnored: true };
   if (filenameFamily) {
     const compatible = results.filter(item => item.titleFamily === filenameFamily && !item.titleConflict);
     const compatibleFirst = compatible[0];
@@ -212,6 +229,7 @@ module.exports = {
   ITEM_STATES,
   resolveJobAssignment,
   applyJobAssignment,
+  applyUploadedResumeAssignment,
   draftJobProfile,
   confirmJobProfile,
   resumeForMatch,

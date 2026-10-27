@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { evaluateJob, evaluateJobMatches } = require('../cloudfunctions/acecall-api/job-assignment');
+const { evaluateJob, evaluateJobMatches, applyUploadedResumeAssignment } = require('../cloudfunctions/acecall-api/job-assignment');
 
 const jobs = [
   {
@@ -75,6 +75,27 @@ test('filename exact title overrides unrelated resume keywords', () => {
   assert.equal(decision.status, '自动匹配');
   assert.equal(decision.jobId, 'hr');
   assert.equal(decision.matchingBasis, 'filename-title');
+  assert.ok(decision.score < 100);
+  assert.equal(decision.assignmentConfidence, 100);
+});
+
+test('desktop uploads are revalidated from the filename before persistence', () => {
+  const candidate = {
+    jobId: 'data',
+    roleName: '数据分析师（商业分析）',
+    resume: '参与数据整理、商业分析和报表制作',
+    resumeMeta: { fileName: '【人力管培_北京 10-15K】蔺楷鹏 26年应届生.pdf', source: 'local-sync-agent' }
+  };
+  applyUploadedResumeAssignment(candidate, [
+    { id: 'hr', name: '人力管培', keywords: ['招聘', '人力'] },
+    { id: 'data', name: '数据分析师（商业分析）', keywords: ['数据', '商业分析'] }
+  ]);
+  assert.equal(candidate.jobId, 'hr');
+  assert.equal(candidate.roleName, '人力管培');
+  assert.equal(candidate.matching.matchingBasis, 'filename-title');
+  assert.ok(candidate.matching.score < 100);
+  assert.equal(candidate.matching.assignmentConfidence, 100);
+  assert.equal(candidate.assignmentStatus, '自动匹配');
 });
 
 test('legal title in filename maps to legal role even with duplicate job records', () => {
@@ -134,7 +155,7 @@ test('frontend completes automatic and manual assignment paths in the assignment
   const source = fs.readFileSync(path.join(__dirname, '../public/app-v2.js'), 'utf8');
   assert.match(source, /\['自动匹配', '已分配'\]\.includes\(match\?\.status\)/);
   assert.match(source, /score >= 60/);
-  assert.match(source, /filenameTitleMatch \|\| !secondScore/);
+  assert.match(source, /filenameTitleMatch \|\| \(score >= 60/);
   assert.match(source, /function assignmentCell\(item\)/);
   assert.match(source, /data-confirm-assignment/);
   assert.match(source, /function confirmCandidateAssignment\(id\)/);
@@ -146,4 +167,9 @@ test('frontend completes automatic and manual assignment paths in the assignment
   assert.match(source, /assignmentSource = 'manual-confirmation'/);
   assert.doesNotMatch(source, /rematchPendingCandidates|rematchSyncedCandidates|rematchPendingButton/);
   assert.doesNotMatch(source, /match\?\.confidence === '低'/);
+});
+
+test('desktop sync sends the resume filename to the matching endpoint', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../desktop-app/local-sync-agent.js'), 'utf8');
+  assert.match(source, /fileName:\s*candidate\.resumeMeta\?\.fileName/);
 });

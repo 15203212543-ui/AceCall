@@ -8,7 +8,7 @@ const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
 const { prepareDocumentVersions } = require('./document-text');
-const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMatches } = require('./job-assignment');
+const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMatches, applyUploadedResumeAssignment } = require('./job-assignment');
 const { proposeNameCandidates, chooseDisplayedName, extractProfileFields } = require('./resume-profile');
 const { buildCallQuestions } = require('./call-preparation');
 const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
@@ -1362,6 +1362,10 @@ async function saveCandidate(context, id, input) {
   incoming.updatedBy = context.uid;
   incoming.updatedAt = now;
   incoming.createdAt = incoming.createdAt || now;
+  if (incoming.resumeMeta?.source === 'local-sync-agent' && String(incoming.resumeMeta?.fileName || '').trim()) {
+    const jobs = await listTenantJobs(context.tenantId);
+    applyUploadedResumeAssignment(incoming, jobs);
+  }
   if (!isMeaningfulCandidateRecord(incoming)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);
   const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
   const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
