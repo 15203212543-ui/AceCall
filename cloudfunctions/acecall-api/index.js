@@ -14,6 +14,7 @@ const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInte
 const { classifyInterviewQuestions, analyzeInterviewQuestions } = require('./interview-question-analysis');
 const { buildAiTaskRecord } = require('./ai-task');
 const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
+const { listIndustryNews } = require('./industry-news');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, presentCaseSummary, buildLegacyDocument } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
@@ -258,6 +259,10 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'GET' && url.pathname === '/api/transcript-imports') {
       return sendJson(response, 200, await listTranscriptImports(await getRequestContext(request)));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/industry-news') {
+      await getRequestContext(request);
+      return sendJson(response, 200, await listIndustryNews({ database: getDatabase() }));
     }
     if (request.method === 'GET' && url.pathname === '/api/interviewers') {
       return sendJson(response, 200, await listInterviewers(await getRequestContext(request)));

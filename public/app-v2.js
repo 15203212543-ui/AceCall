@@ -1,6 +1,7 @@
 import cloudbase from 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@3.10.1/+esm';
 import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowups, loadMokaInterviews, loadInterviewerLibrary, loadTranscriptImports, clearDeferredCaches, noteDeferredTenant } from './interviewer-page.js?v=__ACE_CALL_BUILD__';
 import { recordingDockVisible, recordingOnCallPage, recordingStatusLabel } from './recording-session.mjs?v=__ACE_CALL_BUILD__';
+import { industryNewsMarkup } from './industry-news-cards.mjs?v=__ACE_CALL_BUILD__';
 
 // auth-session.js 以普通脚本形式先于本文件加载，负责判定匿名身份。
 // 匿名令牌（publishable key 自动生成的 scope=anonymous / sub=anon）会被网关
@@ -807,9 +808,29 @@ function renderTalentMarket() {
      $('#intelligenceView [data-intelligence-industry-close]')?.addEventListener('click', () => { app.intelligenceIndustryDetail = ''; renderIntelligence(); });
      return;
    }
-   root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从候选人访谈与工作经历中归纳行业、公司和人才市场信息</p></div><select id="intelligenceHomePeriod"><option value="all">全部时间</option><option value="30">近 30 天</option><option value="90">近 90 天</option></select></div><div class="intelligence-home-metrics"><div class="intelligence-home-metric"><span>研究主题</span><strong>${totalObjects}</strong><small>行业、公司与能力方向</small></div><div class="intelligence-home-metric"><span>涉及公司</span><strong>${companies.length}</strong><small>候选人曾任职公司</small></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2>近期重点发现</h2><p class="surface-subtitle">根据当前材料归纳的行业、公司与人才观察</p></div><button class="link-action" type="button" data-intelligence-topic="all">查看全部 →</button></div><div class="surface-body">${insightMarkup}</div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2>按主题查看</h2><p class="surface-subtitle">选择主题查看详细分析与资料出处</p></div></div><div class="intelligence-topic-grid">${topicCards.map(([key,icon,title,desc]) => `<button type="button" class="intelligence-topic-card" data-intelligence-topic="${key}"><span class="intelligence-topic-icon">${icon}</span><strong>${title}</strong><small>${desc}</small></button>`).join('')}</div></section><div class="intelligence-home-footnote">统计范围：${sourceSummary.total} 份候选人访谈，其中 ${sourceSummary.moka} 份正式面试、${sourceSummary.phone} 份电话沟通；${sourceSummary.resume} 份已关联简历</div></div>`;
+   root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从候选人访谈与工作经历中归纳行业、公司和人才市场信息</p></div><select id="intelligenceHomePeriod"><option value="all">全部时间</option><option value="30">近 30 天</option><option value="90">近 90 天</option></select></div><div class="intelligence-home-metrics"><div class="intelligence-home-metric"><span>研究主题</span><strong>${totalObjects}</strong><small>行业、公司与能力方向</small></div><div class="intelligence-home-metric"><span>涉及公司</span><strong>${companies.length}</strong><small>候选人曾任职公司</small></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2>近期重点发现</h2><p class="surface-subtitle">根据当前材料归纳的行业、公司与人才观察</p></div><button class="link-action" type="button" data-intelligence-topic="all">查看全部 →</button></div><div class="surface-body">${insightMarkup}</div></section><section class="surface intelligence-external" id="industryNewsSection"><div class="surface-head"><div><h2>外部行业动态</h2><p class="surface-subtitle">富途控股、老虎证券、盈透证券的美国证监会公开公告。与简历和转写分开，单条公告不作为行业趋势。</p></div></div><div class="surface-body" id="industryNewsBody"><div class="intelligence-home-empty">正在读取公开公告…</div></div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2>按主题查看</h2><p class="surface-subtitle">选择主题查看详细分析与资料出处</p></div></div><div class="intelligence-topic-grid">${topicCards.map(([key,icon,title,desc]) => `<button type="button" class="intelligence-topic-card" data-intelligence-topic="${key}"><span class="intelligence-topic-icon">${icon}</span><strong>${title}</strong><small>${desc}</small></button>`).join('')}</div></section><div class="intelligence-home-footnote">统计范围：${sourceSummary.total} 份候选人访谈，其中 ${sourceSummary.moka} 份正式面试、${sourceSummary.phone} 份电话沟通；${sourceSummary.resume} 份已关联简历</div></div>`;
    const period = $('#intelligenceHomePeriod'); if (period) { period.value = app.intelligencePeriod || 'all'; period.addEventListener('change', event => { app.intelligencePeriod = event.target.value || 'all'; app.intelligenceIndustryDetail = ''; renderIntelligence(); }); }
    $$('#intelligenceView [data-intelligence-topic]').forEach(button => button.addEventListener('click', () => { app.intelligenceTopic = button.dataset.intelligenceTopic; renderIntelligence(); }));
+   loadIndustryNews(app.intelligencePeriod);
+ }
+
+ async function loadIndustryNews(period = 'all') {
+   const body = $('#industryNewsBody');
+   if (!body) return;
+   if (!REMOTE_BACKEND) { body.innerHTML = industryNewsMarkup([], period); return; }
+   try {
+     if (!app.industryNews || Date.now() - app.industryNews.at > 10 * 60 * 1000) {
+       const response = await authenticatedFetch(apiUrl('/api/industry-news'));
+       const data = await response.json().catch(() => ({}));
+       if (!response.ok) throw new Error(cloudError(response.status, data));
+       app.industryNews = { at: Date.now(), items: Array.isArray(data.items) ? data.items : [], unavailable: !data.items?.length && Array.isArray(data.errors) && data.errors.length > 0 };
+     }
+   } catch (error) {
+     console.warn('[AceCall industry news]', error);
+     app.industryNews = app.industryNews?.items?.length ? app.industryNews : { at: Date.now(), items: [], unavailable: true };
+   }
+   const current = $('#industryNewsBody');
+   if (current) current.innerHTML = industryNewsMarkup(app.industryNews?.items || [], period, Date.now(), app.industryNews?.unavailable ? '公开公告暂时没有更新。' : '本期无外部动态。');
  }
 
  function renderIntelligence() {
