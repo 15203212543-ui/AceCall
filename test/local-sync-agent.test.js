@@ -49,6 +49,20 @@ test('desktop app bundles job assignment and can load without the cloud function
   assert.equal(typeof SyncAgent, 'function');
 });
 
+test('desktop sync skips files already present when listening starts', async () => {
+  const os = require('node:os');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acecall-sync-'));
+  const existing = path.join(root, 'existing.pdf');
+  fs.writeFileSync(existing, Buffer.alloc(2048));
+  const { SyncAgent, fileKey: desktopFileKey } = require('../desktop-app/local-sync-agent');
+  const agent = new SyncAgent({ directory: root, statePath: path.join(root, 'state.json'), interval: 600000, once: true, apiBase: '' });
+  await agent.start();
+  const key = desktopFileKey(existing, fs.statSync(existing));
+  assert.equal(agent.state.baseline.includes(key), true);
+  assert.equal(agent.state.imported[key], undefined);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('local sync agent file key changes when the file changes', () => {
   assert.notEqual(fileKey('/tmp/resume.pdf', { size: 10, mtimeMs: 1 }), fileKey('/tmp/resume.pdf', { size: 11, mtimeMs: 1 }));
 });
