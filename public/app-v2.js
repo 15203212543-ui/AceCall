@@ -1734,7 +1734,7 @@ function applyJobMatch(candidate, match) {
   const score = normalizedMatchScore(match, candidate.resume, primary || {});
   const secondScore = Number(match?.alternativeJobs?.[0]?.score || 0);
   const filenameTitleMatch = match?.matchingBasis === 'filename-title';
-  const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && score >= 60 && (filenameTitleMatch || !secondScore || score - secondScore >= 8);
+  const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && (filenameTitleMatch || (score >= 60 && (!secondScore || score - secondScore >= 8)));
   if (assignable) {
     candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
     candidate.assignmentSource = 'automatic'; candidate.assignmentStatus = 'confirmed'; candidate.assignedAt = candidate.assignedAt || new Date().toISOString();
