@@ -821,3 +821,15 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .candidate-pager span{color:#7b899d;font-size:10px}
 @media(max-width:900px){#candidatesView.active{height:auto;overflow:visible}.candidates-page{height:auto;padding-bottom:45px}}
 .quality-control{position:relative;display:inline-flex}.quality-control .quality{border:0;cursor:pointer}.quality-popover{position:absolute;z-index:5;top:calc(100% + 6px);left:0;min-width:150px;padding:8px 10px;border:1px solid #e2e8e4;border-radius:5px;background:#fff;box-shadow:0 8px 24px rgba(29,48,38,.12);color:var(--ink);font-size:9px;white-space:normal}
+@media(min-width:981px){#inboxView.active{display:flex;flex-direction:column;height:calc(100vh - 64px);overflow:hidden}.resume-center-page{display:flex;flex-direction:column;flex:1;min-height:0;height:100%;padding-bottom:16px;box-sizing:border-box}.resume-center-page>.page-title,.resume-center-page>.ingest-kpis{flex:none}.resume-center-page>.ingest-layout{flex:1 1 auto;min-height:0}.resume-center-page .ingest-aside{display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;overflow:auto}.resume-center-page .desktop-agent-panel{margin-top:auto}}
+#jobsView.active{display:flex;flex-direction:column;height:calc(100vh - 64px);overflow:hidden}
+.jobs-page{display:flex;flex-direction:column;flex:1;min-height:0;height:100%;padding-bottom:16px;box-sizing:border-box}
+.jobs-page>.page-title,.jobs-page>.toolbar,.jobs-page>.rules-library{flex:none}
+.jobs-page>.rules-library{max-height:200px;overflow:auto}
+.job-board{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.job-board .job-grid{flex:1 1 auto;min-height:0;align-content:start;overflow:auto}
+.job-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 0 0}
+.job-pager button{width:auto;height:28px;padding:0 10px;border:1px solid #d5ddd8;border-radius:4px;background:#fff;color:#35665d;font-size:10px}
+.job-pager button:disabled{color:#9aa5b5;cursor:not-allowed}
+.job-pager span{color:#7b899d;font-size:10px}
+@media(max-width:900px){#jobsView.active{height:auto;overflow:visible}.jobs-page{height:auto;padding-bottom:45px}.jobs-page>.rules-library{max-height:none}}
