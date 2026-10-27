@@ -1608,7 +1608,7 @@ async function parseResumeFileForImport(file) {
 }
 
 async function matchResumeToJobs(resume, candidateName = '') {
-  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, rules: job.rules })) });
+  const response = await generate({ action: 'match', candidateName, resume, jobs: app.jobs.filter(job => job.status !== 'closed').map(job => ({ id: job.id, name: job.name, industry: job.industry, jd: job.jd, keywords: job.keywords, required: job.required, bonus: job.bonus, exclusions: job.exclusions, verify: job.verify, profile: job.profile, rules: job.rules })) });
   return response;
 }
 
@@ -1616,13 +1616,14 @@ function applyJobMatch(candidate, match) {
   const primary = app.jobs.find(job => job.id === match?.jobId);
   const score = normalizedMatchScore(match, candidate.resume, primary || {});
   const secondScore = Number(match?.alternativeJobs?.[0]?.score || 0);
-  const ambiguous = !primary || match?.status === '待分配' || score < 60 || (secondScore > 0 && score - secondScore < 8) || match?.confidence === '低';
-  if (primary && !ambiguous) {
+  const assignable = primary && ['自动匹配', '已分配'].includes(match?.status) && score >= 60 && (!secondScore || score - secondScore >= 8);
+  if (assignable) {
     candidate.jobId = primary.id; candidate.roleName = primary.name; candidate.jd = primary.jd; candidate.rules = primary.rules || ''; candidate.keywords = primary.keywords || [];
   } else {
     candidate.jobId = ''; candidate.roleName = ''; candidate.jd = ''; candidate.rules = ''; candidate.keywords = [];
   }
-  candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId: primary?.id || match?.jobId || '', score, status: ambiguous ? '待分配' : '已分配', assignmentReview: ambiguous, assignmentReviewReason: ambiguous ? (!primary ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '匹配置信度较低') : '' };
+  const suggestedJobId = match?.suggestedJobId || primary?.id || match?.jobId || '';
+  candidate.matching = { ...match, jobId: candidate.jobId, suggestedJobId, score, status: assignable ? '已分配' : (match?.status || '待分配'), assignmentReview: !assignable, assignmentReviewReason: assignable ? '' : (!suggestedJobId ? '没有可靠的主岗位匹配' : secondScore && score - secondScore < 8 ? `前两名岗位仅相差 ${score - secondScore} 分` : score < 60 ? `最高匹配度仅 ${score} 分` : '需要人工确认岗位') };
 }
 
 async function generatePreparation(candidate) {
