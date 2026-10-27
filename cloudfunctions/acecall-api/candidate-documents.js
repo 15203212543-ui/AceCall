@@ -67,4 +67,12 @@ function buildLegacyDocument(candidate = {}, clean) {
   };
 }
 
-module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument };
+function mergeStoredCandidate(stored, incoming = {}) {
+  const { _id, _openid, ...base } = stored && typeof stored === 'object' ? stored : {};
+  const next = { ...base, ...incoming };
+  if (!String(next.resume || '').trim() && String(base.resume || '').trim()) next.resume = base.resume;
+  if (!next.documentId && base.documentId) next.documentId = base.documentId;
+  return next;
+}
+
+module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, mergeStoredCandidate };

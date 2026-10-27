@@ -1565,24 +1565,41 @@ async function toggleJobStatus(id) {
 }
 
 async function ensureResumeText(item) {
+  if (!item || String(item.resume || '').trim() || item.resumeLoading) return item?.resume || '';
   item.resumeLoading = true;
   try {
-    const response = await authenticatedFetch(apiUrl(`/api/documents/${encodeURIComponent(item.documentId)}`));
-    const data = await response.json().catch(() => ({}));
-    if (response.ok && (data.cleanedText || data.rawText)) {
-      item.resume = data.cleanedText || data.rawText || '';
-      item.resumeRaw = data.rawText || '';
-      item.parseVersion = data.parseVersion || '';
-      renderCandidateDetail();
-    } else item.resumeLoadFailed = true;
-  } catch {}
-  item.resumeLoading = false;
+    if (item.documentId) {
+      const response = await authenticatedFetch(apiUrl(`/api/documents/${encodeURIComponent(item.documentId)}`));
+      const data = await response.json().catch(() => ({}));
+      const text = response.ok ? (data.cleanedText || data.rawText || '') : '';
+      if (text) { item.resume = text; item.resumeRaw = data.rawText || ''; item.parseVersion = data.parseVersion || ''; return text; }
+    }
+    if (item.resumeMeta?.originalFileId && REMOTE_BACKEND) {
+      const response = await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(item.id)}/resume-text`), { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '简历正文提取失败');
+      item.resume = data.text || '';
+      if (data.documentId) item.documentId = data.documentId;
+      item.resumeOmitted = true;
+      if (!String(item.resume).trim()) throw new Error('未提取到简历正文');
+      return item.resume;
+    }
+    item.resumeLoadFailed = true;
+    return '';
+  } catch (error) {
+    item.resumeLoadFailed = true;
+    item.resumeError = error.message || '简历正文提取失败';
+    return '';
+  } finally {
+    item.resumeLoading = false;
+    if (app.view === 'candidate' && app.candidateId === item.id) renderCandidateDetail();
+  }
 }
 
 function renderCandidateDetail() {
   const item = currentCandidate();
   if (!item) { navigate('candidates'); return; }
-  if (item.resumeOmitted && !item.resume && !item.resumeLoading && !item.resumeLoadFailed && item.documentId) ensureResumeText(item);
+  if (!item.resume && !item.resumeLoading && !item.resumeLoadFailed && (item.documentId || item.resumeMeta?.originalFileId)) ensureResumeText(item);
   void loadCandidateScreening(item.id);
   $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
@@ -1634,7 +1651,7 @@ function resultTab(item) {
   return `<div class="decision"><span class="tag">待人工确认</span><small>AI综合建议</small><h2>${escapeHtml(report.conclusion || '信息不足')}</h2><p>${escapeHtml(report.conclusionReason || '')}</p></div><div class="grid-2" style="margin-top:13px"><div class="surface"><div class="surface-head"><h2>结论依据</h2><span>${(report.capabilities || []).length} 项</span></div><div class="surface-body">${(report.capabilities || []).map(point => `<div class="evidence"><span class="tag">${escapeHtml(point.assessment || '待确认')}</span><strong>${escapeHtml(point.item || point)}</strong><p>${escapeHtml(point.evidence || '')}</p></div>`).join('') || '<div class="empty">暂无能力判断</div>'}${(report.risks || []).map(risk => `<div class="point risk"><strong>${escapeHtml(risk)}</strong></div>`).join('')}</div></div><div><div class="surface"><div class="surface-head"><h2>基础条件</h2></div><div class="surface-body">${Object.entries(info).map(([key,value]) => `<div class="fact"><span>${escapeHtml(infoLabel(key))}</span><b>${escapeHtml(value)}</b></div>`).join('') || '<div class="empty">待确认</div>'}</div></div><div class="review"><label>最终动作<select id="finalDecision">${['推荐业务面试','补充电话沟通','转入其他岗位','暂不推进','纳入人才库长期维护'].map(value => `<option ${value === (report.finalDecision || report.nextStep) ? 'selected' : ''}>${value}</option>`).join('')}</select></label><label style="margin-top:10px">推荐理由<textarea id="recommendationReason" placeholder="AI根据简历与沟通事实生成，可人工修订">${escapeHtml(report.recommendationReason || '')}</textarea></label><label style="margin-top:10px">审核备注<textarea id="reviewNotes" placeholder="补充事实或后续安排">${escapeHtml(report.reviewNotes || '')}</textarea></label><label class="review-check"><input type="checkbox" id="reviewConfirmed" ${report.reviewConfirmed ? 'checked' : ''}> 我已核对材料并确认最终动作</label><button class="primary" style="width:100%" data-confirm-result>确认完成</button></div></div></div>`;
 }
 
-function resumeTab(item) { const meta=item.resumeMeta||{}; const original = meta.originalFileId; const preview = meta.originalTempUrl; const originalView = original ? (meta.originalMimeType === 'application/pdf' && preview ? `<div class="resume-original"><iframe title="原始PDF简历" src="${escapeHtml(preview)}"></iframe></div>` : `<div class="resume-original resume-original-file"><p>Word 原文件已保存，可按原格式打开查看。</p><button class="secondary" data-resume-download type="button">打开 / 下载原简历</button></div>`) : ''; return `<div class="surface resume-detail-surface"><div class="surface-head"><div><h2>候选人简历</h2><p class="surface-subtitle">${original ? '原始文件优先，解析文本用于搜索和AI分析' : '文本录入'}</p></div><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'未识别')}</b></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'未识别')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'未识别')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'未识别')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'未识别')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'未识别')}</b></div></div>${originalView}<details class="resume-text-fallback" ${original ? '' : 'open'}><summary>查看解析文本</summary><pre>${escapeHtml(item.resume || '暂无简历内容')}</pre></details></div></div>`; }
+function resumeTab(item) { const meta=item.resumeMeta||{}; const original = meta.originalFileId; const preview = meta.originalTempUrl; const originalView = original ? (meta.originalMimeType === 'application/pdf' && preview ? `<div class="resume-original"><iframe title="原始PDF简历" src="${escapeHtml(preview)}"></iframe></div>` : `<div class="resume-original resume-original-file"><p>Word 原文件已保存，可按原格式打开查看。</p><button class="secondary" data-resume-download type="button">打开 / 下载原简历</button></div>`) : ''; return `<div class="surface resume-detail-surface"><div class="surface-head"><div><h2>候选人简历</h2><p class="surface-subtitle">${original ? '原始文件优先，解析文本用于搜索和AI分析' : '文本录入'}</p></div><span>${escapeHtml(meta.fileName || '文本录入')}</span></div><div class="surface-body"><div class="resume-basics"><div class="fact"><span>姓名</span><b>${escapeHtml(item.candidateName||'未识别')}</b></div><div class="fact"><span>年龄</span><b>${escapeHtml(meta.age?`${meta.age}岁`:'未识别')}</b></div><div class="fact"><span>手机</span><b>${escapeHtml(meta.phone||'未识别')}</b></div><div class="fact"><span>邮箱</span><b>${escapeHtml(meta.email||'未识别')}</b></div><div class="fact"><span>工作年限</span><b>${escapeHtml(meta.experienceYears?`${meta.experienceYears}年`:'未识别')}</b></div><div class="fact"><span>学历</span><b>${escapeHtml(meta.education||'未识别')}</b></div></div>${originalView}<details class="resume-text-fallback" ${original ? '' : 'open'}><summary>查看解析文本</summary><pre>${escapeHtml(item.resume || (item.resumeLoading ? '正在从原文件提取正文…' : (item.resumeError || '暂无简历内容')))}</pre></details></div></div>`; }
 function historyTab(item) { const events = historyEvents(item); return `<div class="surface"><div class="surface-head"><h2>处理记录</h2><span>保留人工与AI操作痕迹</span></div><div class="surface-body">${events.map(event => `<div class="fact history-fact"><span>${formatHistoryTime(event.at)}</span><b>${escapeHtml(event.detail ? `${event.title} · ${event.detail}` : event.title)}</b></div>`).join('') || '<div class="empty">暂无处理记录</div>'}</div></div>`; }
 
 function renderSettings() {
@@ -1835,7 +1852,13 @@ async function reconcilePendingAssignments() {
 
 async function generatePreparation(candidate) {
   if (!candidate) return; const button = $('[data-generate-prep]'); if (button) button.disabled = true;
-  try { candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords }); candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('电话准备已自动完成'); } catch (error) { toast(error.message); if (button) button.disabled = false; }
+  try {
+    await ensureResumeText(candidate);
+    if (!String(candidate.resume || '').trim()) throw new Error(candidate.resumeError || '简历解析文本还没有准备好');
+    if (!String(candidate.jd || '').trim() && candidate.jobId) { const job = app.jobs.find(item => item.id === candidate.jobId); if (job?.jd) candidate.jd = job.jd; }
+    candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords });
+    candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('电话准备已自动完成');
+  } catch (error) { toast(error.message); if (button) button.disabled = false; }
 }
 
 async function completeCall() {

@@ -18,7 +18,7 @@ const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-si
 const { listIndustryNews } = require('./industry-news');
 const { prepareTenantInterviewReminders, readInterviewReminders } = require('./interview-reminder');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
-const { presentCandidateForState, presentCaseSummary, buildLegacyDocument } = require('./candidate-documents');
+const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, mergeStoredCandidate } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
 const { findDuplicateCandidate } = require('./candidate-dedupe');
 const {
@@ -171,6 +171,10 @@ const server = http.createServer(async (request, response) => {
       const job = await readJson(request);
       await saveJob(await getRequestContext(request), id, job);
       return sendJson(response, 200, { ok: true, id });
+    }
+    if (request.method === 'POST' && /^\/api\/candidates\/[^/]+\/resume-text$/.test(url.pathname)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await recoverResumeText(await getRequestContext(request), id));
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/candidates/')) {
       const id = validateId(url.pathname.slice('/api/candidates/'.length));
@@ -1352,19 +1356,19 @@ async function saveCandidate(context, id, input) {
   await assertWritableRecord(COLLECTIONS.candidates, id, context.tenantId);
   await assertWritableRecord(COLLECTIONS.screenings, id, context.tenantId);
   const now = new Date().toISOString();
-  const candidate = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome', 'assignmentSource', 'assignmentStatus', 'assignedAt', 'assignedBy']);
-  candidate.id = id;
-  candidate.tenantId = context.tenantId;
-  candidate.updatedBy = context.uid;
-  candidate.updatedAt = now;
-  candidate.createdAt = candidate.createdAt || now;
-  if (!isMeaningfulCandidateRecord(candidate)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);
+  const incoming = pick(input, ['jobId', 'candidateName', 'roleName', 'jd', 'rules', 'keywords', 'resume', 'resumeMeta', 'matching', 'status', 'createdAt', 'updatedAt', 'ingestStatus', 'ingestBatchId', 'ingestSource', 'ingestFileKey', 'duplicateOf', 'talentProfile', 'interviewer', 'interviewerName', 'interviewers', 'interviewAt', 'interviewDuration', 'interviewOutcome', 'interviewPassed', 'interviewRound', 'offerOutcome', 'offerSent', 'offerAccepted', 'offerDeclined', 'offerDeclineReason', 'hired', 'hiredAt', 'recruitmentOutcome', 'assignmentSource', 'assignmentStatus', 'assignedAt', 'assignedBy']);
+  incoming.id = id;
+  incoming.tenantId = context.tenantId;
+  incoming.updatedBy = context.uid;
+  incoming.updatedAt = now;
+  incoming.createdAt = incoming.createdAt || now;
+  if (!isMeaningfulCandidateRecord(incoming)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);
   const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
   const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
   if (storedCandidate?.tenantId) assertSameTenant(storedCandidate, context);
   if (!storedCandidate) {
     const tenantCandidates = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
-    const duplicate = findDuplicateCandidate(candidate, tenantCandidates.data || [], id);
+    const duplicate = findDuplicateCandidate(incoming, tenantCandidates.data || [], id);
     if (duplicate) {
       const canonicalCandidateId = duplicate.candidate.id || duplicate.candidate._id;
       await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate.reason });
@@ -1378,7 +1382,7 @@ async function saveCandidate(context, id, input) {
   for (const key of ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']) {
     if (screening[key] === undefined && previousScreening[key] !== undefined) screening[key] = previousScreening[key];
   }
-  candidate.status = deriveStatus({ ...input, report: screening.report, communicationSummary: screening.communicationSummary, preparation: screening.preparation });
+  incoming.status = deriveStatus({ ...input, report: screening.report, communicationSummary: screening.communicationSummary, preparation: screening.preparation });
   screening.id = id;
   screening.tenantId = context.tenantId;
   screening.createdBy = previousScreening.createdBy || context.uid;
@@ -1387,6 +1391,7 @@ async function saveCandidate(context, id, input) {
   screening.jobId = input.jobId || '';
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
+  const candidate = mergeStoredCandidate(storedCandidate, incoming);
   candidate.createdBy = storedCandidate?.createdBy || context.uid;
   const actor = actorFromMember(context.member, context.uid);
   const capture = rememberCapture(storedCandidate, candidate, actor, now);
@@ -1398,12 +1403,48 @@ async function saveCandidate(context, id, input) {
   if (retainedResume) candidate.resumeMeta = retainedResume;
   const mokaSync = await resolveMokaSync(context, storedCandidate?.mokaSync, { ...candidate, ...screening, reviewConfirmed: screening.report?.reviewConfirmed === true });
   if (mokaSync) candidate.mokaSync = mokaSync;
+  const savedCandidate = await storeParsedResume(db, candidate);
   await Promise.all([
-    db.collection(COLLECTIONS.candidates).doc(id).set(candidate),
+    db.collection(COLLECTIONS.candidates).doc(id).set(persistable(savedCandidate)),
     db.collection(COLLECTIONS.screenings).doc(id).set(screening)
   ]);
-  await audit(context, 'candidate.upsert', id, { jobId: candidate.jobId, status: candidate.status, mokaSync: candidate.mokaSync?.status || '' });
-  return { ok: true, id, mokaSync: candidate.mokaSync || null, capturedBy: candidate.capturedBy || null, capturedAt: candidate.capturedAt || '' };
+  await audit(context, 'candidate.upsert', id, { jobId: savedCandidate.jobId, status: savedCandidate.status, mokaSync: savedCandidate.mokaSync?.status || '' });
+  return { ok: true, id, mokaSync: savedCandidate.mokaSync || null, capturedBy: savedCandidate.capturedBy || null, capturedAt: savedCandidate.capturedAt || '' };
+}
+
+async function storeParsedResume(db, candidate) {
+  const text = String(candidate.resume || '').trim();
+  if (!text) return candidate;
+  const built = buildLegacyDocument(candidate, raw => prepareDocumentVersions(raw, normalizeResumeText));
+  const document = persistable(built.document);
+  await db.collection(COLLECTIONS.documents).doc(document.id).set(document);
+  return { ...candidate, documentId: built.candidatePatch.documentId, resumeSummary: built.candidatePatch.resumeSummary };
+}
+
+async function recoverResumeText(context, id) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const db = getDatabase();
+  const existing = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+  const stored = Array.isArray(existing.data) ? existing.data[0] : existing.data;
+  if (!stored) throw serviceError('Not found', 404);
+  assertSameTenant(stored, context);
+  let candidate = persistable(stored);
+  if (!String(candidate.resume || '').trim()) {
+    const fileId = candidate.resumeMeta?.originalFileId;
+    if (!fileId) throw serviceError('没有可解析的简历原件', 404);
+    const buffer = await downloadCloudFile(fileId);
+    const fileName = candidate.resumeMeta.originalFileName || candidate.resumeMeta.fileName || 'resume.pdf';
+    const parsed = await parseResumeFile(fileName, buffer);
+    candidate = {
+      ...candidate,
+      resume: parsed.text,
+      resumeMeta: { ...(candidate.resumeMeta || {}), ...parsed.metadata, originalFileId: fileId, originalFileName: candidate.resumeMeta?.originalFileName || fileName },
+      updatedAt: new Date().toISOString()
+    };
+  }
+  const saved = await storeParsedResume(db, candidate);
+  await db.collection(COLLECTIONS.candidates).doc(id).set(persistable(saved));
+  return { text: saved.resume, documentId: saved.documentId || '', resumeSummary: saved.resumeSummary || '' };
 }
 
 function hasScreeningResult(record) {
