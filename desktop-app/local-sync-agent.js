@@ -258,7 +258,7 @@ class SyncAgent {
   async assignJob(candidate) {
     if (!this.options.apiBase) return;
     const state = await this.request('/api/state');
-    const jobs = (state.jobs || []).filter(job => job.status !== 'archived');
+    const jobs = (state.jobs || []).filter(job => job.status !== 'archived' && job.status !== 'closed' && job.matchingEligible !== false);
     if (!jobs.length) return;
     const match = await this.request('/api/generate', { method: 'POST', body: JSON.stringify({ action: 'match', candidateName: candidate.candidateName, fileName: candidate.resumeMeta?.fileName || '', resume: candidate.resume, jobs: jobs.map(job => ({ id: job.id, name: job.name, industry: job.industry, location: job.location, jd: job.jd, keywords: job.keywords, rules: job.rules })) }), headers: { 'Content-Type': 'application/json' } });
     applyJobAssignment(candidate, jobs, match);

@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
 const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
 const { actorFromMember, rememberCapture, attributeMokaOperator } = require('./capture-history');
-const { applyScreeningProfile, dedupeStoredJobs } = require('./screening-jobs');
+const { applyScreeningProfile, dedupeStoredJobs, automaticAssignmentJobs, isAutomaticAssignmentJob } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
 const { prepareDocumentVersions } = require('./document-text');
@@ -210,6 +210,7 @@ const server = http.createServer(async (request, response) => {
       const context = await guardAiRoute(request, '/api/generate');
       const payload = await readJson(request);
       validatePayload(payload);
+      if (payload.action === 'match') payload.jobs = automaticAssignmentJobs(await listTenantJobs(context.tenantId));
       const startedAt = Date.now();
       try {
         if (payload.action === 'classify-interview-questions') {
@@ -1255,7 +1256,7 @@ async function loadState(context) {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument(presentCaseSummary(candidate, screening));
   });
-  return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+  return { jobs: jobs.map(job => ({ ...job, matchingEligible: isAutomaticAssignmentJob(job) })), cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
 }
 
 function isMeaningfulCandidateRecord(candidate = {}) {
@@ -1363,7 +1364,7 @@ async function saveCandidate(context, id, input) {
   incoming.updatedAt = now;
   incoming.createdAt = incoming.createdAt || now;
   if (incoming.resumeMeta?.source === 'local-sync-agent' && String(incoming.resumeMeta?.fileName || '').trim()) {
-    const jobs = await listTenantJobs(context.tenantId);
+    const jobs = automaticAssignmentJobs(await listTenantJobs(context.tenantId));
     applyUploadedResumeAssignment(incoming, jobs);
   }
   if (!isMeaningfulCandidateRecord(incoming)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);

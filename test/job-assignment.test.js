@@ -161,6 +161,7 @@ test('frontend completes automatic and manual assignment paths in the assignment
   assert.match(source, /function confirmCandidateAssignment\(id\)/);
   assert.match(source, /function reconcilePendingAssignments\(\)/);
   assert.match(source, /fileName, resume, jobs/);
+  assert.match(source, /matchingEligible !== false/);
   assert.match(source, /matching\?\.ruleVersion/);
   assert.match(source, /sort\(byImported\)/);
   assert.match(source, /function isMeaningfulCandidate\(item\)/);
