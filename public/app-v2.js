@@ -72,6 +72,9 @@ let inboxQueueFitPasses = 0;
 let candidatePage = 1;
 let candidatePageSize = 8;
 let candidateFitPasses = 0;
+let jobPage = 1;
+let jobPageSize = 4;
+let jobFitPasses = 0;
 let expandedAssignmentId = '';
 let expandedQualityId = '';
 const fileStability = new Map();
@@ -1312,7 +1315,7 @@ function fitInboxQueue() {
   }
   inboxQueueFitPasses = 0;
 }
-window.addEventListener('resize', () => { inboxQueueFitPasses = 0; candidateFitPasses = 0; if (app.view === 'inbox') fitInboxQueue(); if (app.view === 'candidates') fitCandidatePage(); });
+window.addEventListener('resize', () => { inboxQueueFitPasses = 0; candidateFitPasses = 0; jobFitPasses = 0; if (app.view === 'inbox') fitInboxQueue(); if (app.view === 'candidates') fitCandidatePage(); if (app.view === 'jobs') fitJobPage(); });
 function inboxQueueFilterMatches(item, filter) {
   if (filter === 'processing') return item.ingestStatus === '解析中';
   if (filter === 'confirmation') return assignmentState(item) === 'review';
@@ -1497,11 +1500,12 @@ function candidateTable(items, title) {
 }
 
 function renderJobs() {
-  $('#jobsView').innerHTML = `<div class="page"><div class="page-title"><div><h1>岗位</h1><p>一次维护 JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry).filter(Boolean))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select><select id="jobStatusFilter"><option value="active">在招岗位</option><option value="closed">已关闭岗位</option><option value="">全部岗位</option></select></div><div class="job-grid" id="jobGrid">${jobCards(app.jobs.filter(job => job.status !== 'closed'))}</div></div>`;
+  $('#jobsView').innerHTML = `<div class="page jobs-page"><div class="page-title"><div><h1>岗位</h1><p>一次维护 JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry).filter(Boolean))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select><select id="jobStatusFilter"><option value="active">在招岗位</option><option value="closed">已关闭岗位</option><option value="">全部岗位</option></select></div><div class="job-board" id="jobBoard"></div></div>`;
   bindCommonActions($('#jobsView'));
-  $('#jobSearch').addEventListener('input', filterJobs); $('#jobIndustryFilter').addEventListener('input', filterJobs); $('#jobStatusFilter').addEventListener('change', filterJobs);
+  $('#jobSearch').addEventListener('input', () => filterJobs(true)); $('#jobIndustryFilter').addEventListener('input', () => filterJobs(true)); $('#jobStatusFilter').addEventListener('change', () => filterJobs(true));
   const library = document.createElement('div'); library.className = 'surface rules-library'; library.innerHTML = `<div class="surface-head"><h2>团队规则库</h2><span>共享给团队成员</span></div><div class="surface-body"><div class="rule-add"><input id="teamRuleInput" placeholder="添加常用核验规则"><button class="secondary" id="addTeamRule" type="button">添加规则</button></div><div class="rule-list">${teamRules.map((rule, index) => `<button class="rule-chip" data-use-rule="${index}" type="button">＋ ${escapeHtml(rule)}</button>`).join('') || '<span class="muted-text">还没有共享规则</span>'}</div></div>`; $('#jobsView .page').append(library);
   $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
+  filterJobs();
 }
 
 function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) { teamRules.push(value); const rule = { id: crypto.randomUUID(), content: value, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); } localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
@@ -1512,10 +1516,41 @@ function jobCards(jobs) {
   return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
 }
 
-function filterJobs() {
+function filterJobs(resetPage) {
+  if (resetPage) { jobPage = 1; jobFitPasses = 0; }
+  const board = $('#jobBoard'); if (!board) return;
   const query = $('#jobSearch').value.trim().toLowerCase(); const industry = $('#jobIndustryFilter').value; const status = $('#jobStatusFilter').value;
   const filtered = app.jobs.filter(job => (!industry || job.industry === industry) && (!status || (job.status === 'closed' ? 'closed' : 'active') === status) && (!query || `${job.name} ${job.industry} ${(job.keywords || []).join(' ')}`.toLowerCase().includes(query)));
-  $('#jobGrid').innerHTML = jobCards(filtered); bindCommonActions($('#jobGrid')); bindJobActions($('#jobGrid'));
+  const pages = Math.max(1, Math.ceil(filtered.length / jobPageSize) || 1);
+  jobPage = Math.min(Math.max(1, jobPage), pages);
+  const pageItems = filtered.slice((jobPage - 1) * jobPageSize, jobPage * jobPageSize);
+  const pager = filtered.length > jobPageSize ? `<div class="job-pager"><button type="button" data-job-page="${jobPage - 1}"${jobPage <= 1 ? ' disabled' : ''}>上一页</button><span>第 ${jobPage} / ${pages} 页</span><button type="button" data-job-page="${jobPage + 1}"${jobPage >= pages ? ' disabled' : ''}>下一页</button></div>` : '';
+  board.innerHTML = `<div class="job-grid" id="jobGrid">${jobCards(pageItems)}</div>${pager}`;
+  bindCommonActions(board);
+  $$('#jobBoard [data-job-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; jobFitPasses = 0; jobPage = Number(button.dataset.jobPage) || 1; filterJobs(); }));
+  requestAnimationFrame(fitJobPage);
+}
+function fitJobPage() {
+  if (window.innerWidth <= 900 || app.view !== 'jobs') return;
+  const board = document.querySelector('#jobsView .job-board');
+  const cards = [...(board?.querySelectorAll('.job-item') || [])];
+  if (!board || !cards.length || board.clientHeight < 120) return;
+  const cardHeight = Math.max(...cards.map(card => card.getBoundingClientRect().height));
+  if (cardHeight < 8) return;
+  const grid = board.querySelector('.job-grid');
+  const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+  const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(part => part && part !== 'none').length || 1;
+  const pager = board.querySelector('.job-pager')?.offsetHeight || 0;
+  const reservePager = pager || (cards.length >= jobPageSize ? 44 : 0);
+  const rows = Math.max(1, Math.floor((board.clientHeight - reservePager + gap) / (cardHeight + gap)));
+  const fit = rows * columns;
+  if (fit !== jobPageSize && jobFitPasses < 3) {
+    jobFitPasses += 1;
+    jobPageSize = fit;
+    filterJobs();
+    return;
+  }
+  jobFitPasses = 0;
 }
 
 function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); }
