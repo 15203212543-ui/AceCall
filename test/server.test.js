@@ -78,6 +78,14 @@ test('cleans repeated PDF watermark noise and extracts labeled identity fields',
   assert.deepEqual(parseResumeBasics(text), { candidateName: '李四', phone: '13800138000', email: 'li@example.com', age: '29', experienceYears: '', education: '' });
 });
 
+test('reads mobile numbers with unicode dashes and work years from a resume filename', () => {
+  const text = normalizeResumeText('朱城磊\n157‑5558‑1699 | 2451433436@qq.com');
+  assert.equal(parseResumeBasics(text).phone, '15755581699');
+  const { extractExperienceYearsFromFileName } = require('../cloudfunctions/acecall-api/resume-text');
+  assert.equal(extractExperienceYearsFromFileName('【券商业务后端开发工程师_北京 20-40K】朱城磊 1年.pdf'), '1');
+  assert.equal(extractExperienceYearsFromFileName('【人力管培_北京 12-24K】石淼晶 26年应届生.pdf'), '');
+});
+
 test('removes page numbers and repeated alphanumeric watermark fragments without losing resume content', () => {
   const text = normalizeResumeText([
     '张三',

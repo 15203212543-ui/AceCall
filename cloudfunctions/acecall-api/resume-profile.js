@@ -1,3 +1,5 @@
+const { extractPhone } = require('./resume-text');
+
 const CONFIDENCE = { explicit_field: 0.95, context_inference: 0.45, filename_pattern: 0.7, layout_inference: 0.6 };
 
 function proposeNameCandidates({ labeled = '', contextual = '', fromFile = '', fromBody = '' } = {}) {
@@ -26,7 +28,7 @@ function extractProfileFields(text = '') {
   const source = String(text || '');
   const lines = source.split('\n').map(line => line.trim()).filter(Boolean);
   const quoteFor = value => lines.find(line => line.includes(value)) || value;
-  const phone = (source.match(/(?<!\d)(?:\+?86[ -]?)?1[3-9](?:[ -]?\d){9}(?!\d)/)?.[0] || '').replace(/[ -]/g, '');
+  const phone = extractPhone(source);
   const email = (source.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '').replace(/[，。；;）)]+$/, '');
   const experienceYears = source.match(/(\d{1,2})\s*年[^。\n]{0,16}(?:工作|从业|经验|经历)/)?.[1] || '';
   const education = ['博士', '硕士', '本科', '大专'].find(level => source.includes(level)) || '';
