@@ -20,6 +20,7 @@ const { prepareTenantInterviewReminders, readInterviewReminders } = require('./i
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, presentCaseSummary, buildLegacyDocument } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
+const { findDuplicateCandidate } = require('./candidate-dedupe');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -1358,6 +1359,18 @@ async function saveCandidate(context, id, input) {
   candidate.updatedAt = now;
   candidate.createdAt = candidate.createdAt || now;
   if (!isMeaningfulCandidateRecord(candidate)) throw serviceError('候选人姓名、简历文件或简历内容至少需要一项', 400);
+  const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
+  const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
+  if (storedCandidate?.tenantId) assertSameTenant(storedCandidate, context);
+  if (!storedCandidate) {
+    const tenantCandidates = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
+    const duplicate = findDuplicateCandidate(candidate, tenantCandidates.data || [], id);
+    if (duplicate) {
+      const canonicalCandidateId = duplicate.candidate.id || duplicate.candidate._id;
+      await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate.reason });
+      return { ok: true, duplicate: true, canonicalCandidateId, duplicateReason: duplicate.reason };
+    }
+  }
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
   const existingScreening = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
   const previousScreening = Array.isArray(existingScreening.data) ? (existingScreening.data[0] || {}) : (existingScreening.data || {});
@@ -1374,9 +1387,6 @@ async function saveCandidate(context, id, input) {
   screening.jobId = input.jobId || '';
   screening.updatedAt = now;
   screening.createdAt = input.createdAt || now;
-  const existingCandidate = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
-  const storedCandidate = Array.isArray(existingCandidate.data) ? existingCandidate.data[0] : (existingCandidate.data || null);
-  if (storedCandidate?.tenantId) assertSameTenant(storedCandidate, context);
   candidate.createdBy = storedCandidate?.createdBy || context.uid;
   const actor = actorFromMember(context.member, context.uid);
   const capture = rememberCapture(storedCandidate, candidate, actor, now);
