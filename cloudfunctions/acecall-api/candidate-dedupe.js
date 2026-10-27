@@ -28,8 +28,7 @@ function duplicateReason(incoming, existing) {
   const right = resumeIdentity(existing);
   if (left.phone && right.phone && left.phone === right.phone) return 'phone';
   if (left.email && right.email && left.email === right.email) return 'email';
-  if (!left.phone && !left.email && !right.phone && !right.email
-    && left.fileName && left.fileName === right.fileName
+  if (left.fileName && left.fileName === right.fileName
     && left.size > 0 && left.size === right.size
     && left.characters > 0 && left.characters === right.characters) return 'resume-file';
   return '';

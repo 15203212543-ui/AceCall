@@ -12,10 +12,10 @@ test('same normalized email identifies an existing candidate', () => {
   assert.equal(duplicateReason(resume('new', { email: 'Name@Example.com ' }), resume('old', { email: 'name@example.com' })), 'email');
 });
 
-test('file fingerprint is used only when both records lack contact details', () => {
+test('an exact file fingerprint still works when contact extraction differs', () => {
   const fingerprint = { fileName: ' 张三简历.PDF ', originalSize: 2048, characters: 900 };
   assert.equal(duplicateReason(resume('new', fingerprint), resume('old', { fileName: '张三简历.pdf', originalSize: 2048, characters: 900 })), 'resume-file');
-  assert.equal(duplicateReason(resume('new', { ...fingerprint, phone: '13800138000' }), resume('old', fingerprint)), '');
+  assert.equal(duplicateReason(resume('new', { ...fingerprint, phone: '13800138000' }), resume('old', fingerprint)), 'resume-file');
 });
 
 test('same name alone is not a duplicate and the current id is excluded', () => {
