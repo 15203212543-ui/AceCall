@@ -1692,7 +1692,7 @@ function overviewTab(item) {
 
 function callTab(item) {
   if (screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
-  if (item.preparationRegenerating) return '<div class="surface empty">检测到旧版模板问题，正在根据简历、岗位 JD 和初筛规则重新生成…</div>';
+  if (item.preparationRegenerating) return '<div class="surface empty">正在根据候选人简历与岗位要求生成电话初筛问题…</div>';
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
@@ -1918,7 +1918,7 @@ async function generatePreparation(candidate, options = {}) {
     if (!String(candidate.resume || '').trim()) throw new Error(candidate.resumeError || '简历解析文本还没有准备好');
     if (!String(candidate.jd || '').trim() && candidate.jobId) { const job = app.jobs.find(item => item.id === candidate.jobId); if (job?.jd) candidate.jd = job.jd; }
     candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords });
-    candidate.updatedAt = new Date().toISOString(); await persistCases(candidate); renderCandidateDetail(); toast(options.automatic ? '旧版模板问题已自动更新' : '电话准备已自动完成');
+    candidate.updatedAt = new Date().toISOString(); await persistCases(candidate); renderCandidateDetail(); toast(options.automatic ? '电话初筛问题已更新' : '电话准备已自动完成');
   } catch (error) { toast(error.message); if (button) button.disabled = false; }
 }
 
