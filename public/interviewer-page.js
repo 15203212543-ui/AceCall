@@ -312,9 +312,10 @@ function interviewerInsightKey(sessions) {
 }
 function questionCard(result, item, extra = '') {
   const label = item.normalizedText || item.rawText;
-  const sources = (item.sources || []).map(source => [source.candidateName, String(source.startedAt || '').slice(0, 10)].filter(Boolean).join(' ')).filter(Boolean);
+  const sources = (item.sources || []).map(source => [source.candidateName, source.jobName, String(source.startedAt || '').slice(0, 10)].filter(Boolean).join(' · ')).filter(Boolean);
   const badge = result.sampleLimited && item.classificationSource !== 'human' ? '<em>未经 AI 归类</em>' : '';
-  return `<details class="question-card"><summary><span>${escapeHtml(label)}</span>${badge}</summary><p><b>原句：</b>${escapeHtml([item.rawText, ...(item.mergedRaw || [])].filter(Boolean).join(' / '))}</p><p><b>场次：</b>${escapeHtml(sources.join('、') || '当前转写')}</p><p><b>岗位准则：</b>${escapeHtml(item.jobCriteriaId || item.conditionLabel || '未关联具体准则')}</p><p><b>证据：</b>${escapeHtml(item.rawText)}</p>${extra}</details>`;
+  const sourceLine = sources.join('、') || '当前转写';
+  return `<details class="question-card"><summary><span>${escapeHtml(label)}</span>${badge}</summary><div class="question-meta"><span>候选人 · ${escapeHtml(sourceLine)}</span><span>类型 · 专业岗位问题</span></div><p><b>原始转写：</b>${escapeHtml([item.rawText, ...(item.mergedRaw || [])].filter(Boolean).join(' / '))}</p><p><b>岗位准则：</b>${escapeHtml(item.jobCriteriaId || item.conditionLabel || '未关联具体准则')}</p><p><b>转写证据：</b>来自该场真实面试原句，未补写外部内容。</p>${extra}</details>`;
 }
 function questionAnalysisHtml(result = {}) {
   const items = result.items || [];
@@ -322,9 +323,9 @@ function questionAnalysisHtml(result = {}) {
   const conditions = items.filter(item => item.classification === 'condition_check');
   const needs = items.filter(item => item.classification === 'needs_context' || (item.classification === 'job_question' && !result.sampleLimited && !item.confirmed));
   const reviewButtons = item => `<div class="question-actions"><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="job_question">归入岗位问题</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="condition_check">归入条件核验</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="needs_context">保留待判断</button></div>`;
-  const visibleJobs = jobQuestions.slice(0, 6);
-  const extraJobs = jobQuestions.slice(6);
-  const jobBlock = jobQuestions.length ? `<section class="question-block"><h3>高频岗位问题</h3>${visibleJobs.map(item => questionCard(result, item)).join('')}${extraJobs.length ? `<details class="question-more"><summary>还有 ${extraJobs.length} 条</summary>${extraJobs.map(item => questionCard(result, item)).join('')}</details>` : ''}</section>` : '';
+  const visibleJobs = jobQuestions.slice(0, 5);
+  const extraJobs = jobQuestions.slice(5);
+  const jobBlock = jobQuestions.length ? `<section class="question-block professional-question-block"><div class="question-block-head"><div><h3>真实专业问题</h3><p>仅来自当前面试官的真实转写，已排除自我介绍、通话确认和候选人陈述</p></div><strong>${jobQuestions.length} 条</strong></div>${visibleJobs.map(item => questionCard(result, item)).join('')}${extraJobs.length ? `<details class="question-more"><summary>展开其余 ${extraJobs.length} 条真实问题</summary>${extraJobs.map(item => questionCard(result, item)).join('')}</details>` : ''}</section>` : '';
   const conditionGroups = new Map();
   conditions.forEach(item => {
     const label = item.conditionLabel || '条件';

@@ -35,8 +35,10 @@ const CONDITION_PATTERNS = [
   ['shift', /班次|倒班|夜班/]
 ];
 
-const JOB_CUES = /负责|职责|项目|结果|指标|上线|架构|经验|差异|例子|怎么做|如何|为什么|为何|偏向|哪些方面|工作机会|核心/;
-const STRONG_JOB_CUES = /负责|职责|项目|结果|指标|上线|架构|经验|差异|例子|偏向|工作机会|核心/;
+// 业务问题识别以真实转写为唯一来源。除通用项目词外，补充券商交易链路
+// 关键词，避免“订单超时/成交回报/FIX”等真实专业问题被误放到待判断。
+const JOB_CUES = /负责|职责|项目|结果|指标|上线|架构|经验|差异|例子|怎么做|如何|为什么|为何|偏向|哪些方面|工作机会|核心|下单|订单|委托|成交|交易|交易所|资金|冻结|解冻|持仓|结算|清算|风控|风险敞口|报价|询价|期权|衍生品|FIX|序列号|回调|消息|开户|KYC|AML|行情|稳定性|性能|并发|延迟|故障|复盘/;
+const STRONG_JOB_CUES = /负责|职责|项目|结果|指标|上线|架构|经验|差异|例子|偏向|工作机会|核心|下单|订单|委托|成交|交易|交易所|资金|冻结|解冻|持仓|结算|清算|风控|风险敞口|报价|询价|期权|衍生品|FIX|序列号|回调|消息|开户|KYC|AML|行情|稳定性|性能|并发|延迟|故障|复盘/;
 const QUESTION_CUES = /[？?]|吗$|呢$|吧$|什么|怎么|如何|为什么|为何|哪|是否|有没有|是不是|能不能|可不可以|介绍一下|说说|讲讲|举一个例子|举个例子/;
 const FACT_TOKENS = /北京|上海|深圳|广州|杭州|成都|南京|武汉|苏州|长沙|香港|\d+(?:\.\d+)?(?:万|k|K|元)/g;
 
@@ -80,11 +82,8 @@ function isFragment(text) {
 
 function normalizeQuestion(text) {
   let value = cleanClause(text).replace(/(?:啊|呢|吧|呀|哦|哈|嘛|啦|呗)+$/g, '');
-  if (value.length > 28) {
-    const parts = value.split(/[，,]/).map(item => item.trim()).filter(item => item.length >= 6);
-    value = parts[parts.length - 1] || value.slice(-28);
-  }
-  if (value.length < 6 || value.length > 28) return '';
+  // 保留完整的真实问题，不能为了卡片宽度截掉业务上下文；卡片由 CSS 自然换行。
+  if (value.length < 6 || value.length > 90) return '';
   return `${value}？`;
 }
 
@@ -184,7 +183,9 @@ function clausesOf(text) {
     if (/[？?。！]$/.test(line) || buffer.length > 80) flush();
   }
   flush();
-  return chunks.flatMap(chunk => chunk.split(/(?<=[？?。！])/).map(item => item.trim()).filter(Boolean)).flatMap(splitMixed);
+  // 同一条面试官发言中的连续追问保持为一个真实问题，避免把“FIX 会话…？
+  // 如果消息缺失…？”拆成两个卡片；换行/句号仍然作为问题边界。
+  return chunks.flatMap(chunk => chunk.split(/(?<=[。！])/).map(item => item.trim()).filter(Boolean)).flatMap(splitMixed);
 }
 
 function stableId(transcriptId, raw) {
@@ -235,6 +236,7 @@ function extractItems(input, job) {
           transcriptId,
           interviewerId: String(session.interviewer || input.interviewer || ''),
           candidateId: String(session.candidateId || session.candidateName || ''),
+          jobName: String(session.jobName || job.name || ''),
           jobId: job.id,
           rawText: raw,
           speaker: block.speaker === 'interviewer' ? 'interviewer' : 'unknown',
@@ -242,7 +244,7 @@ function extractItems(input, job) {
           contextBefore: previous ? [previous.text.slice(0, 180)] : [],
           contextAfter: next ? [next.text.slice(0, 180)] : [],
           sourceRef: `${transcriptId}:${items.length}`,
-          sources: [{ transcriptId, candidateName: String(session.candidateName || ''), startedAt: String(session.startedAt || ''), rawText: raw }],
+          sources: [{ transcriptId, candidateName: String(session.candidateName || ''), jobName: String(session.jobName || job.name || ''), startedAt: String(session.startedAt || ''), rawText: raw }],
           rulesVersion: RULES_VERSION
         });
       });
