@@ -164,7 +164,7 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await updateMember(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext(request)));
-    if (request.method === 'GET' && url.pathname === '/api/cases') return sendJson(response, 200, await loadCaseDetails(await getRequestContext(request)));
+    if (request.method === 'GET' && url.pathname === '/api/cases') return sendJson(response, 200, { cases: await loadCaseSummaries(await getRequestContext(request)), bodiesIncluded: false });
     if (request.method === 'GET' && url.pathname === '/api/jobs') return sendJson(response, 200, { jobs: await loadJobCatalog(await getRequestContext(request)) });
     if (request.method === 'GET' && url.pathname === '/api/screenings/texts') return sendJson(response, 200, await loadScreeningTexts(await getRequestContext(request)));
     if (request.method === 'GET' && url.pathname.match(/^\/api\/candidates\/[^/]+\/screening$/)) {
