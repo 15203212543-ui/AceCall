@@ -14,6 +14,8 @@ and writes the result back to the same task document.
 
 Provider configuration is intentionally server-side:
 
+Existing deployments using `TCB_SECRET_ID` / `TCB_SECRET_KEY` remain supported.
+
 - Baidu long audio: `BAIDU_API_KEY`, `BAIDU_SECRET_KEY`, optionally
   `BAIDU_ASR_CREATE_URL` and `BAIDU_ASR_QUERY_URL`.
 - Whisper: `WHISPER_API_URL`, optionally `WHISPER_API_KEY` and

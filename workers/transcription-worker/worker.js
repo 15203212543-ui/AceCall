@@ -67,14 +67,15 @@ function configureDependencies(next) {
  * 读取平台注入的临时凭证；而这个 worker 是外部进程，必须显式给密钥，
  * 否则数据库请求会抛「missing secretId or secretKey of tencent cloud」。
  *
- * 支持两种来源，优先级从高到低：
+ * 支持三种来源，优先级从高到低：
  *   1. CLOUDBASE_SECRET_ID / CLOUDBASE_SECRET_KEY（推荐，写得明确）
  *   2. TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY（腾讯云官方环境变量名）
+ *   3. TCB_SECRET_ID / TCB_SECRET_KEY（兼容现有云托管服务配置）
  */
 function credentialConfig() {
   const config = { env: process.env.TCB_ENV };
-  const secretId = process.env.CLOUDBASE_SECRET_ID || process.env.TENCENTCLOUD_SECRETID;
-  const secretKey = process.env.CLOUDBASE_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY;
+  const secretId = process.env.CLOUDBASE_SECRET_ID || process.env.TENCENTCLOUD_SECRETID || process.env.TCB_SECRET_ID;
+  const secretKey = process.env.CLOUDBASE_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY || process.env.TCB_SECRET_KEY;
   const sessionToken = process.env.CLOUDBASE_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSIONTOKEN;
   if (secretId && secretKey) {
     config.secretId = secretId;
