@@ -1696,13 +1696,12 @@ function callTab(item) {
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
-  const recordingLabel = draft?.file ? `${draft.file.name} · ${formatBytes(draft.file.size)}` : item.callRecording?.fileName || '尚未添加录音';
   const liveRecording = recordingSession?.candidateId === item.id ? recordingSession : null;
   const recordingNow = liveRecording?.phase === 'recording';
   const recordingBusy = liveRecording?.phase === 'stopping';
   const otherRecording = Boolean(recordingSession && ['recording', 'stopping'].includes(recordingSession.phase) && recordingSession.candidateId !== item.id);
-  const recordingStatusText = recordingNow ? recordingStatusLabel(recordingSession) : recordingBusy ? (recordingSession.message || '正在停止录音，请稍候…') : `${recordingLabel}。录音前请先向候选人告知并取得同意。`;
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><label class="recording-consent"><input type="checkbox" id="recordingConsent" ${recordingNow || recordingBusy || item.recordingConsent?.accepted ? 'checked' : ''}><span>已告知候选人本次沟通会录音，并取得同意。未同意时不开始录音，可以继续手工记录。</span></label><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  const recordingStatusText = recordingNow ? recordingStatusLabel(recordingSession) : recordingBusy ? recordingProgressLabel(recordingSession.message || '正在停止录音，请稍候…') : (draft?.file || item.callRecording ? '录音已添加' : '尚未添加录音');
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea></div></div></div><div class="call-footer"><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {
@@ -1923,10 +1922,10 @@ async function generatePreparation(candidate, options = {}) {
 }
 
 async function completeCall() {
-  const candidate = currentCandidate(); const transcript = $('#callTranscript').value.trim(); if (!transcript) return toast('请先填写电话记录'); if (!$('#consentConfirmed').checked) return toast('请先确认已完成录音或转写告知');
+  const candidate = currentCandidate(); const transcript = $('#callTranscript').value.trim(); if (!transcript) return toast('请先填写电话记录');
   const button = $('[data-complete-call]'); button.disabled = true; button.textContent = '正在生成结果';
   try {
-    candidate.transcript = transcript; candidate.consentConfirmed = true;
+    candidate.transcript = transcript;
     if (recordingDraft.candidateId === candidate.id && recordingDraft.file) {
       candidate.callRecording = recordingDraft.uploaded && recordingDraft.taskId
         ? { fileName: recordingDraft.file.name, mimeType: recordingDraft.file.type || 'audio/webm', size: recordingDraft.file.size, source: recordingDraft.source || 'upload', recordedAt: new Date().toISOString(), status: 'queued', transcriptionTaskId: recordingDraft.taskId }
@@ -2050,16 +2049,22 @@ function returnToRecordingCall() {
   navigate('candidate');
 }
 
+function recordingProgressLabel(message = '') {
+  const text = String(message || '');
+  const separator = text.indexOf(' · ');
+  return separator < 0 ? text : text.slice(separator + 3);
+}
+
 function noteRecordingProgress(message) {
   const ownerId = recordingSession?.candidateId || recordingDraft.candidateId;
   const viewingCall = app.view === 'candidate' && app.detailTab === 'call' && (!ownerId || app.candidateId === ownerId);
   const status = $('#recordingStatus');
-  if (status && viewingCall) status.textContent = message;
+  if (status && viewingCall) status.textContent = recordingProgressLabel(message);
   if (!recordingSession) return;
   recordingSession.message = message;
   if (!recordingDockVisible(recordingSession, currentRecordingView())) return;
   const meta = $('#recordingDockMeta');
-  if (meta) meta.textContent = recordingSession.phase === 'transcribing' ? '已停止，转写中' : message;
+  if (meta) meta.textContent = recordingSession.phase === 'transcribing' ? '已停止，转写中' : recordingProgressLabel(message);
 }
 
 async function restoreDesktopRecording() {
@@ -2165,7 +2170,7 @@ async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
     const task = data.task || {};
     const status = viewing ? $('#recordingStatus') : null;
     if (['created', 'uploading', 'uploaded', 'queued', 'converting', 'transcribing', 'merging'].includes(task.status)) {
-      if (status) status.textContent = `${fileName} · ${task.status === 'queued' ? '排队等待转写服务' : `转写处理中（${task.status}）`}`;
+      if (status) status.textContent = recordingProgressLabel(`${fileName} · ${task.status === 'queued' ? '排队等待转写服务' : `转写处理中（${task.status}）`}`);
       return pollTranscriptionTask(taskId, fileName, attempts + 1);
     }
     if (task.status === 'completed' && task.result?.text) {
@@ -2177,14 +2182,14 @@ async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
         persistCases(owner);
       }
       if (transcript && !transcript.value.trim()) transcript.value = task.result.text;
-      if (status) status.textContent = `${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`;
+      if (status) status.textContent = recordingProgressLabel(`${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`);
       return toast('录音已自动转写到电话记录');
     }
-    if (status) status.textContent = `${fileName} · 转写失败：${task.error || '请稍后重试'}`;
+    if (status) status.textContent = recordingProgressLabel(`${fileName} · 转写失败：${task.error || '请稍后重试'}`);
   } catch (error) {
     if (attempts < 3) return pollTranscriptionTask(taskId, fileName, attempts + 1);
     const status = viewing ? $('#recordingStatus') : null;
-    if (status) status.textContent = `${fileName} · 转写状态查询失败：${error.message}`;
+    if (status) status.textContent = recordingProgressLabel(`${fileName} · 转写状态查询失败：${error.message}`);
   }
 }
 
@@ -2211,12 +2216,9 @@ async function convertWebmToWav(file) {
 }
 
 async function startBrowserRecording() {
-  const consent = $('#recordingConsent');
-  if (consent && !consent.checked) return toast('请先告知候选人并取得同意后再录音。未同意时请直接填写电话记录。');
   const candidate = currentCandidate();
   if (!candidate) return toast('请先打开候选人再录音');
   if (recordingSession && ['recording', 'stopping'].includes(recordingSession.phase)) return toast('当前已经在录音中');
-  candidate.recordingConsent = { accepted: true, at: new Date().toISOString(), candidateId: candidate.id || '', session: app.authUser?.email || app.authUser?.username || '' };
   let desktopReady = false;
   try {
     const response = await fetch(`${DESKTOP_AGENT_URL}/status`, { signal: AbortSignal.timeout(900) });
