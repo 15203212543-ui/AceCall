@@ -1623,6 +1623,7 @@ function renderCandidateDetail() {
   if (!item) { navigate('candidates'); return; }
   if (!item.resume && !item.resumeLoading && !item.resumeLoadFailed && (item.documentId || item.resumeMeta?.originalFileId)) ensureResumeText(item);
   void loadCandidateScreening(item.id);
+  if (legacyTemplatePreparation(item)) void regenerateLegacyPreparation(item);
   $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
   bindCommonActions($('#candidateDetailView'));
@@ -1657,6 +1658,29 @@ function screeningRecordPending(item) {
   if (!item || item.screeningLoadFailed) return false;
   return (item.hasPreparation && !item.preparation) || (item.hasSummary && !item.communicationSummary) || (item.hasReport && !item.report) || (item.hasTranscript && !item.transcript);
 }
+function legacyTemplatePreparation(item) {
+  const preparation = item?.preparation;
+  const questions = Array.isArray(preparation?.questions) ? preparation.questions : [];
+  if (!preparation || preparation.generationMeta?.provider === 'deepseek' || item.communicationSummary || item.report) return false;
+  if (!questions.length || questions.length > 6) return false;
+  const generic = questions.filter(question => {
+    const text = String(question?.question || question || '');
+    const source = String(question?.source || question?.reason || '');
+    return /请确认(?:地点|薪资|到岗|竞业)|请说明与.+相关的经历/.test(text) || /^(?:必备|待核验|通用|初筛准备)$/.test(source);
+  });
+  return generic.length === questions.length;
+}
+
+async function regenerateLegacyPreparation(item) {
+  if (!item || item.preparationRegenerating || !legacyTemplatePreparation(item)) return;
+  item.preparationRegenerating = true;
+  if (app.view === 'candidate' && app.candidateId === item.id) renderCandidateDetail();
+  try {
+    await generatePreparation(item, { automatic: true });
+  } finally {
+    item.preparationRegenerating = false;
+  }
+}
 function overviewTab(item) {
   const prep = item.preparation;
   if (!prep && screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
@@ -1668,6 +1692,7 @@ function overviewTab(item) {
 
 function callTab(item) {
   if (screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
+  if (item.preparationRegenerating) return '<div class="surface empty">检测到旧版模板问题，正在根据简历、岗位 JD 和初筛规则重新生成…</div>';
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
@@ -1886,14 +1911,14 @@ async function reconcilePendingAssignments() {
   if (reviewed) { renderCurrent(); toast(`已按新规则复核 ${reviewed} 份简历，其中 ${assigned} 份自动分配`); }
 }
 
-async function generatePreparation(candidate) {
+async function generatePreparation(candidate, options = {}) {
   if (!candidate) return; const button = $('[data-generate-prep]'); if (button) button.disabled = true;
   try {
     await ensureResumeText(candidate);
     if (!String(candidate.resume || '').trim()) throw new Error(candidate.resumeError || '简历解析文本还没有准备好');
     if (!String(candidate.jd || '').trim() && candidate.jobId) { const job = app.jobs.find(item => item.id === candidate.jobId); if (job?.jd) candidate.jd = job.jd; }
     candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords });
-    candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('电话准备已自动完成');
+    candidate.updatedAt = new Date().toISOString(); await persistCases(candidate); renderCandidateDetail(); toast(options.automatic ? '旧版模板问题已自动更新' : '电话准备已自动完成');
   } catch (error) { toast(error.message); if (button) button.disabled = false; }
 }
 
@@ -2441,7 +2466,7 @@ function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenant
 function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','screeningLoadFailed','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
 function mergeScreeningBody(item, body = {}){if(!item||!body)return;if(body.preparation)item.preparation=body.preparation;if(body.transcript)item.transcript=body.transcript;if(body.communicationSummary)item.communicationSummary=body.communicationSummary;if(body.report)item.report=body.report;if(body.consentConfirmed)item.consentConfirmed=true;if(body.callRecording)item.callRecording=body.callRecording;}
-async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;if(!screeningRecordPending(item))return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok){item.screeningLoadFailed=true;if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();return;}const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}catch(error){item.screeningLoadFailed=true;console.warn('[AceCall candidate screening]',error);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}finally{item.screeningLoading=false;}}
+async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;if(!screeningRecordPending(item))return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok){item.screeningLoadFailed=true;if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();return;}const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();if(legacyTemplatePreparation(item))void regenerateLegacyPreparation(item);}catch(error){item.screeningLoadFailed=true;console.warn('[AceCall candidate screening]',error);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}finally{item.screeningLoading=false;}}
 let analysisTextsInFlight=null;
 async function loadAnalysisTexts(force=false){if(!REMOTE_BACKEND)return;if(app.analysisTextsLoaded&&!force)return;if(analysisTextsInFlight&&!force)return analysisTextsInFlight;analysisTextsInFlight=(async()=>{const response=await authenticatedFetch(apiUrl('/api/screenings/texts'));if(response.status===404)return;const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));const byId=new Map((data.records||[]).map(record=>[record.candidateId,record]));app.cases.forEach(item=>mergeScreeningBody(item,byId.get(item.id)));app.analysisTextsLoaded=true;if(app.view==='interviewers'){renderInterviewers();renderInterviewerFollowups();}if(app.view==='intelligence')renderIntelligence();})().catch(error=>console.warn('[AceCall screening texts]',error));try{return await analysisTextsInFlight;}finally{analysisTextsInFlight=null;}}
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
