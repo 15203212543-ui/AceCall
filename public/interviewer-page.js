@@ -270,9 +270,13 @@ function renderInterviewers() {
   root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary({ force: true }); await loadTranscriptImports({ force: true }); if (runtime.loadAnalysisTexts) await runtime.loadAnalysisTexts(true); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
-function resumeExcerptFor(name) {
+function resumeMaterialFor(name) {
   const person = (app.cases || []).find(item => name && item.candidateName === name);
-  return String(person?.resume || person?.resumeSummary || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  const resume = String(person?.resume || '').replace(/\s+/g, ' ').trim();
+  const summary = String(person?.resumeSummary || '').replace(/\s+/g, ' ').trim();
+  if (resume) return { resumeExcerpt: resume.slice(0, 800), resumeBasis: 'resume' };
+  if (summary) return { resumeExcerpt: summary.slice(0, 800), resumeBasis: 'summary' };
+  return { resumeExcerpt: '', resumeBasis: 'none' };
 }
 function interviewerTranscripts(filters = {}) {
   const captured = transcriptCaptureEntries(filters).map(item => ({
@@ -282,7 +286,7 @@ function interviewerTranscripts(filters = {}) {
     interviewer: item.interviewer || '',
     round: item.round || '',
     startedAt: item.startedAt || '',
-    resumeExcerpt: resumeExcerptFor(item.candidateName),
+    ...resumeMaterialFor(item.candidateName),
     text: String(item.text || '').replace(/[^\S\n]+/g, ' ').trim().slice(0, 4000)
   })).filter(item => item.text.length >= 40);
   if (captured.length) return captured;
@@ -293,7 +297,7 @@ function interviewerTranscripts(filters = {}) {
     interviewer: item.interviewer || '',
     round: item.round || '',
     startedAt: item.startedAt || '',
-    resumeExcerpt: resumeExcerptFor(item.candidateName),
+    ...resumeMaterialFor(item.candidateName),
     text: String(item.transcript || '').replace(/[^\S\n]+/g, ' ').trim().slice(0, 4000)
   }));
 }
@@ -316,12 +320,10 @@ function interviewerInsightKey(sessions) {
   const reviews = storedQuestionReviews().map(item => [item.questionId, item.classification, item.version]);
   return JSON.stringify({ interviewer: filters.interviewer || '', job: filters.job || '', round: filters.round || '', period: filters.period || '', reviews, sessions: sessions.map(item => [item.id, item.candidateName, item.jobName, item.interviewer, item.startedAt, item.text.length, item.text.slice(0, 24)]) });
 }
-function questionCard(result, item, extra = '') {
-  const label = item.normalizedText || item.rawText;
-  const sources = (item.sources || []).map(source => [source.candidateName, source.jobName, String(source.startedAt || '').slice(0, 10)].filter(Boolean).join(' · ')).filter(Boolean);
-  const badge = result.sampleLimited && item.classificationSource !== 'human' ? '<em>未经 AI 归类</em>' : '';
-  const sourceLine = sources.join('、') || '当前转写';
-  return `<details class="question-card"><summary><span>${escapeHtml(label)}</span>${badge}</summary><div class="question-meta"><span>候选人 · ${escapeHtml(sourceLine)}</span><span>类型 · 专业岗位问题</span></div><p><b>原始转写：</b>${escapeHtml([item.rawText, ...(item.mergedRaw || [])].filter(Boolean).join(' / '))}</p><p><b>岗位准则：</b>${escapeHtml(item.jobCriteriaId || item.conditionLabel || '未关联具体准则')}</p><p><b>转写证据：</b>来自该场真实面试原句，未补写外部内容。</p>${extra}</details>`;
+function questionCard(item) {
+  const sources = (item.sources || []).map(source => [source.candidateName, String(source.startedAt || '').slice(0, 10)].filter(Boolean).join(' · ')).filter(Boolean);
+  const depth = ['', '问到经历', '问到职责', '追问到结果'][Number(item.followUpLevel)] || '';
+  return `<details class="question-card"><summary><span>${escapeHtml(item.bankQuestion)}</span>${depth ? `<em>${escapeHtml(depth)}</em>` : ''}</summary><div class="question-meta"><span>问过 ${(item.sources || []).length} 次</span><span>${escapeHtml(sources.join('、') || '当前筛选')}</span></div></details>`;
 }
 function isProfessionalQuestion(item = {}) {
   const text = String(item.normalizedText || item.rawText || '').replace(/\s+/g, '');
@@ -329,40 +331,39 @@ function isProfessionalQuestion(item = {}) {
   if (!/[？?]|吗$|呢$|什么|怎么|如何|为什么|有没有|是否|能不能|可不可以/.test(text)) return false;
   return /下单|订单|委托|成交|交易|交易所|资金|冻结|解冻|持仓|结算|清算|风控|报价|询价|期权|衍生品|FIX|消息|开户|KYC|AML|行情|稳定性|性能|并发|延迟|故障|海外银行卡|银行卡|入金|出金|币种|富途|证券账户|交易账户|港股|美股|复投|资金账户|客户账户|托管|清算交收|岗位|工作|项目|职责|经验|负责/.test(text);
 }
+function coverageSentence(result = {}) {
+  const cover = result.materialCoverage;
+  if (!cover) return '';
+  const rate = (part) => part.total ? (result.sampleLimited ? `${part.covered}/${part.total}` : `${Math.round(part.covered / part.total * 100)}%`) : '';
+  const names = (part, title) => part.total ? `${title} ${rate(part)}。${part.asked.length ? `已问到 ${part.asked.join('、')}` : '还没有问到'}${part.missing.length ? `；未问到 ${part.missing.join('、')}` : ''}。` : '';
+  const jobText = cover.multipleJobs ? '当前筛选包含多个岗位，请先选定一个岗位再看岗位覆盖。' : names(cover.job, '岗位覆盖');
+  const resumeNote = cover.resumeBasis === 'summary' ? '按简历摘要计算。' : '';
+  const resumeText = cover.resume.total ? `${names(cover.resume, '简历覆盖')}${resumeNote}` : '';
+  const depth = cover.followUp.count ? (result.sampleLimited ? `追问深度平均 ${cover.followUp.average} 层。` : `追问深度 ${cover.followUp.percent}%。`) : '';
+  return `${jobText}${resumeText}${depth}`;
+}
 function questionAnalysisHtml(result = {}) {
   const items = result.items || [];
-  const promoted = new Set();
-  const jobQuestions = items.filter(item => {
-    const accepted = item.classification === 'job_question' && (result.sampleLimited || item.confirmed);
-    const recovered = !accepted && item.classification === 'needs_context' && isProfessionalQuestion(item);
-    if (recovered) promoted.add(item.id);
-    return accepted || recovered;
-  }).sort((left, right) => (right.sources?.length || 0) - (left.sources?.length || 0));
+  const jobQuestions = items.filter(item => item.bankQuestion && item.classification === 'job_question').sort((left, right) => (right.sources?.length || 0) - (left.sources?.length || 0));
+  const unlisted = items.filter(item => !item.bankQuestion && (item.classification === 'job_question' || item.classification === 'needs_context')).length;
   const conditions = items.filter(item => item.classification === 'condition_check');
-  const needs = items.filter(item => !promoted.has(item.id) && (item.classification === 'needs_context' || (item.classification === 'job_question' && !result.sampleLimited && !item.confirmed)));
-  const reviewButtons = item => `<div class="question-actions"><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="job_question">归入岗位问题</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="condition_check">归入条件核验</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="needs_context">保留待判断</button></div>`;
   const visibleJobs = jobQuestions.slice(0, 5);
   const extraJobs = jobQuestions.slice(5);
-  const jobBlock = jobQuestions.length ? `<section class="question-block professional-question-block"><div class="question-block-head"><div><h3>真实专业问题</h3><p>仅来自当前面试官的真实转写，已排除自我介绍、通话确认和候选人陈述</p></div><strong>${jobQuestions.length} 条</strong></div>${visibleJobs.map(item => questionCard(result, item)).join('')}${extraJobs.length ? `<details class="question-more"><summary>展开其余 ${extraJobs.length} 条真实问题</summary>${extraJobs.map(item => questionCard(result, item)).join('')}</details>` : ''}</section>` : '';
+  const jobBlock = jobQuestions.length ? `<section class="question-block professional-question-block"><div class="question-block-head"><div><h3>题库问句</h3><p>同一问点已合并，按提问次数排序</p></div><strong>${jobQuestions.length} 条</strong></div>${visibleJobs.map(item => questionCard(item)).join('')}${extraJobs.length ? `<details class="question-more"><summary>展开其余 ${extraJobs.length} 条</summary>${extraJobs.map(item => questionCard(item)).join('')}</details>` : ''}</section>` : '';
   const conditionGroups = new Map();
   conditions.forEach(item => {
     const label = item.conditionLabel || '条件';
-    const link = item.linkStatus || '待关联';
-    const key = `${label}|${link}`;
-    const group = conditionGroups.get(key) || { label, link, items: [] };
-    group.items.push(item);
-    conditionGroups.set(key, group);
+    const group = conditionGroups.get(label) || { label, count: 0, names: [] };
+    group.count += (item.sources || []).length || 1;
+    group.names.push(...(item.sources || []).map(source => source.candidateName).filter(Boolean));
+    conditionGroups.set(label, group);
   });
-  const conditionBlock = conditionGroups.size ? `<section class="question-block"><h3>条件核验</h3>${[...conditionGroups.values()].map(group => `<details class="question-card"><summary><span>${escapeHtml(group.label)} · ${escapeHtml(group.link)} · ${group.items.length} 次</span></summary>${group.items.map(item => `<p><b>原句：</b>${escapeHtml(item.rawText)}</p><p><b>场次：</b>${escapeHtml((item.sources || []).map(source => [source.candidateName, String(source.startedAt || '').slice(0, 10)].filter(Boolean).join(' ')).filter(Boolean).join('、') || '当前转写')}</p>`).join('')}</details>`).join('')}</section>` : '';
-  const needsShown = needs.slice(0, 5);
-  const needsBlock = needs.length ? `<details class="question-more"><summary>待判断 ${needs.length} 条</summary>${needsShown.map(item => questionCard(result, item, reviewButtons(item))).join('')}${needs.length > 5 ? `<p class="question-excluded">其余 ${needs.length - 5} 条未列出</p>` : ''}</details>` : '';
-  const covered = result.allowPersonalReview ? (result.coverage?.required || []) : [];
-  const asked = covered.filter(row => row.covered).map(row => row.item);
-  const missing = covered.filter(row => !row.covered).map(row => row.item);
-  const coverage = result.allowPersonalReview ? `<p>${escapeHtml(covered.length ? `岗位覆盖：${asked.length ? `已问到 ${asked.join('、')}` : '还没有问到配置的要求'}${missing.length ? `；未问到 ${missing.join('、')}` : ''}。` : '岗位没有配置可对照的关键词。')}${result.followUpStyle ? escapeHtml(result.followUpStyle) : ''}</p>` : '';
+  const conditionBlock = conditionGroups.size ? `<section class="question-block"><h3>条件核验</h3>${[...conditionGroups.values()].map(group => `<p>${escapeHtml(group.label)} · ${group.count} 次${group.names.length ? ` · ${escapeHtml([...new Set(group.names)].join('、'))}` : ''}</p>`).join('')}</section>` : '';
+  const unlistedNote = unlisted ? `<p class="question-excluded">还有 ${unlisted} 条未能整理，未列出</p>` : '';
   const excluded = result.excludedCommunicationCount > 0 ? `<p class="question-excluded">已排除 ${result.excludedCommunicationCount} 条通话确认</p>` : '';
   const summary = result.summary ? `<p>${escapeHtml(result.summary)}</p>` : '';
-  return `${summary}${coverage}${jobBlock}${conditionBlock}${needsBlock}${excluded}` || '<p>当前转写里没有可展示的岗位问题。</p>';
+  const coverage = coverageSentence(result) ? `<p>${escapeHtml(coverageSentence(result))}</p>` : '';
+  return `${summary}${coverage}${jobBlock}${conditionBlock}${unlistedNote}${excluded}` || '<p>当前转写里没有可展示的岗位问题。</p>';
 }
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
@@ -374,11 +375,10 @@ function renderInterviewerFollowups() {
   const insightKey = interviewerInsightKey(allSessions);
   const cached = app.interviewerInsight?.key === insightKey ? app.interviewerInsight.result : null;
   const sampleLimited = allSessions.length < 5;
-  const insightHtml = allSessions.length ? (cached ? questionAnalysisHtml(cached) : '<p>正在按岗位和 JD 归类问题…</p>') : '<p>当前筛选下还没有可分析的转写。</p>';
-  const jobQuestionCount = cached ? (cached.items || []).filter(item => (item.classification === 'job_question' && (cached.sampleLimited || item.confirmed)) || (item.classification === 'needs_context' && isProfessionalQuestion(item))).length : null;
-  const coveredCount = cached?.coverage?.required?.filter(item => item.covered).length;
-  const requiredCount = cached?.coverage?.required?.length;
-  const coverageLabel = sampleLimited ? (jobQuestionCount === null ? '—' : jobQuestionCount) : (requiredCount ? `${coveredCount}/${requiredCount}` : (jobQuestionCount === null ? '—' : jobQuestionCount));
+  const insightHtml = allSessions.length ? (cached ? questionAnalysisHtml(cached) : '<p>正在整理题库问句，并对照岗位和简历计算覆盖…</p>') : '<p>当前筛选下还没有可分析的转写。</p>';
+  const cover = cached?.materialCoverage;
+  const coverageLabel = !cached ? '—' : cover?.multipleJobs ? '选定岗位' : cover?.job?.total ? (sampleLimited ? `${cover.job.covered}/${cover.job.total}` : `${Math.round(cover.job.covered / cover.job.total * 100)}%`) : '—';
+  const depthLabel = !cached ? '—' : cover?.followUp?.count ? (sampleLimited ? `${cover.followUp.average} 层` : `${cover.followUp.percent}%`) : '—';
   const interviewerNames = [...new Set(interviewerRecords({}).map(item => item.interviewer).filter(Boolean))];
   const comparison = interviewerNames.map(name => { const items = interviewerRecords({ interviewer: name }); const passed = items.filter(item => item.interviewPassed).length; const hired = items.filter(item => item.hired).length; return { name, count: items.length, passed, hired, passRate: items.length ? Math.round(passed / items.length * 100) : 0 }; }).sort((a, b) => b.count - a.count);
   const comparePageSize = 5;
@@ -389,9 +389,7 @@ function renderInterviewerFollowups() {
   const compareStart = comparison.length ? (comparePage - 1) * comparePageSize + 1 : 0;
   const compareEnd = comparison.length ? compareStart + compareVisible.length - 1 : 0;
   const comparePager = comparison.length > comparePageSize ? `<div class="interview-record-pager"><button type="button" data-compare-page="prev"${comparePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-compare-page-select>${Array.from({ length: comparePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === comparePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${comparePageCount} 页</label><span>${compareStart}–${compareEnd} / ${comparison.length} 位</span><button type="button" data-compare-page="next"${comparePage >= comparePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
-  const professionalPending = cached ? (cached.items || []).filter(item => item.classification === 'needs_context' && isProfessionalQuestion(item)).length : 0;
-  const pendingCount = cached ? Math.max(0, (cached.items || []).filter(item => item.classification === 'needs_context').length - professionalPending) : '—';
-  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">优先由 DeepSeek 按当前筛选的转写、岗位 JD 和简历摘录归类。通话确认不进入高频列表</p></div><span>${allSessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${sampleLimited ? '样本不足' : '岗位口径'}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverageLabel}</b></div><div><span>条件核验</span><b>${cached ? (cached.items || []).filter(item => item.classification === 'condition_check').length : '—'}</b></div><div><span>待判断</span><b>${pendingCount}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">每页 5 位，其余分页查看</p></div><span>${comparison.length ? `${compareStart}–${compareEnd} / ${comparison.length} 位` : '0 位'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${compareVisible.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count < 5 ? '样本不足' : (row.count ? `${row.passRate}%` : '—')}</td><td>${row.hired}</td><td>${row.count < 5 ? '—' : (selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—')}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div>${comparePager}</section>`;
+  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">DeepSeek 整理题库问句，并对照当前岗位和简历计算覆盖与追问深度</p></div><span>${allSessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${sampleLimited ? '样本不足' : '岗位口径'}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverageLabel}</b></div><div><span>条件核验</span><b>${cached ? (cached.items || []).filter(item => item.classification === 'condition_check').length : '—'}</b></div><div><span>追问深度</span><b>${depthLabel}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">每页 5 位，其余分页查看</p></div><span>${comparison.length ? `${compareStart}–${compareEnd} / ${comparison.length} 位` : '0 位'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${compareVisible.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count < 5 ? '样本不足' : (row.count ? `${row.passRate}%` : '—')}</td><td>${row.hired}</td><td>${row.count < 5 ? '—' : (selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—')}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div>${comparePager}</section>`;
   page.append(section);
   const captureList = page.querySelector('.transcript-capture-list');
   const recordList = page.querySelector('.interview-record-list');

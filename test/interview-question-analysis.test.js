@@ -174,9 +174,34 @@ test('deepseek classifies one transcript and rejects a summary that adds a city'
     };
   });
   assert.equal(result.provider, 'deepseek');
-  assert.equal(result.summary, '提问集中在交易系统中的职责范围。');
+  assert.equal(result.summary, '当前专业问题不足，还不能概括提问偏好');
   assert.equal(result.followUpStyle, '');
   assert.equal(result.items[0].classificationSource, 'ai');
+  assert.equal(result.items[0].bankQuestion, '你在交易系统中具体负责哪一部分？');
+});
+
+test('coverage uses only job and resume points that appear in the materials', async () => {
+  const sessions = [session('面试官：你在交易系统中具体负责哪一部分？\n候选人：我负责行情接入。\n面试官：上线结果怎么衡量？', { resumeExcerpt: '负责行情接入和交易系统开发', resumeBasis: 'resume' })];
+  const result = await analyzeInterviewQuestions({ sessionCount: 5, job, sessions }, async prompt => {
+    const items = JSON.parse(prompt.input).items;
+    return {
+      summary: '提问先确认交易系统中的职责，再追问上线结果。',
+      jobPoints: ['交易系统', '方案设计', '区块链结算'],
+      resumePoints: [{ candidateName: '黄元', point: '行情接入' }, { candidateName: '黄元', point: '量子计算' }],
+      items: [
+        { id: items[0].id, classification: 'job_question', evidenceQuote: '具体负责哪一部分', normalizedQuestion: '你在交易系统中具体负责哪一部分？', followUpLevel: 2, jobPoint: '交易系统', resumePoint: '行情接入' },
+        { id: items[1].id, classification: 'job_question', evidenceQuote: '上线结果怎么衡量', normalizedQuestion: '上线结果怎么衡量？', followUpLevel: 3, jobPoint: '', resumePoint: '量子计算' }
+      ]
+    };
+  });
+  assert.equal(result.materialCoverage.job.covered, 1);
+  assert.equal(result.materialCoverage.job.missing.includes('方案设计'), true);
+  assert.equal(result.materialCoverage.job.asked.includes('区块链结算'), false);
+  assert.deepEqual(result.materialCoverage.resume.asked, ['行情接入']);
+  assert.equal(result.materialCoverage.resume.missing.includes('量子计算'), false);
+  assert.equal(result.materialCoverage.resumeBasis, 'resume');
+  assert.equal(result.items.filter(item => item.bankQuestion).length, 2);
+  assert.equal(result.summary, '提问先确认交易系统中的职责，再追问上线结果。');
 });
 
 test('communication lines are not sent to deepseek even for a single transcript', async () => {

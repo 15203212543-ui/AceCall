@@ -489,15 +489,75 @@ function analysisPrompt(items, job, input) {
   const resumes = (Array.isArray(input.sessions) ? input.sessions : []).slice(0, 6).map(item => ({
     candidateName: String(item.candidateName || '').slice(0, 40),
     jobName: String(item.jobName || '').slice(0, 80),
-    resumeExcerpt: String(item.resumeExcerpt || '').replace(/\s+/g, ' ').trim().slice(0, 240)
+    resumeBasis: item.resumeBasis === 'resume' ? 'resume' : 'summary',
+    resumeExcerpt: String(item.resumeExcerpt || '').replace(/\s+/g, ' ').trim().slice(0, 800)
   })).filter(item => item.resumeExcerpt);
   return {
-    instructions: '你只给面试官已经问出的句子分类，并写一句提问总结。不能新编问题。classification 只能是 communication_check、condition_check、job_question、needs_context。evidenceQuote 必须是该句原文中的连续片段。normalizedQuestion 不能加入原句没有的城市、金额或日期。summary 和 followUpStyle 只能复述这些句子、岗位 JD 和简历摘录里已经出现的内容，不能新增公司、城市或数字。无法判断时返回 needs_context。输出 JSON：{"summary":"","followUpStyle":"","items":[{"id":"","classification":"","conditionType":null,"normalizedQuestion":null,"evidenceQuote":"","mergeWithPrevious":false,"reasonCode":""}]}',
+    instructions: '你整理面试官已经问出的问题，不能新编问题，不能把 JD 里有但面试官没问的内容写成问题。classification 只能是 communication_check、condition_check、job_question、needs_context。每条岗位问题给出 normalizedQuestion：一条题库问句，12 到 28 个字，只留一个问点，以问号结尾，去掉姓名、时间、口头禅和候选人回答。evidenceQuote 必须是该句原文中的连续片段。题库问句不能加入原句没有的公司、城市、金额或技术名词。followUpLevel 只给岗位问题：1 表示只问有没有这段经历，2 表示问到个人负责范围，3 表示在候选人回答之后追问结果、原因或个人贡献。候选人自己说出的负责或结果不算追问。jobPoint 是这条问题问到的岗位要求，必须是 JD 连续原文，没有则空字符串。resumePoint 是问到的简历经历，必须是该候选人简历摘录里的连续原文，没有则空字符串。jobPoints 从 JD 抽出 4 到 8 条代表性要求，每条都必须是 JD 连续原文，包括还没被问到的要求。resumePoints 从简历摘录抽出经历点，每条含 candidateName 和 point，point 必须是摘录连续原文。summary 为 60 到 120 字，只概括已经整理出的问点；专业问题少于 2 条时 summary 固定写「当前专业问题不足，还不能概括提问偏好」。不能新增材料里没有的公司、城市或数字。输出 JSON：{"summary":"","jobPoints":[],"resumePoints":[{"candidateName":"","point":""}],"items":[{"id":"","classification":"","conditionType":null,"normalizedQuestion":"","evidenceQuote":"","followUpLevel":1,"jobPoint":"","resumePoint":"","reasonCode":""}]}',
     input: JSON.stringify({
       job: { name: job.name, jd: String(job.jd || '').slice(0, 1200), rules: job.rules, verify: job.verify, keywords: job.keywords },
       resumes,
-      items: items.map(item => ({ id: item.id, rawText: item.rawText, contextBefore: item.contextBefore, contextAfter: item.contextAfter, jobName: item.jobName }))
+      items: items.map(item => ({ id: item.id, rawText: item.rawText, contextBefore: item.contextBefore, contextAfter: item.contextAfter, candidateName: item.sources?.[0]?.candidateName || '', jobName: item.jobName }))
     })
+  };
+}
+
+function cleanPoint(value) {
+  return String(value || '').replace(/\s+/g, '').slice(0, 24);
+}
+
+function pointIn(text, point) {
+  const probe = cleanPoint(point);
+  return probe.length >= 2 && String(text || '').replace(/\s+/g, '').includes(probe);
+}
+
+function uniquePoints(values, corpus, limit) {
+  const seen = new Set();
+  const points = [];
+  for (const value of values) {
+    const point = cleanPoint(typeof value === 'string' ? value : value?.point);
+    if (!pointIn(corpus, point) || seen.has(point)) continue;
+    seen.add(point);
+    points.push(point);
+    if (points.length >= limit) break;
+  }
+  return points;
+}
+
+function bankQuestionText(value, quote) {
+  const text = String(value || '').replace(/\s+/g, '').replace(/^(?:面试官|候选人)[：:]/, '').replace(/[？?]+$/, '');
+  if (text.length < 8 || text.length > 32 || /面试官|候选人|转写|嗯|啊+|那个|就是/.test(text) || introducesFact(text, quote)) return '';
+  return `${text}？`;
+}
+
+function followLevel(decision, item) {
+  const level = Number(decision?.followUpLevel);
+  if (![1, 2, 3].includes(level)) return 0;
+  const hasPrior = (item.contextBefore || []).some(text => String(text).length > 8);
+  return hasPrior ? level : 1;
+}
+
+function materialCoverage(input, items, raw) {
+  const job = boundJob(input);
+  const resumes = (Array.isArray(input.sessions) ? input.sessions : []).map(item => ({
+    text: String(item.resumeExcerpt || ''),
+    basis: item.resumeBasis === 'resume' ? 'resume' : (String(item.resumeExcerpt || '').trim() ? 'summary' : 'none')
+  }));
+  const resumeCorpus = resumes.map(item => item.text).join('\n');
+  const resumeBasis = resumes.some(item => item.basis === 'resume') ? 'resume' : resumes.some(item => item.basis === 'summary') ? 'summary' : 'none';
+  const jobPoints = job.conflict || job.jd.length < 20 ? [] : uniquePoints([...(Array.isArray(raw?.jobPoints) ? raw.jobPoints : []), ...items.map(item => item.jobPoint)], job.jd, 8);
+  const resumePoints = resumeBasis === 'none' ? [] : uniquePoints([...(Array.isArray(raw?.resumePoints) ? raw.resumePoints : []), ...items.map(item => item.resumePoint)], resumeCorpus, 8);
+  const bank = items.filter(item => item.bankQuestion && item.classification === 'job_question');
+  const askedJob = new Set(bank.map(item => item.jobPoint).filter(point => jobPoints.includes(point)));
+  const askedResume = new Set(bank.map(item => item.resumePoint).filter(point => resumePoints.includes(point)));
+  const levels = bank.map(item => item.followUpLevel).filter(level => level >= 1 && level <= 3);
+  const average = levels.length ? Math.round(levels.reduce((sum, level) => sum + level, 0) / levels.length * 10) / 10 : 0;
+  return {
+    multipleJobs: Boolean(job.conflict),
+    resumeBasis,
+    job: { total: jobPoints.length, covered: askedJob.size, asked: [...askedJob], missing: jobPoints.filter(point => !askedJob.has(point)) },
+    resume: { total: resumePoints.length, covered: askedResume.size, asked: [...askedResume], missing: resumePoints.filter(point => !askedResume.has(point)) },
+    followUp: { average, percent: average ? Math.round(average / 3 * 100) : 0, count: levels.length }
   };
 }
 
@@ -540,12 +600,19 @@ async function analyzeInterviewQuestions(input = {}, completeAi) {
     if (!decision || !validateAiDecision(decision, item, corpus).ok) return item;
     const next = { ...item };
     applyDecision(next, decision, corpus);
+    const quote = String(decision.evidenceQuote || '');
+    const resumeText = (input.sessions || []).filter(session => !next.sources?.[0]?.candidateName || session.candidateName === next.sources[0].candidateName).map(session => session.resumeExcerpt || '').join('\n');
+    if (!job.conflict && pointIn(job.jd, decision.jobPoint)) next.jobPoint = cleanPoint(decision.jobPoint);
+    if (pointIn(resumeText, decision.resumePoint)) next.resumePoint = cleanPoint(decision.resumePoint);
+    const bank = next.classification === 'job_question' ? bankQuestionText(decision.normalizedQuestion, quote) : '';
+    if (bank) next.bankQuestion = bank;
+    next.followUpLevel = next.classification === 'job_question' ? followLevel(decision, next) : 0;
     return next;
   });
-  const summary = groundedSentence(raw.summary, corpus);
-  const followUpStyle = groundedSentence(raw.followUpStyle, corpus);
+  const bankCount = result.items.filter(item => item.bankQuestion).length;
+  const summary = bankCount < 2 ? '当前专业问题不足，还不能概括提问偏好' : groundedSentence(raw.summary, corpus);
   if (summary) result.summary = summary;
-  if (followUpStyle) result.followUpStyle = followUpStyle;
+  result.materialCoverage = materialCoverage(input, result.items, raw);
   result.provider = 'deepseek';
   return result;
 }
