@@ -67,6 +67,12 @@ function buildLegacyDocument(candidate = {}, clean) {
   };
 }
 
+function storedRecord(result) {
+  const data = result?.data;
+  if (Array.isArray(data)) return data[0] || null;
+  return data || null;
+}
+
 function mergeStoredCandidate(stored, incoming = {}) {
   const { _id, _openid, ...base } = stored && typeof stored === 'object' ? stored : {};
   const next = { ...base, ...incoming };
@@ -75,4 +81,4 @@ function mergeStoredCandidate(stored, incoming = {}) {
   return next;
 }
 
-module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, mergeStoredCandidate };
+module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, storedRecord, mergeStoredCandidate };
