@@ -426,7 +426,7 @@ async function processTask(task) {
   try {
     const provider = createProvider(resolveEngine(claimed.engine));
     const sourcePath = await downloadParts(claimed.parts || [], directory);
-    const duration = await probeDuration(sourcePath);
+    let duration = await probeDuration(sourcePath);
     await updateTask(claimed, {
       status: 'converting',
       sourceBytes: (await fs.stat(sourcePath)).size,
@@ -437,8 +437,16 @@ async function processTask(task) {
       normalize: provider.requiresNormalizedWav === true,
       duration
     });
+    // MediaRecorder WebM files often omit duration metadata, so probing the
+    // original container can return 0. Baidu normalization produces a regular
+    // WAV file whose duration is reliable; probe it again so short recordings
+    // use the low-latency short-audio API instead of the long-audio fallback.
+    if (duration <= 0 && prepared.slices[0]?.path) {
+      duration = await probeDuration(prepared.slices[0].path);
+    }
     await updateTask(claimed, {
       status: 'transcribing',
+      durationSeconds: duration,
       segmentSeconds: prepared.segmentSeconds,
       segmentCount: prepared.slices.length
     });
