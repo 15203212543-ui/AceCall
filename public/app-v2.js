@@ -593,6 +593,53 @@ function navigate(view, updateHash = true) {
   ensureDeferredViewData(view);
   renderCurrent();
   syncRecordingDock();
+  if (skipEnteredViewRefresh) { skipEnteredViewRefresh = false; return; }
+  void refreshEnteredView(view);
+}
+
+const CASE_REFRESH_VIEWS = new Set(['dashboard', 'inbox', 'candidates', 'talentMarket', 'recruitmentAnalysis']);
+let enteredViewSerial = 0;
+let skipEnteredViewRefresh = false;
+
+function retainLoadedCase(previous, incoming) {
+  if (!previous) return incoming;
+  const next = { ...incoming };
+  for (const key of ['preparation', 'transcript', 'communicationSummary', 'report', 'resume', 'consentConfirmed', 'callRecording']) {
+    if (previous[key] && (next[key] == null || next[key] === '')) next[key] = previous[key];
+  }
+  return next;
+}
+
+async function refreshEnteredView(view) {
+  if (!REMOTE_BACKEND) return;
+  const serial = ++enteredViewSerial;
+  const stillHere = () => serial === enteredViewSerial && app.view === view;
+  try {
+    if (CASE_REFRESH_VIEWS.has(view)) {
+      const response = await authenticatedFetch(apiUrl('/api/cases'));
+      if (!stillHere()) return;
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      const previous = new Map(app.cases.map(item => [item.id, item]));
+      app.cases = (data.cases || []).filter(isMeaningfulCandidate).map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+      if (app.remoteState) app.remoteState.cases = app.cases;
+      localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
+      if (stillHere()) renderCurrent();
+      return;
+    }
+    if (view === 'jobs') {
+      const response = await authenticatedFetch(apiUrl('/api/jobs'), { timeoutMs: 60000 });
+      if (!stillHere()) return;
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      app.jobs = data.jobs || [];
+      if (app.remoteState) app.remoteState.jobs = app.jobs;
+      localStorage.setItem(JOBS_KEY, JSON.stringify(app.jobs));
+      if (stillHere()) renderCurrent();
+    }
+  } catch (error) {
+    console.warn('[AceCall view refresh]', error);
+  }
 }
 
 function ensureDeferredViewData(view) {
@@ -2382,7 +2429,7 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关没有放行这次请求，请稍后重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','screeningLoadFailed','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}

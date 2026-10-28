@@ -1,4 +1,4 @@
-const { extractPhone } = require('./resume-text');
+const { extractPhone, isPlausibleCandidateName } = require('./resume-text');
 
 const CONFIDENCE = { explicit_field: 0.95, context_inference: 0.45, filename_pattern: 0.7, layout_inference: 0.6 };
 
@@ -6,7 +6,7 @@ function proposeNameCandidates({ labeled = '', contextual = '', fromFile = '', f
   const found = [];
   const add = (value, source, basis) => {
     const name = String(value || '').trim();
-    if (!name || found.some(item => item.value === name)) return;
+    if (!isPlausibleCandidateName(name) || found.some(item => item.value === name)) return;
     found.push({ value: name, source, confidenceBasis: basis, confidence: CONFIDENCE[basis], quote: name });
   };
   add(labeled, '简历姓名字段', 'explicit_field');
@@ -17,9 +17,15 @@ function proposeNameCandidates({ labeled = '', contextual = '', fromFile = '', f
 }
 
 function chooseDisplayedName(candidates = []) {
-  const top = candidates[0];
+  const usable = candidates.filter(item => isPlausibleCandidateName(item.value));
+  const filename = usable.find(item => item.confidenceBasis === 'filename_pattern');
+  const ranked = usable.map(item => {
+    if (filename && item.value !== filename.value && item.confidence < 0.9) return { ...item, confidence: Math.min(item.confidence, 0.4) };
+    return item;
+  }).sort((left, right) => right.confidence - left.confidence);
+  const top = ranked[0];
   if (!top) return { candidateName: '', candidateNameStatus: '待确认', candidateNameSource: '' };
-  const second = candidates[1];
+  const second = ranked[1];
   const recognized = top.confidence >= 0.9 && (!second || top.confidence - second.confidence >= 0.15);
   return { candidateName: top.value, candidateNameStatus: recognized ? '已识别' : '待确认', candidateNameSource: top.source };
 }
