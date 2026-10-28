@@ -3,6 +3,7 @@ import { attachInterviewerRuntime, renderInterviewers, renderInterviewerFollowup
 import { recordingDockVisible, recordingOnCallPage, recordingStatusLabel } from './recording-session.mjs?v=__ACE_CALL_BUILD__';
 import { industryNewsMarkup } from './industry-news-cards.mjs?v=__ACE_CALL_BUILD__';
 import { captureSourceLabel, historyEvents } from './history-events.mjs?v=__ACE_CALL_BUILD__';
+import { analyzeCandidateBackground } from './candidate-background.mjs?v=__ACE_CALL_BUILD__';
 
 // auth-session.js 以普通脚本形式先于本文件加载，负责判定匿名身份。
 // 匿名令牌（publishable key 自动生成的 scope=anonymous / sub=anon）会被网关
@@ -1541,13 +1542,19 @@ function renderDetailTab(item) {
   bindDetailActions(body);
 }
 
+function backgroundLevel(title, name, labels) {
+  const tags = (labels || []).map(label => `<b class="profile-chip neutral">${escapeHtml(label)}</b>`).join('');
+  return `<div class="profile-level"><span>${title}</span><strong>${escapeHtml(name || '未识别')}</strong>${name ? (tags || '<b class="profile-chip muted">未收录</b>') : ''}</div>`;
+}
 function talentProfilePanel(item) {
-  const profile = inferTalentProfile(item); const quality = resumeQuality(item); const text = item.resume || '';
+  const quality = resumeQuality(item);
+  const background = analyzeCandidateBackground(item);
   const evidence = [];
-  if (profile.competitor === true) evidence.push('从最近经历识别到证券同业公司，结合岗位行业判断为直接竞品');
-  if (profile.major === true) evidence.push('从简历经历识别到行业头部公司名称');
-  if (profile.school === true) evidence.push('从教育经历识别到 985/211/双一流学校');
-  return `<section class="surface talent-profile-panel"><div class="surface-head"><div><h2>人才画像</h2><p class="surface-subtitle">优先归类最近 1-2 段经历，标签可追溯</p></div><span>AI识别 · 允许人工修正</span></div><div class="surface-body"><div class="profile-grid"><div class="profile-fact"><span>公司层级</span><div>${profile.competitor === true ? '<b class="profile-chip positive">直接竞品</b>' : '<b class="profile-chip muted">待确认</b>'}${profile.major === true ? '<b class="profile-chip accent">行业前 5</b>' : ''}</div></div><div class="profile-fact"><span>学校层级</span><div>${profile.school === true ? '<b class="profile-chip neutral">985/211/双一流</b>' : '<b class="profile-chip muted">待确认</b>'}</div></div><div class="profile-fact"><span>资料质量</span><div><b class="quality quality-${quality.level}">${quality.label}</b>${quality.missing ? `<small>缺少：${escapeHtml(quality.missing)}</small>` : ''}</div></div><div class="profile-fact"><span>Moka状态</span><div><b class="profile-chip muted">${escapeHtml(mokaStatusLabel(item))}</b></div></div></div><div class="profile-evidence"><strong>识别依据</strong><span>${escapeHtml(evidence.join('；') || '暂未识别到可确认的公司或学校标签，未知信息不会强行归类。')}</span></div></div></section>`;
+  if (background.company) evidence.push(`最近任职公司为${background.company}${background.industry ? `，行业识别为${background.industry}` : '，行业未识别'}`);
+  if (background.bachelor) evidence.push(`本科毕业于${background.bachelor.name}${background.bachelor.labels.length ? `（${background.bachelor.labels.join('、')}）` : ''}`);
+  if (background.master) evidence.push(`硕士毕业于${background.master.name}${background.master.labels.length ? `（${background.master.labels.join('、')}）` : ''}`);
+  const companyTags = background.company ? `${background.industry ? `<b class="profile-chip accent">${escapeHtml(background.industry)}</b>` : '<b class="profile-chip muted">行业未识别</b>'}` : '';
+  return `<section class="surface talent-profile-panel"><div class="surface-head"><div><h2>人才画像</h2><p class="surface-subtitle">最近一家任职公司，以及本科和硕士毕业院校</p></div><span>简历识别</span></div><div class="surface-body"><div class="profile-grid"><div class="profile-fact"><span>公司层级</span><div class="profile-level"><strong>${escapeHtml(background.company || '未识别')}</strong>${companyTags}</div></div><div class="profile-fact"><span>学校层级</span><div>${backgroundLevel('本科', background.bachelor?.name, background.bachelor?.labels)}${backgroundLevel('硕士', background.master?.name, background.master?.labels)}</div></div><div class="profile-fact"><span>资料质量</span><div><b class="quality quality-${quality.level}">${quality.label}</b>${quality.missing ? `<small>缺少：${escapeHtml(quality.missing)}</small>` : ''}</div></div><div class="profile-fact"><span>Moka状态</span><div><b class="profile-chip muted">${escapeHtml(mokaStatusLabel(item))}</b></div></div></div><div class="profile-evidence"><strong>识别依据</strong><span>${escapeHtml(evidence.join('；') || '简历里还没有识别到最近任职公司或毕业院校。')}</span></div></div></section>`;
 }
 
 function overviewTab(item) {
