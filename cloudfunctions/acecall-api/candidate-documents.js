@@ -73,6 +73,13 @@ function storedRecord(result) {
   return data || null;
 }
 
+function recordInTenant(result, tenantId = '') {
+  const record = storedRecord(result);
+  if (!record) return null;
+  if (tenantId && record.tenantId && record.tenantId !== tenantId) return null;
+  return record;
+}
+
 function mergeStoredCandidate(stored, incoming = {}) {
   const { _id, _openid, ...base } = stored && typeof stored === 'object' ? stored : {};
   const next = { ...base, ...incoming };
@@ -81,4 +88,4 @@ function mergeStoredCandidate(stored, incoming = {}) {
   return next;
 }
 
-module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, storedRecord, mergeStoredCandidate };
+module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate };

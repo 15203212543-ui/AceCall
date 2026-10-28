@@ -67,7 +67,7 @@ function extractCandidateName(lines = []) {
   const labeled = extractLabeledCandidateName(lines);
   if (labeled) return labeled;
   for (const line of lines.slice(0, 30)) {
-    if (isNameNoise(line) || /@|1[3-9]\d{9}|\d{2,4}[-/.年]/.test(line)) continue;
+    if (!isNameHeading(line) || isNameNoise(line) || /@|1[3-9]\d{9}|\d{2,4}[-/.年]/.test(line)) continue;
     const chinese = [...line.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(item => item[0]);
     const candidate = chinese.reverse().find(isPlausibleCandidateName);
     if (candidate) return normalizeCandidateName(candidate);
@@ -86,6 +86,7 @@ function extractContextualCandidateName(lines = []) {
     const context = lines.slice(start, end).join(' ');
     if (!contactPattern.test(context)) continue;
     const source = lines[index];
+    if (!isNameHeading(source)) continue;
     const chinese = [...source.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(match => match[0]);
     chinese.forEach(candidate => { if (isPlausibleCandidateName(candidate)) candidates.push({ candidate, score: contactPattern.test(source) ? 2 : 1 }); });
   }
@@ -95,7 +96,10 @@ function extractContextualCandidateName(lines = []) {
 
 function extractLabeledCandidateName(lines = []) {
   for (const line of lines.slice(0, 30)) {
-    const labeled = line.match(/(?:姓名|候选人|Candidate|Name)\s*[:：]?\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i)?.[1];
+    const source = String(line || '').trim();
+    const nameField = source.match(/(?:^|[\s|｜])(?:姓名|Name)\s*[:：]?\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i);
+    const markedField = source.match(/(?:^|[\s|｜])(?:候选人|Candidate)\s*[:：]\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i);
+    const labeled = nameField?.[1] || markedField?.[1];
     if (isPlausibleCandidateName(labeled)) return normalizeCandidateName(labeled);
   }
   return '';
@@ -113,13 +117,21 @@ function normalizeCandidateName(value = '') {
   return String(value).replace(/[\u200b\ufeff]/g, '').replace(/^(?:姓名|候选人|Candidate|Name)\s*[:：]?\s*/i, '').replace(/^[\s:：|·•\-]+|[\s,，。；;、]+$/g, '').trim();
 }
 
+function isNameHeading(value = '') {
+  return String(value || '').trim().length > 0 && String(value).trim().length <= 24;
+}
+
+function isNonPersonName(value = '') {
+  return /到岗|入职|离职|在职|沟通|跟进|推动|负责|协助|执行|留痕|合规|核验|招聘|简历|应届|实习|全职|兼职|求职|背景|候选人|岗位|职位|大学|学院|公司|经验|学历|通过|推荐|匹配|确认|完成|目前|合适|数据|完整|要求|全程|已读|未读/.test(String(value || ''));
+}
+
 function isNameNoise(value = '') {
   return /姓名|简历|个人信息|基本信息|工作经历|教育背景|教育经历|项目经历|专业技能|自我评价|求职意向|出生日期|年龄|电话|手机|邮箱|微信|职位|岗位|经验|任职|联系方式|画像|背景信息|建联沟通|绩点|寻访|大学|学院|学校|科技|计算机|公司|集团|招聘|应届生|summary|resume|experience|education/i.test(String(value));
 }
 
 function isPlausibleCandidateName(value = '') {
   const name = normalizeCandidateName(value);
-  if (!name || isNameNoise(name) || /[:：@]|\d{2,}/.test(name)) return false;
+  if (!name || isNameNoise(name) || isNonPersonName(name) || /[:：@]|\d{2,}/.test(name)) return false;
   return /^[\u4e00-\u9fff]{2,4}$/.test(name) || /^[A-Za-z][A-Za-z .'-]{1,40}$/.test(name);
 }
 
@@ -140,5 +152,6 @@ module.exports = {
   extractNameFromFileName,
   normalizeCandidateName,
   isPlausibleCandidateName,
+  isNonPersonName,
   chooseCandidateName
 };

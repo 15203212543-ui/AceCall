@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mergeStoredCandidate, buildLegacyDocument, storedRecord } = require('./candidate-documents');
+const { mergeStoredCandidate, buildLegacyDocument, storedRecord, recordInTenant } = require('./candidate-documents');
 
 test('a later save keeps parsed resume text and the document id', () => {
   const stored = { _id: 'db', resume: '工作经历：负责后端开发', documentId: 'doc_12345678', resumeMeta: { fileName: '演示.pdf', originalFileId: 'cloud://file' }, candidateName: '演示' };
@@ -13,6 +13,15 @@ test('a later save keeps parsed resume text and the document id', () => {
 test('an incoming resume replaces the stored text', () => {
   const saved = mergeStoredCandidate({ resume: '旧正文' }, { resume: '新的工作经历正文' });
   assert.equal(saved.resume, '新的工作经历正文');
+});
+
+test('a linked job is still readable when the driver wraps the document in an array', () => {
+  const job = recordInTenant({ data: [{ tenantId: 'tenant-1', mokaJobId: 'moka-job-1', mokaJobCode: 'MJ005759' }] }, 'tenant-1');
+  assert.equal(job.mokaJobId, 'moka-job-1');
+  assert.equal(job.mokaJobCode, 'MJ005759');
+  assert.equal(recordInTenant({ data: { tenantId: 'tenant-1', mokaJobId: 'direct-job' } }, 'tenant-1').mokaJobId, 'direct-job');
+  assert.equal(recordInTenant({ data: [{ tenantId: 'other', mokaJobId: 'hidden' }] }, 'tenant-1'), null);
+  assert.equal(recordInTenant({ data: [] }, 'tenant-1'), null);
 });
 
 test('a single document read is unwrapped when the driver returns an array', () => {
