@@ -18,9 +18,10 @@ const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-si
 const { listIndustryNews } = require('./industry-news');
 const { prepareTenantInterviewReminders, readInterviewReminders } = require('./interview-reminder');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
-const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, mergeStoredCandidate } = require('./candidate-documents');
+const { presentCandidateForState, presentCaseSummary, presentCaseDetail, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
-const { findDuplicateCandidate } = require('./candidate-dedupe');
+const { findDuplicateCandidate, collapseDuplicateCases, resumeIdentity } = require('./candidate-dedupe');
+const { planMokaLinks } = require('./job-moka-link');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -107,6 +108,8 @@ const server = http.createServer(async (request, response) => {
       '/health': '/api/health',
       '/workspace': '/api/workspace',
       '/state': '/api/state',
+      '/cases': '/api/cases',
+      '/jobs': '/api/jobs',
       '/integrations/moka/status': '/api/integrations/moka/status',
       '/integrations/moka/interviews': '/api/integrations/moka/interviews'
     }[url.pathname];
@@ -161,10 +164,23 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await updateMember(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext(request)));
+    if (request.method === 'GET' && url.pathname === '/api/cases') return sendJson(response, 200, await loadCaseDetails(await getRequestContext(request)));
+    if (request.method === 'GET' && url.pathname === '/api/jobs') return sendJson(response, 200, { jobs: await loadJobCatalog(await getRequestContext(request)) });
     if (request.method === 'GET' && url.pathname === '/api/screenings/texts') return sendJson(response, 200, await loadScreeningTexts(await getRequestContext(request)));
     if (request.method === 'GET' && url.pathname.match(/^\/api\/candidates\/[^/]+\/screening$/)) {
       const id = validateId(url.pathname.split('/')[3]);
       return sendJson(response, 200, await loadCandidateScreening(await getRequestContext(request), id));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/integrations/moka/jobs') {
+      await getRequestContext(request);
+      return sendJson(response, 200, { jobs: await listMokaJobOptions() });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/jobs/moka-links') {
+      return sendJson(response, 200, await linkStoredJobsToMoka(await getRequestContext(request)));
+    }
+    if (request.method === 'PUT' && /^\/api\/jobs\/[^/]+\/moka-link$/.test(url.pathname)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await assignMokaJob(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/jobs/')) {
       const id = validateId(url.pathname.slice('/api/jobs/'.length));
@@ -1242,13 +1258,58 @@ async function loadDocumentText(context, id) {
   };
 }
 
-async function loadState(context) {
+async function listResumeTexts(tenantId) {
   const db = getDatabase();
-  const [jobs, candidatesResult, screeningsResult, rulesResult] = await Promise.all([
-    listTenantJobs(context.tenantId),
+  const documents = [];
+  for (let skip = 0; skip < 2000; skip += 100) {
+    let query = db.collection(COLLECTIONS.documents).where({ tenantId });
+    if (skip) query = query.skip(skip);
+    const result = await query.limit(100).get();
+    const batch = result.data || [];
+    for (const item of batch) {
+      const cleanedText = String(item.cleanedText || '');
+      documents.push({
+        id: item.id || item._id || '',
+        candidateId: item.candidateId || '',
+        cleanedText,
+        rawText: cleanedText.trim() ? '' : String(item.rawText || ''),
+        updatedAt: item.updatedAt || ''
+      });
+    }
+    if (batch.length < 100) break;
+  }
+  return documents;
+}
+
+async function loadCaseDetails(context) {
+  const db = getDatabase();
+  const [candidatesResult, screeningsResult, documents] = await Promise.all([
     db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('createdAt', 'desc').limit(500).get(),
     db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
-    db.collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get()
+    listResumeTexts(context.tenantId)
+  ]);
+  const screenings = new Map();
+  for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
+  const documentsById = new Map();
+  const documentsByCandidate = new Map();
+  for (const document of documents) {
+    if (document.id && !documentsById.has(document.id)) documentsById.set(document.id, document);
+    const current = documentsByCandidate.get(document.candidateId);
+    if (document.candidateId && (!current || String(document.updatedAt) > String(current.updatedAt))) documentsByCandidate.set(document.candidateId, document);
+  }
+  const cases = (candidatesResult.data || []).filter(isMeaningfulCandidateRecord).map(candidate => {
+    const screening = screenings.get(candidate.id || candidate._id) || {};
+    const document = documentsById.get(candidate.documentId) || documentsByCandidate.get(candidate.id || candidate._id) || null;
+    return cleanDocument(presentCaseDetail(candidate, screening, document));
+  });
+  return { cases: collapseDuplicateCases(cases), bodiesIncluded: true };
+}
+
+async function loadCaseSummaries(context) {
+  const db = getDatabase();
+  const [candidatesResult, screeningsResult] = await Promise.all([
+    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('createdAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get()
   ]);
   const screenings = new Map();
   for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
@@ -1256,7 +1317,22 @@ async function loadState(context) {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument(presentCaseSummary(candidate, screening));
   });
-  return { jobs: jobs.map(job => ({ ...job, matchingEligible: isAutomaticAssignmentJob(job) })), cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+  return collapseDuplicateCases(cases);
+}
+
+async function loadJobCatalog(context) {
+  const jobs = await listTenantJobs(context.tenantId);
+  return jobs.map(job => ({ ...job, matchingEligible: isAutomaticAssignmentJob(job) }));
+}
+
+async function loadState(context) {
+  const db = getDatabase();
+  const [jobs, cases, rulesResult] = await Promise.all([
+    loadJobCatalog(context),
+    loadCaseSummaries(context),
+    db.collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get()
+  ]);
+  return { jobs, cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
 }
 
 function isMeaningfulCandidateRecord(candidate = {}) {
@@ -1269,11 +1345,11 @@ function isMeaningfulCandidateRecord(candidate = {}) {
 async function loadCandidateScreening(context, id) {
   const db = getDatabase();
   const candidateResult = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
-  const candidate = candidateResult.data;
+  const candidate = storedRecord(candidateResult);
   if (!candidate) throw serviceError('Not found', 404);
   assertSameTenant(candidate, context);
   const screeningResult = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
-  const screening = screeningResult.data || {};
+  const screening = storedRecord(screeningResult) || {};
   if (screening.tenantId) assertSameTenant(screening, context);
   return {
     id,
@@ -1319,12 +1395,105 @@ async function listTenantJobs(tenantId) {
   return dedupeStoredJobs(jobs).map(cleanDocument);
 }
 
+async function claimCandidateIdentity(db, tenantId, candidateId, incoming) {
+  const identity = resumeIdentity(incoming);
+  const key = identity.phone || identity.email;
+  if (!key) return '';
+  const claimId = `k${crypto.createHash('sha1').update(`${tenantId}|${key}`).digest('hex')}`.slice(0, 40);
+  const ref = db.collection('acecall_candidate_keys').doc(claimId);
+  const currentResult = await ref.get().catch(() => ({ data: null }));
+  const current = Array.isArray(currentResult.data) ? currentResult.data[0] : currentResult.data;
+  if (current?.candidateId && current.candidateId !== candidateId) return current.candidateId;
+  await ref.set({ tenantId, candidateId, createdAt: new Date().toISOString() });
+  const confirmedResult = await ref.get().catch(() => ({ data: null }));
+  const confirmed = Array.isArray(confirmedResult.data) ? confirmedResult.data[0] : confirmedResult.data;
+  if (confirmed?.candidateId && confirmed.candidateId !== candidateId) return confirmed.candidateId;
+  return '';
+}
+
+async function requestMokaJobPage(client, hireMode, offset) {
+  try {
+    const response = await client.request('/api-platform/v1/jobs/getJobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hireMode, limit: 100, offset, status: 'open' })
+    });
+    const jobs = response.body?.data?.jobs;
+    if (!response.ok || !Array.isArray(jobs)) return null;
+    return {
+      total: Number(response.body.data?.total || jobs.length),
+      jobs: jobs.map(job => ({ id: String(job.id || '').trim(), name: String(job.title || job.name || '').trim(), code: String(job.mjCode || '').trim() })).filter(job => job.id && job.name)
+    };
+  } catch { return null; }
+}
+
+async function listOpenMokaJobs(client, hireMode) {
+  const first = await requestMokaJobPage(client, hireMode, 0);
+  if (!first?.jobs.length) return [];
+  const jobs = [...first.jobs];
+  const pageSize = first.jobs.length;
+  const offsets = [];
+  for (let offset = pageSize; offset < first.total; offset += pageSize) offsets.push(offset);
+  for (let index = 0; index < offsets.length; index += 8) {
+    const pages = await Promise.all(offsets.slice(index, index + 8).map(offset => requestMokaJobPage(client, hireMode, offset)));
+    for (const page of pages) if (page) jobs.push(...page.jobs);
+  }
+  return jobs;
+}
+
+async function listMokaJobOptions() {
+  const client = createMokaClient();
+  if (!client.config.baseUrl || !client.config.apiKey) return [];
+  const collected = [];
+  for (const hireMode of ['social', 'campus']) collected.push(...await listOpenMokaJobs(client, hireMode));
+  const seen = new Set();
+  return collected.filter(job => {
+    if (seen.has(job.id)) return false;
+    seen.add(job.id);
+    return true;
+  });
+}
+
+async function linkStoredJobsToMoka(context) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const mokaJobs = await listMokaJobOptions();
+  const jobs = await listTenantJobs(context.tenantId);
+  const links = planMokaLinks(jobs, mokaJobs);
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  for (const link of links) {
+    await db.collection(COLLECTIONS.jobs).doc(link.id).update({ mokaJobId: link.mokaJobId, mokaJobCode: link.mokaJobCode || '', syncedFromMokaAt: now, updatedAt: now });
+  }
+  return { ok: true, linked: links, mokaJobs };
+}
+
+async function assignMokaJob(context, id, input = {}) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const mokaJobId = String(input.mokaJobId || '').trim().slice(0, 80);
+  if (!mokaJobId) throw serviceError('请选择要关联的 Moka 岗位', 400);
+  const db = getDatabase();
+  const existingResult = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+  const existing = Array.isArray(existingResult.data) ? existingResult.data[0] : existingResult.data;
+  if (!existing) throw serviceError('Not found', 404);
+  assertSameTenant(existing, context);
+  const options = await listMokaJobOptions();
+  if (!options.length) throw serviceError('暂时没有拉到 Moka 岗位，请稍后重试', 503);
+  const selected = options.find(job => String(job.id) === mokaJobId);
+  if (!selected) throw serviceError('这个 Moka 岗位不在当前可关联列表中', 400);
+  const now = new Date().toISOString();
+  await db.collection(COLLECTIONS.jobs).doc(id).update({ mokaJobId, mokaJobCode: selected.code || '', syncedFromMokaAt: now, updatedAt: now });
+  return { ok: true, id, mokaJobId };
+}
+
 async function saveJob(context, id, input) {
   requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
   await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
-  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']);
+  const existingJobResult = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+  const existingJob = Array.isArray(existingJobResult.data) ? existingJobResult.data[0] : existingJobResult.data;
+  const { _id, _openid, ...storedJob } = existingJob && typeof existingJob === 'object' ? existingJob : {};
+  const job = { ...storedJob, ...pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'mokaJobCode', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']) };
   if (input.confirmProfile) {
     const confirmed = confirmJobProfile(draftJobProfile({ ...input, profile: input.profile }), context.uid, now);
     job.profile = confirmed;
@@ -1374,10 +1543,11 @@ async function saveCandidate(context, id, input) {
   if (!storedCandidate) {
     const tenantCandidates = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
     const duplicate = findDuplicateCandidate(incoming, tenantCandidates.data || [], id);
-    if (duplicate) {
-      const canonicalCandidateId = duplicate.candidate.id || duplicate.candidate._id;
-      await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate.reason });
-      return { ok: true, duplicate: true, canonicalCandidateId, duplicateReason: duplicate.reason };
+    const claimedBy = duplicate ? '' : await claimCandidateIdentity(db, context.tenantId, id, incoming);
+    const canonicalCandidateId = duplicate ? (duplicate.candidate.id || duplicate.candidate._id) : claimedBy;
+    if (canonicalCandidateId) {
+      await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate?.reason || 'concurrent-upload' });
+      return { ok: true, duplicate: true, canonicalCandidateId, duplicateReason: duplicate?.reason || 'concurrent-upload' };
     }
   }
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);
@@ -1487,7 +1657,7 @@ async function resolveMokaSync(context, previousSync, record) {
   const attributed = result => attributeMokaOperator(result, actor, operatorEmail);
   try {
     const jobResult = record.jobId ? await getDatabase().collection(COLLECTIONS.jobs).doc(record.jobId).get().catch(() => ({ data: null })) : { data: null };
-    const job = jobResult.data && (!jobResult.data.tenantId || jobResult.data.tenantId === context.tenantId) ? jobResult.data : null;
+    const job = recordInTenant(jobResult, context.tenantId);
     let resumeFile = null;
     const fileId = record.resumeMeta?.originalFileId;
     if (fileId) {

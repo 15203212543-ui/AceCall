@@ -24,6 +24,20 @@ function presentCaseSummary(candidate = {}, screening = {}) {
   return { ...view, ...screeningFlags(screening) };
 }
 
+function presentCaseDetail(candidate = {}, screening = {}, document = null) {
+  const view = presentCaseSummary(candidate, screening);
+  const resume = String(document?.cleanedText || document?.rawText || candidate.resume || '');
+  view.resume = resume;
+  if (resume.trim()) view.resumeOmitted = false;
+  view.preparation = screening.preparation || null;
+  view.transcript = String(screening.transcript || '');
+  view.communicationSummary = screening.communicationSummary || null;
+  view.report = screening.report || null;
+  view.callRecording = screening.callRecording || null;
+  if (screening.consentConfirmed) view.consentConfirmed = true;
+  return view;
+}
+
 function presentCandidateForState(candidate = {}) {
   const resume = String(candidate.resume || '');
   const view = { ...candidate };
@@ -67,6 +81,19 @@ function buildLegacyDocument(candidate = {}, clean) {
   };
 }
 
+function storedRecord(result) {
+  const data = result?.data;
+  if (Array.isArray(data)) return data[0] || null;
+  return data || null;
+}
+
+function recordInTenant(result, tenantId = '') {
+  const record = storedRecord(result);
+  if (!record) return null;
+  if (tenantId && record.tenantId && record.tenantId !== tenantId) return null;
+  return record;
+}
+
 function mergeStoredCandidate(stored, incoming = {}) {
   const { _id, _openid, ...base } = stored && typeof stored === 'object' ? stored : {};
   const next = { ...base, ...incoming };
@@ -75,4 +102,4 @@ function mergeStoredCandidate(stored, incoming = {}) {
   return next;
 }
 
-module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, mergeStoredCandidate };
+module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, presentCaseDetail, screeningFlags, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate };

@@ -9,7 +9,7 @@ const { once } = require('node:events');
 const { createProvider } = require('./providers');
 
 const PORT = Number(process.env.PORT || 9000);
-const INTERVAL_MS = Math.max(5_000, Number(process.env.WORKER_INTERVAL_MS || 15_000));
+const INTERVAL_MS = Math.max(5_000, Number(process.env.WORKER_INTERVAL_MS || 5_000));
 const COLLECTION = 'acecall_transcription_tasks';
 const WORKER_ID = process.env.WORKER_ID || `worker-${crypto.randomUUID()}`;
 // CloudBase's uploadFile only accepts a Buffer, so a single uploaded slice must

@@ -134,6 +134,26 @@ test('falls back to candidate names embedded in resume file names', () => {
   assert.equal(extractNameFromFileName('CV_for_Lo_Wai_Keung_cn.pdf'), 'Lo Wai Keung');
 });
 
+test('does not treat a hiring result in a sentence as the candidate name', () => {
+  const sentence = '推动23名候选人顺利到岗；全程按合规要求执行';
+  assert.equal(extractLabeledCandidateName([sentence]), '');
+  assert.equal(extractCandidateName([sentence]), '');
+  assert.equal(isPlausibleCandidateName('顺利到岗'), false);
+  assert.equal(isPlausibleCandidateName('通过'), false);
+  assert.equal(extractLabeledCandidateName(['姓名：李四']), '李四');
+  assert.equal(extractLabeledCandidateName(['候选人：周宁']), '周宁');
+  const { proposeNameCandidates, chooseDisplayedName } = require('../cloudfunctions/acecall-api/resume-profile');
+  const displayed = chooseDisplayedName(proposeNameCandidates({
+    labeled: '顺利到岗',
+    contextual: '通过',
+    fromFile: extractNameFromFileName('【人力管培_北京 10-15K】马佳驹 26年应届生.pdf'),
+    fromBody: '留痕'
+  }));
+  assert.equal(displayed.candidateName, '马佳驹');
+  assert.equal(displayed.candidateNameStatus, '待确认');
+  assert.equal(displayed.candidateNameSource, '文件名');
+});
+
 test('rejects resume section noise and uses a valid fallback name', () => {
   for (const noise of ['工作经历', '教育背景', '出生日期：95年08月25日', '建联沟通', '画像', '背景信息', '绩点前', '寻访', '武汉科技大学 本科 计算机科学与技术']) {
     assert.equal(isPlausibleCandidateName(noise), false);

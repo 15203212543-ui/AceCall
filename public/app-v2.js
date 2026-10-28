@@ -81,6 +81,7 @@ let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
+const TRANSCRIPTION_STATUS_POLL_MS = 2000;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 const RECORDING_SESSION_KEY = 'acecall.recordingSession';
@@ -123,6 +124,7 @@ function bindShell() {
   $$('[data-close]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
   $('#candidateForm').addEventListener('submit', createCandidate);
   $('#jobForm').addEventListener('submit', saveJob);
+  $('#mokaLinkForm').addEventListener('submit', saveMokaLink);
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
@@ -591,6 +593,54 @@ function navigate(view, updateHash = true) {
   ensureDeferredViewData(view);
   renderCurrent();
   syncRecordingDock();
+  if (skipEnteredViewRefresh) { skipEnteredViewRefresh = false; return; }
+  void refreshEnteredView(view);
+}
+
+const CASE_REFRESH_VIEWS = new Set(['dashboard', 'inbox', 'candidates', 'talentMarket', 'recruitmentAnalysis']);
+let enteredViewSerial = 0;
+let skipEnteredViewRefresh = false;
+
+function retainLoadedCase(previous, incoming) {
+  if (!previous) return incoming;
+  const next = { ...incoming };
+  for (const key of ['preparation', 'transcript', 'communicationSummary', 'report', 'resume', 'consentConfirmed', 'callRecording']) {
+    if (previous[key] && (next[key] == null || next[key] === '')) next[key] = previous[key];
+  }
+  return next;
+}
+
+async function refreshEnteredView(view) {
+  if (!REMOTE_BACKEND) return;
+  const serial = ++enteredViewSerial;
+  const stillHere = () => serial === enteredViewSerial && app.view === view;
+  try {
+    if (CASE_REFRESH_VIEWS.has(view)) {
+      const response = await authenticatedFetch(apiUrl('/api/cases'), { timeoutMs: 60000 });
+      if (!stillHere()) return;
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      const previous = new Map(app.cases.map(item => [item.id, item]));
+      app.cases = (data.cases || []).filter(isMeaningfulCandidate).map(item => data.bodiesIncluded ? item : retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+      if (data.bodiesIncluded) app.analysisTextsLoaded = true;
+      if (app.remoteState) app.remoteState.cases = app.cases;
+      localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
+      if (stillHere()) renderCurrent();
+      return;
+    }
+    if (view === 'jobs') {
+      const response = await authenticatedFetch(apiUrl('/api/jobs'), { timeoutMs: 60000 });
+      if (!stillHere()) return;
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      app.jobs = data.jobs || [];
+      if (app.remoteState) app.remoteState.jobs = app.jobs;
+      localStorage.setItem(JOBS_KEY, JSON.stringify(app.jobs));
+      if (stillHere()) renderCurrent();
+    }
+  } catch (error) {
+    console.warn('[AceCall view refresh]', error);
+  }
 }
 
 function ensureDeferredViewData(view) {
@@ -1458,6 +1508,7 @@ function renderJobs() {
   const library = document.createElement('div'); library.className = 'surface rules-library'; library.innerHTML = `<div class="surface-head"><h2>团队规则库</h2><span>共享给团队成员</span></div><div class="surface-body"><div class="rule-add"><input id="teamRuleInput" placeholder="添加常用核验规则"><button class="secondary" id="addTeamRule" type="button">添加规则</button></div><div class="rule-list">${teamRules.map((rule, index) => `<button class="rule-chip" data-use-rule="${index}" type="button">＋ ${escapeHtml(rule)}</button>`).join('') || '<span class="muted-text">还没有共享规则</span>'}</div></div>`; $('#jobsView .page').append(library);
   $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
   filterJobs();
+  void syncMokaJobLinks();
 }
 
 function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) { teamRules.push(value); const rule = { id: crypto.randomUUID(), content: value, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); } localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
@@ -1465,7 +1516,7 @@ function useTeamRule(index) { const value = teamRules[index]; if (!value) return
 
 function jobCards(jobs) {
   if (!jobs.length) return '<div class="surface empty">暂无岗位，请先建立岗位标准。</div>';
-  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
+  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; const linked = Boolean(String(job.mokaJobId || '').trim()); const mokaCode = String(job.mokaJobCode || '').trim(); return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span> <span class="job-status ${linked ? 'linked' : 'unlinked'}">${linked ? `已关联${mokaCode ? ` ${escapeHtml(mokaCode)}` : ''}` : '未关联'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions">${linked ? '' : `<button class="link-action" data-link-moka="${job.id}" type="button">手动关联</button>`}<button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
 }
 
 function filterJobs(resetPage) {
@@ -1482,7 +1533,47 @@ function filterJobs(resetPage) {
   $$('#jobBoard [data-job-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; jobPage = Number(button.dataset.jobPage) || 1; filterJobs(); }));
 }
 
-function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); }
+function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); root.querySelectorAll('[data-link-moka]').forEach(button => button.addEventListener('click', () => openMokaLinkDialog(button.dataset.linkMoka))); }
+let mokaLinkSync = null;
+async function syncMokaJobLinks() {
+  if (!REMOTE_BACKEND || mokaLinkSync) return mokaLinkSync;
+  mokaLinkSync = (async () => {
+    const response = await authenticatedFetch(apiUrl('/api/jobs/moka-links'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', timeoutMs: 60000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { mokaLinkSync = null; return; }
+    app.mokaJobs = data.mokaJobs || [];
+    let changed = false;
+    for (const link of data.linked || []) {
+      const job = app.jobs.find(item => item.id === link.id);
+      if (job && (job.mokaJobId !== link.mokaJobId || job.mokaJobCode !== link.mokaJobCode)) { job.mokaJobId = link.mokaJobId; job.mokaJobCode = link.mokaJobCode || ''; changed = true; }
+    }
+    if (changed && app.view === 'jobs') filterJobs();
+  })().catch(error => { mokaLinkSync = null; console.warn('[AceCall moka jobs]', error); });
+  return mokaLinkSync;
+}
+function openMokaLinkDialog(id) {
+  const job = app.jobs.find(item => item.id === id); if (!job) return;
+  const used = new Set(app.jobs.filter(item => item.id !== id && item.mokaJobId).map(item => item.mokaJobId));
+  const options = app.mokaJobs || [];
+  $('#mokaLinkJobId').value = id;
+  $('#mokaLinkJobName').textContent = job.name;
+  $('#mokaLinkSelect').innerHTML = options.length ? options.map(item => `<option value="${escapeHtml(item.id)}" ${used.has(item.id) ? 'disabled' : ''}>${escapeHtml(item.name)}${item.code ? ` · ${escapeHtml(item.code)}` : ''}${used.has(item.id) ? '（已关联其他岗位）' : ''}</option>`).join('') : '<option value="">暂时没有拉到 Moka 岗位</option>';
+  $('#mokaLinkDialog').showModal();
+}
+async function saveMokaLink(event) {
+  event.preventDefault();
+  const id = $('#mokaLinkJobId').value;
+  const mokaJobId = $('#mokaLinkSelect').value;
+  if (!mokaJobId) return toast('请选择要关联的 Moka 岗位');
+  const response = await authenticatedFetch(apiUrl(`/api/jobs/${encodeURIComponent(id)}/moka-link`), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mokaJobId }), timeoutMs: 60000 });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return toast(result.error || '关联失败');
+  const job = app.jobs.find(item => item.id === id);
+  if (job) { job.mokaJobId = mokaJobId; job.mokaJobCode = (app.mokaJobs || []).find(item => item.id === mokaJobId)?.code || ''; }
+  $('#mokaLinkDialog').close();
+  if (app.view === 'jobs') filterJobs();
+  toast('已关联 Moka 岗位');
+}
 async function toggleJobStatus(id) {
   const job = app.jobs.find(item => item.id === id); if (!job) return;
   const closing = job.status !== 'closed';
@@ -1557,8 +1648,13 @@ function talentProfilePanel(item) {
   return `<section class="surface talent-profile-panel"><div class="surface-head"><div><h2>人才画像</h2><p class="surface-subtitle">最近一家任职公司，以及本科和硕士毕业院校</p></div><span>简历识别</span></div><div class="surface-body"><div class="profile-grid"><div class="profile-fact"><span>公司层级</span><div class="profile-level"><strong>${escapeHtml(background.company || '未识别')}</strong>${companyTags}</div></div><div class="profile-fact"><span>学校层级</span><div>${backgroundLevel('本科', background.bachelor?.name, background.bachelor?.labels)}${backgroundLevel('硕士', background.master?.name, background.master?.labels)}</div></div><div class="profile-fact"><span>资料质量</span><div><b class="quality quality-${quality.level}">${quality.label}</b>${quality.missing ? `<small>缺少：${escapeHtml(quality.missing)}</small>` : ''}</div></div><div class="profile-fact"><span>Moka状态</span><div><b class="profile-chip muted">${escapeHtml(mokaStatusLabel(item))}</b></div></div></div><div class="profile-evidence"><strong>识别依据</strong><span>${escapeHtml(evidence.join('；') || '简历里还没有识别到最近任职公司或毕业院校。')}</span></div></div></section>`;
 }
 
+function screeningRecordPending(item) {
+  if (!item || item.screeningLoadFailed) return false;
+  return (item.hasPreparation && !item.preparation) || (item.hasSummary && !item.communicationSummary) || (item.hasReport && !item.report) || (item.hasTranscript && !item.transcript);
+}
 function overviewTab(item) {
   const prep = item.preparation;
+  if (!prep && screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
   if (!prep) return `<div class="surface empty">尚未生成电话准备。<br><button class="primary" style="margin-top:12px" data-generate-prep>生成电话准备</button></div>`;
   const summary = typeof prep.summary === 'string' ? { headline: prep.summary } : prep.summary || {};
   const matching = item.matching || {};
@@ -1566,6 +1662,7 @@ function overviewTab(item) {
 }
 
 function callTab(item) {
+  if (screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
@@ -2027,7 +2124,7 @@ async function transcribeRecording(file) {
 
 async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
   if (!taskId || attempts > 100) return;
-  await sleep(3000);
+  await sleep(TRANSCRIPTION_STATUS_POLL_MS);
   if (recordingDraft.taskId !== taskId) return;
   const ownerId = recordingDraft.candidateId;
   const viewing = app.view === 'candidate' && app.candidateId === ownerId && app.detailTab === 'call';
@@ -2234,7 +2331,7 @@ function applySelectedTeamRule() { const index = Number($('#jobRuleLibraryInput'
 function saveCurrentRuleToLibrary() { const value = $('#jobRulesInput').value.trim(); if (!value) return toast('请先填写初筛规则'); const lines = value.split(/\n+/).map(item => item.trim()).filter(Boolean); const added = lines.filter(item => !teamRules.includes(item)); if (!added.length) return toast('规则库中已存在这些规则'); added.forEach(item => { teamRules.push(item); const rule = { id: crypto.randomUUID(), content: item, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); }); localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); populateRuleLibrary(); renderJobs(); toast(`已共享 ${added.length} 条规则`); }
 
 function saveJob(event) {
-  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), category:$('#jobCategoryInput').value.trim(), location:$('#jobLocationInput').value.trim(), department:$('#jobDepartmentInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), status:old?.status === 'closed' ? 'closed' : 'active', createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
+  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), category:$('#jobCategoryInput').value.trim(), location:$('#jobLocationInput').value.trim(), department:$('#jobDepartmentInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), status:old?.status === 'closed' ? 'closed' : 'active', mokaJobId:old?.mokaJobId || '', mokaJobCode:old?.mokaJobCode || '', createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
 }
 
 async function parseResume(file) {
@@ -2333,13 +2430,13 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关没有放行这次请求，请稍后重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
-function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}
+function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','screeningLoadFailed','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
 function mergeScreeningBody(item, body = {}){if(!item||!body)return;if(body.preparation)item.preparation=body.preparation;if(body.transcript)item.transcript=body.transcript;if(body.communicationSummary)item.communicationSummary=body.communicationSummary;if(body.report)item.report=body.report;if(body.consentConfirmed)item.consentConfirmed=true;if(body.callRecording)item.callRecording=body.callRecording;}
-async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;const missing=(item.hasTranscript&&!item.transcript)||(item.hasSummary&&!item.communicationSummary)||(item.hasReport&&!item.report)||(item.hasPreparation&&!item.preparation);if(!missing)return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok)return;const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}catch(error){console.warn('[AceCall candidate screening]',error);}finally{item.screeningLoading=false;}}
+async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;if(!screeningRecordPending(item))return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok){item.screeningLoadFailed=true;if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();return;}const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}catch(error){item.screeningLoadFailed=true;console.warn('[AceCall candidate screening]',error);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}finally{item.screeningLoading=false;}}
 let analysisTextsInFlight=null;
 async function loadAnalysisTexts(force=false){if(!REMOTE_BACKEND)return;if(app.analysisTextsLoaded&&!force)return;if(analysisTextsInFlight&&!force)return analysisTextsInFlight;analysisTextsInFlight=(async()=>{const response=await authenticatedFetch(apiUrl('/api/screenings/texts'));if(response.status===404)return;const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));const byId=new Map((data.records||[]).map(record=>[record.candidateId,record]));app.cases.forEach(item=>mergeScreeningBody(item,byId.get(item.id)));app.analysisTextsLoaded=true;if(app.view==='interviewers'){renderInterviewers();renderInterviewerFollowups();}if(app.view==='intelligence')renderIntelligence();})().catch(error=>console.warn('[AceCall screening texts]',error));try{return await analysisTextsInFlight;}finally{analysisTextsInFlight=null;}}
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}

@@ -133,6 +133,16 @@
     </form>
   </dialog>
 
+  <dialog id="mokaLinkDialog" class="modal">
+    <form id="mokaLinkForm" method="dialog">
+      <header><div><small>Moka</small><h2>关联 Moka 岗位</h2></div><button type="button" class="icon-close" data-close="mokaLinkDialog">×</button></header>
+      <input type="hidden" id="mokaLinkJobId">
+      <p id="mokaLinkJobName" class="surface-subtitle"></p>
+      <label><span>对应岗位</span><select id="mokaLinkSelect" required></select></label>
+      <footer><button type="button" class="secondary" data-close="mokaLinkDialog">取消</button><button type="submit" class="primary">保存关联</button></footer>
+    </form>
+  </dialog>
+
   <div class="recording-dock" id="recordingDock" hidden>
     <span class="recording-dock-dot" aria-hidden="true"></span>
     <div class="recording-dock-copy">
