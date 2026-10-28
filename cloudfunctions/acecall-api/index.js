@@ -15,6 +15,7 @@ const { PHONE_SCREEN_STANDARD, prepareQuestionGuide, selectPhoneScreenQuestions 
 const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
 const { classifyInterviewQuestions, analyzeInterviewQuestions } = require('./interview-question-analysis');
 const { compactIntelligenceFacts, intelligencePrompt, sanitizeIntelligenceFindings } = require('./intelligence-narrative');
+const { compactReportInput, reportPrompt, sanitizeIntelligenceReport } = require('./intelligence-report');
 const { buildAiTaskRecord } = require('./ai-task');
 const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-signals');
 const { listIndustryNews } = require('./industry-news');
@@ -250,6 +251,14 @@ const server = http.createServer(async (request, response) => {
           const findings = sanitizeIntelligenceFindings(generated, facts);
           await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload: facts, result: { findings }, startedAt }));
           return sendJson(response, 200, { result: { findings }, mode: 'ai', provider: 'deepseek' });
+        }
+        if (payload.action === 'write-intelligence-report') {
+          const reportInput = compactReportInput(payload);
+          if (!process.env.DEEPSEEK_API_KEY) return sendJson(response, 200, { result: { report: null }, mode: 'demo', provider: 'demo' });
+          const generated = await generateWithDeepSeek({ action: payload.action, ...reportInput });
+          const report = sanitizeIntelligenceReport(generated, reportInput);
+          await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload: reportInput, result: { report }, startedAt }));
+          return sendJson(response, 200, { result: { report }, mode: 'ai', provider: 'deepseek' });
         }
         if (payload.action === 'prepare' && !process.env.DEEPSEEK_API_KEY) {
           throw serviceError('电话准备服务正在恢复，请稍后重试', 503);
@@ -2061,8 +2070,8 @@ async function getBaiduAccessToken(apiKey, secretKey) {
 }
 
 function validatePayload(payload) {
-  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer', 'classify-interview-questions', 'summarize-intelligence'].includes(payload.action)) throw serviceError('未知工作流步骤', 400);
-  if (payload.action === 'classify-interview-questions' || payload.action === 'summarize-intelligence') return;
+  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer', 'classify-interview-questions', 'summarize-intelligence', 'write-intelligence-report'].includes(payload.action)) throw serviceError('未知工作流步骤', 400);
+  if (payload.action === 'classify-interview-questions' || payload.action === 'summarize-intelligence' || payload.action === 'write-intelligence-report') return;
   if (payload.action === 'match' && (!payload.resume?.trim() || !Array.isArray(payload.jobs))) throw serviceError('请提供简历和岗位列表', 400);
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) throw serviceError('请填写 JD 和候选人简历', 400);
   if (payload.action === 'summarize' && !payload.transcript?.trim()) throw serviceError('请填写电话转写内容', 400);
@@ -2109,6 +2118,7 @@ function normalizeInterviewerReview(value = {}) {
 
 function buildModelPrompt(payload) {
   if (payload.action === 'summarize-intelligence') return intelligencePrompt(compactIntelligenceFacts(payload));
+  if (payload.action === 'write-intelligence-report') return reportPrompt(compactReportInput(payload));
   if (payload.action === 'review-interviewer') {
     return {
       instructions: '你是招聘面试质量分析助手。根据面试转写，总结面试官的提问重点和追问方式。只依据转写里出现过的问点，不编造没有问过的问题，不判断候选人是否录用，不推断性别、年龄、婚育、籍贯。输出严格 JSON，不含 Markdown。summary 为 80 到 180 字，概括提问偏好。themes 为 3 到 6 项，每项含 name、detail，detail 用一句话说明他如何追问。questions 为 4 到 6 条短问句：每条只留一个问点，6 到 28 个字，以问号结尾，写成可以放进面试题库的问题。去掉说话人姓名、时间、口头禅、候选人回答和前后铺垫。同一问点只保留一条。例如把「哎你在上一家具体是负责哪一块啊，结果怎么衡量呢」提炼成「你在上一家具体负责哪一块？」和「结果怎么衡量？」。不要粘贴转写原句。followUpStyle 为 60 到 120 字，说明追问是顺着回答展开还是按清单提问。不要输出分场转写或原文摘录。',

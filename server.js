@@ -6,6 +6,7 @@ loadEnv(path.join(__dirname, '.env'));
 
 const { analyzeInterviewQuestions } = require('./cloudfunctions/acecall-api/interview-question-analysis');
 const { compactIntelligenceFacts, intelligencePrompt, sanitizeIntelligenceFindings } = require('./cloudfunctions/acecall-api/intelligence-narrative');
+const { compactReportInput, reportPrompt, sanitizeIntelligenceReport } = require('./cloudfunctions/acecall-api/intelligence-report');
 const { prepareQuestionGuide } = require('./cloudfunctions/acecall-api/phone-screen-questions');
 const {
   normalizeResumeText,
@@ -53,6 +54,12 @@ const server = http.createServer(async (request, response) => {
         if (provider !== 'deepseek') return sendJson(response, 200, { result: { findings: [] }, mode: 'demo', provider });
         const generated = await generateWithDeepSeek({ action: payload.action, ...facts });
         return sendJson(response, 200, { result: { findings: sanitizeIntelligenceFindings(generated, facts) }, mode: 'ai', provider });
+      }
+      if (payload.action === 'write-intelligence-report') {
+        const reportInput = compactReportInput(payload);
+        if (provider !== 'deepseek') return sendJson(response, 200, { result: { report: null }, mode: 'demo', provider });
+        const generated = await generateWithDeepSeek({ action: payload.action, ...reportInput });
+        return sendJson(response, 200, { result: { report: sanitizeIntelligenceReport(generated, reportInput) }, mode: 'ai', provider });
       }
       const generated = provider === 'deepseek'
         ? await generateWithDeepSeek(payload)
@@ -191,8 +198,8 @@ function demoInterviewerReview(payload) {
 }
 
 function validatePayload(payload) {
-  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer', 'classify-interview-questions', 'summarize-intelligence'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
-  if (payload.action === 'classify-interview-questions' || payload.action === 'summarize-intelligence') return;
+  if (!['prepare', 'summarize', 'synthesize', 'match', 'review-interviewer', 'classify-interview-questions', 'summarize-intelligence', 'write-intelligence-report'].includes(payload.action)) throw Object.assign(new Error('未知工作流步骤'), { statusCode: 400 });
+  if (payload.action === 'classify-interview-questions' || payload.action === 'summarize-intelligence' || payload.action === 'write-intelligence-report') return;
   if (payload.action === 'match' && (!payload.resume?.trim() || !Array.isArray(payload.jobs))) throw Object.assign(new Error('请提供简历和岗位列表'), { statusCode: 400 });
   if (payload.action === 'prepare' && (!payload.jd?.trim() || !payload.resume?.trim())) {
     throw Object.assign(new Error('请填写 JD 和候选人简历'), { statusCode: 400 });
@@ -216,6 +223,7 @@ function getModelProvider() {
 
 function buildModelPrompt(payload) {
   if (payload.action === 'summarize-intelligence') return intelligencePrompt(compactIntelligenceFacts(payload));
+  if (payload.action === 'write-intelligence-report') return reportPrompt(compactReportInput(payload));
   if (payload.action === 'review-interviewer') {
     return {
       instructions: '你是招聘面试质量分析助手。根据面试转写，总结面试官的提问重点和追问方式。只依据转写里出现过的问点，不编造没有问过的问题，不判断候选人是否录用。输出严格 JSON，不含 Markdown。summary 为 80 到 180 字。themes 为 3 到 6 项，每项含 name、detail。questions 为 4 到 6 条短问句，每条 6 到 28 个字，以问号结尾，去掉姓名、时间和口语铺垫。followUpStyle 说明追问方式。不要输出分场转写。',
