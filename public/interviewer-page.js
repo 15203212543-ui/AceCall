@@ -467,6 +467,7 @@ async function loadMokaInterviews(options = {}) {
     app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual', fromCache: false, error: '' };
     writeDeferred('moka', { records: app.mokaInterviews, syncedJobs: data.syncedJobs || [], analytics: app.mokaAnalytics, status: app.mokaInterviewStatus });
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
+    if (app.view === 'intelligence') renderIntelligence();
   } catch (error) {
     if (error.authRequired) return;
     console.warn('[AceCall Moka interviews]', error);

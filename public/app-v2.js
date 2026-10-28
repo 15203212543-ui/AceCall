@@ -657,6 +657,7 @@ function ensureDeferredViewData(view) {
     void loadAnalysisTexts();
   }
   if (view === 'intelligence') {
+    void loadMokaInterviews();
     void loadTranscriptImports();
     void loadAnalysisTexts();
   }
@@ -873,7 +874,7 @@ function renderTalentMarket() {
    const relatedBusinesses = selectedIndustryName ? businesses.filter(item => relatedBusinessKeys.has(item.key)).slice(0, 8) : [];
    const selectedSourceDetail = selectedIndustryObject?.sourceDetails?.[0];
    const selectedSourceLabel = selectedSourceDetail ? `${selectedSourceDetail.candidateName || '未命名候选人'}${selectedSourceDetail.interviewer ? ` · 面试官：${selectedSourceDetail.interviewer}` : ''}${selectedSourceDetail.startedAt ? ` · ${formatDate(selectedSourceDetail.startedAt)}` : ''}` : '正式面试转写';
-   const selectedIndustryDetail = selectedIndustryObject ? `<section class="surface intelligence-selected-industry"><div class="surface-head"><div><h2>${escapeHtml(selectedIndustryName)}</h2><p class="surface-subtitle">${selectedIndustryObject.count} 份访谈 · ${selectedIndustryObject.candidateCount || 0} 位候选人 · ${relatedCompanies.length} 家相关公司</p></div><button class="link-action" type="button" data-intelligence-industry-close>收起详情</button></div><div class="surface-body"><div class="intelligence-selected-evidence"><span>行业概览</span><p>${escapeHtml(industryBrief(selectedIndustryObject))}</p><small>${selectedIndustryObject.count < 2 ? '当前材料量有限，仅呈现已确认事实，不作趋势判断。' : '结论基于当前时间范围内的候选人访谈与工作经历。'}</small></div><div class="intelligence-related-grid"><div><strong>相关公司</strong>${relatedCompanies.map(item => `<button type="button" data-intelligence-related-company="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}</span><small>候选人对应任职经历</small></button>`).join('') || '<em>当前材料中尚未找到与该行业直接对应的任职公司</em>'}</div><div><strong>产品与业务方向</strong>${[...relatedProducts, ...relatedBusinesses].map(item => `<span>${escapeHtml(item.name)}</span>`).join('') || '<em>当前材料尚未形成明确的产品或业务方向</em>'}</div></div><details class="intelligence-selected-evidence"><summary>查看资料出处</summary><p>${escapeHtml(selectedIndustryObject.evidence || '当前没有可展示的访谈摘录。')}</p><small>${escapeHtml((selectedIndustryObject.sources || []).join(' / ') || '候选人访谈')} · ${escapeHtml(selectedSourceLabel)}</small></details><div data-intelligence-report="industry"></div></div></section>` : '';
+   const selectedIndustryDetail = selectedIndustryObject ? `<section class="surface intelligence-selected-industry"><div class="surface-head"><div><h2>${escapeHtml(selectedIndustryName)}</h2><p class="surface-subtitle">${selectedIndustryObject.count} 份访谈 · ${selectedIndustryObject.candidateCount || 0} 位候选人 · ${relatedCompanies.length} 家相关公司</p></div><button class="link-action" type="button" data-intelligence-industry-close>收起详情</button></div><div class="surface-body"><div class="intelligence-selected-evidence"><span>行业概览</span><p>${escapeHtml(industryBrief(selectedIndustryObject))}</p><small>${selectedIndustryObject.count < 2 ? '当前材料量有限，仅呈现已确认事实，不作趋势判断。' : '结论基于当前时间范围内的候选人访谈与工作经历。'}</small></div><div class="intelligence-related-grid"><div><strong>相关公司</strong>${relatedCompanies.map(item => `<button type="button" data-intelligence-related-company="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}</span><small>候选人对应任职经历</small></button>`).join('') || '<em>当前材料中尚未找到与该行业直接对应的任职公司</em>'}</div><div><strong>产品与业务方向</strong>${[...relatedProducts, ...relatedBusinesses].map(item => `<span>${escapeHtml(item.name)}</span>`).join('') || '<em>当前材料尚未形成明确的产品或业务方向</em>'}</div></div><details class="intelligence-selected-evidence"><summary>查看资料出处</summary><p>${escapeHtml(selectedIndustryObject.evidence || '当前没有可展示的访谈摘录。')}</p><small>${escapeHtml((selectedIndustryObject.sources || []).join(' / ') || '候选人访谈')} · ${escapeHtml(selectedSourceLabel)}</small></details><div class="intelligence-selected-evidence"><span>行业报告</span><div data-intelligence-report="industry"></div></div></div></section>` : '';
    const validMaterialCount = new Set(industries.flatMap(item => item.recordKeys || [])).size;
    const industryDetail = `<div class="intelligence-industry-page"><div class="intelligence-industry-metrics"><div><span>覆盖行业</span><strong>${industries.length}</strong><small>具有明确从业经历</small></div><div><span>访谈材料</span><strong>${validMaterialCount}</strong><small>纳入本期分析</small></div><div><span>材料量有限</span><strong>${industries.filter(item => item.count < 2).length}</strong><small>暂不判断变化趋势</small></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2>行业概览</h2><p class="surface-subtitle">根据候选人访谈归纳经验方向，并结合简历核对相关任职公司</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body">${industrySignalRows || '<div class="intelligence-home-empty">当前访谈材料尚不足以形成行业概览。</div>'}</div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2>按行业查看</h2><p class="surface-subtitle">每个行业只保留一份报告，简历和转写增加后更新这一份</p></div></div><div class="intelligence-industry-grid">${industryCards || '<div class="intelligence-home-empty">当前没有可展示的行业信息。</div>'}</div></section>${selectedIndustryDetail}</div>`;
    const companyQuery = String(app.intelligenceQuery || '').trim().toLowerCase();
@@ -881,7 +882,7 @@ function renderTalentMarket() {
    const companyFilters = [...new Set(companies.flatMap(item => [...(item.industries || []), ...(item.products || [])]))].slice(0, 8);
    const companyListRows = filteredCompanyRecords.slice(0, 50).map((item, index) => `<button type="button" class="intelligence-company-card ${item.key === app.intelligenceCompanyDetail ? 'active' : ''}" data-intelligence-company="${escapeHtml(item.key)}"><span class="intelligence-company-mark">▥</span><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml([...(item.industries || []), ...(item.businesses || [])].slice(0, 3).join(' · ') || '候选人工作经历')}</small><i>${item.count} 条关联材料 · ${(item.sources || []).join(' / ') || '来源待确认'}</i></span><b>›</b></button>`).join('');
    const companyDynamics = filteredCompanyRecords.slice(0, 4).map(item => `<article class="intelligence-company-dynamic"><span class="intelligence-dynamic-icon">⌁</span><div><strong>${escapeHtml(item.name)}人才背景概览</strong><p>${escapeHtml(companyBrief(item))}</p><small>${item.count} 份候选人材料 · 资料来自工作经历</small></div></article>`).join('');
-   const companyDetail = `<div class="intelligence-company-page"><div class="intelligence-company-toolbar"><input id="intelligenceCompanySearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="搜索公司名称或行业"><button type="button" data-intelligence-company-clear>＋</button></div><div class="intelligence-company-filter-row"><button class="active" type="button" data-company-filter="">全部公司</button>${companyFilters.map(filter => `<button type="button" data-company-filter="${escapeHtml(filter)}">${escapeHtml(filter)}</button>`).join('')}</div><section class="surface intelligence-company-list-surface"><div class="surface-head"><div><h2>公司人才分布</h2><p class="surface-subtitle">根据候选人工作经历汇总，行业归属以对应任职内容为准</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body intelligence-company-list">${companyListRows || '<div class="intelligence-home-empty">当前候选人材料中没有可展示的公司信息。</div>'}</div></section><section class="surface intelligence-company-dynamics"><div class="surface-head"><div><h2>重点公司概览</h2><p class="surface-subtitle">展示候选人覆盖情况与相关经验方向，不代表企业官方动态</p></div></div><div class="surface-body">${companyDynamics || '<div class="intelligence-home-empty">当前没有可展示的公司人才信息。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>公司报告</h2><p class="surface-subtitle">每家公司只保留一份，简历和转写增加后更新这一份</p></div></div><div class="surface-body" data-intelligence-report="company"><div class="intelligence-home-empty">点选一家公司后，会按现有简历和转写生成一份报告。同一家公司只保留这一份。</div></div></section></div>`;
+   const companyDetail = `<div class="intelligence-company-page"><div class="intelligence-company-toolbar"><input id="intelligenceCompanySearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="搜索公司名称或行业"><button type="button" data-intelligence-company-clear>＋</button></div><div class="intelligence-company-filter-row"><button class="active" type="button" data-company-filter="">全部公司</button>${companyFilters.map(filter => `<button type="button" data-company-filter="${escapeHtml(filter)}">${escapeHtml(filter)}</button>`).join('')}</div><section class="surface intelligence-company-list-surface"><div class="surface-head"><div><h2>公司人才分布</h2><p class="surface-subtitle">根据候选人工作经历汇总，行业归属以对应任职内容为准</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body intelligence-company-list">${companyListRows || '<div class="intelligence-home-empty">当前候选人材料中没有可展示的公司信息。</div>'}</div></section><section class="surface intelligence-company-dynamics"><div class="surface-head"><div><h2>重点公司概览</h2><p class="surface-subtitle">展示候选人覆盖情况与相关经验方向，不代表企业官方动态</p></div></div><div class="surface-body">${companyDynamics || '<div class="intelligence-home-empty">当前没有可展示的公司人才信息。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>公司报告</h2><p class="surface-subtitle">每家公司只保留一份，简历和转写增加后更新这一份</p></div></div><div class="surface-body" data-intelligence-report="company"><div class="intelligence-home-empty">点开一家公司即可看到已写好的报告。材料有变化时，后台会更新这一份。</div></div></section></div>`;
    const root = $('#intelligenceView');
    if (current) {
      root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><button class="intelligence-back" type="button" data-intelligence-home>← 行业情报</button><h1>${current.title}</h1><p>${current.desc}</p></div><select id="intelligenceTopicSource"><option value="">全部访谈来源</option><option>正式面试转写</option><option>电话沟通转写</option></select></div>${topic === 'industry' ? industryDetail : topic === 'company' ? companyDetail : `<div class="intelligence-detail-layout"><section class="surface"><div class="surface-head"><div><h2>${current.label}</h2><p class="surface-subtitle">共 ${current.data.length} 项，点击查看资料出处</p></div></div><div class="surface-body intelligence-detail-list">${detailRows || '<div class="intelligence-home-empty">当前主题暂无可展示信息。</div>'}</div></section><section class="surface intelligence-topic-explainer"><div class="surface-head"><div><h2>统计说明</h2><p class="surface-subtitle">范围与口径</p></div></div><div class="surface-body"><p>${topic === 'talent' ? '本页统计候选人在访谈中明确说明的产品与业务经验，未说明的内容不纳入。' : '本页汇总行业、公司、产品和业务信息，具体出处可在详情中查看。'}</p><div class="intelligence-source-mini"><b>${sourceSummary.total}</b><span>份候选人访谈纳入统计</span></div></div></section></div>`}</div>`;
@@ -894,14 +895,16 @@ function renderTalentMarket() {
     $$('#intelligenceView [data-intelligence-company]').forEach(button => button.addEventListener('click', () => { app.intelligenceCompanyDetail = button.dataset.intelligenceCompany || ''; renderIntelligence(); }));
     $$('#intelligenceView [data-intelligence-related-company]').forEach(button => button.addEventListener('click', () => { app.intelligenceTopic = 'company'; app.intelligenceCompanyDetail = button.dataset.intelligenceRelatedCompany || ''; renderIntelligence(); }));
     $('#intelligenceView [data-intelligence-industry-close]')?.addEventListener('click', () => { app.intelligenceIndustryDetail = ''; renderIntelligence(); });
-    if (topic === 'industry' && selectedIndustryObject) void refreshIntelligenceReport('industry', selectedIndustryObject);
-    if (topic === 'company') { const selectedCompany = filteredCompanyRecords.find(item => item.key === app.intelligenceCompanyDetail); if (selectedCompany) void refreshIntelligenceReport('company', selectedCompany); }
+    if (topic === 'industry' && selectedIndustryObject) refreshIntelligenceReport('industry', selectedIndustryObject);
+    if (topic === 'company') { const selectedCompany = filteredCompanyRecords.find(item => item.key === app.intelligenceCompanyDetail); if (selectedCompany) refreshIntelligenceReport('company', selectedCompany); }
+    void runIntelligenceReportQueue();
     return;
    }
    root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><span class="eyebrow">MARKET INTELLIGENCE</span><h1>行业情报</h1><p>从候选人访谈与工作经历中归纳行业、公司和人才市场信息</p></div><select id="intelligenceHomePeriod"><option value="all">全部时间</option><option value="30">近 30 天</option><option value="90">近 90 天</option></select></div><div class="intelligence-home-metrics"><div class="intelligence-home-metric"><span class="intelligence-metric-icon">${intelligenceIcon('research')}</span><div><span>研究主题</span><strong>${totalObjects}</strong><small>行业、公司与能力方向</small></div></div><div class="intelligence-home-metric"><span class="intelligence-metric-icon">${intelligenceIcon('company')}</span><div><span>涉及公司</span><strong>${companies.length}</strong><small>候选人曾任职公司</small></div></div></div><section class="surface intelligence-recent"><div class="surface-head"><div><h2 class="intelligence-section-title"><span>${intelligenceIcon('recent')}</span>近期重点发现</h2><p class="surface-subtitle">根据当前材料归纳的行业、公司与人才观察</p></div><button class="link-action" type="button" data-intelligence-topic="all">查看全部 →</button></div><div class="surface-body">${insightMarkup}</div></section><section class="surface intelligence-external" id="industryNewsSection"><div class="surface-head"><div><h2 class="intelligence-section-title"><span>${intelligenceIcon('filing')}</span>外部行业动态</h2><p class="surface-subtitle">富途控股、老虎证券、盈透证券的美国证监会公开公告。与简历和转写分开，单条公告不作为行业趋势。</p></div></div><div class="surface-body" id="industryNewsBody"><div class="intelligence-home-empty">正在读取公开公告…</div></div></section><section class="surface intelligence-topics"><div class="surface-head"><div><h2 class="intelligence-section-title"><span>${intelligenceIcon('topics')}</span>按主题查看</h2><p class="surface-subtitle">选择行业或公司，查看由简历和面试转写生成的一份报告</p></div></div><div class="intelligence-topic-grid">${topicCards.map(([key,icon,title,desc]) => `<button type="button" class="intelligence-topic-card" data-intelligence-topic="${key}"><span class="intelligence-topic-icon">${intelligenceIcon(icon)}</span><strong>${title}</strong><small>${desc}</small></button>`).join('')}</div></section><div class="intelligence-home-footnote">统计范围：${sourceSummary.total} 份候选人访谈，其中 ${sourceSummary.moka} 份正式面试、${sourceSummary.phone} 份电话沟通；${sourceSummary.resume} 份已关联简历</div></div>`;
    const period = $('#intelligenceHomePeriod'); if (period) { period.value = app.intelligencePeriod || 'all'; period.addEventListener('change', event => { app.intelligencePeriod = event.target.value || 'all'; app.intelligenceIndustryDetail = ''; renderIntelligence(); }); }
    $$('#intelligenceView [data-intelligence-topic]').forEach(button => button.addEventListener('click', () => { app.intelligenceTopic = button.dataset.intelligenceTopic; renderIntelligence(); }));
    loadIndustryNews(app.intelligencePeriod);
+   void runIntelligenceReportQueue();
    if (!topic) {
      const narrativeFacts = {
        industries: industries.slice(0, 4).map(item => ({ name: item.name, count: item.count, candidates: item.candidateCount || 0, focus: joinFocus(item) })),
@@ -955,34 +958,106 @@ function renderTalentMarket() {
    return { resumeExcerpts: uniqueReportLines(resumes), transcriptExcerpts: uniqueReportLines(transcripts) };
  }
  function reportMarkup(report, pending) {
-   if (pending && !report) return '<div class="intelligence-home-empty">正在根据简历和面试转写更新这一份报告…</div>';
-   if (!report) return '<div class="intelligence-home-empty">同一对象只保留一份报告。有简历或转写后会写入；材料增加后更新这一份，不另起新报告。</div>';
+   if (pending && !report) return '<div class="intelligence-home-empty">这份报告正在后台整理，写好后会显示在这里。</div>';
+   if (!report) return '<div class="intelligence-home-empty">同一对象只保留一份报告。材料增加后，后台会更新这一份。</div>';
    const list = (title, items) => items?.length ? `<div class="intelligence-selected-evidence"><span>${title}</span>${items.map(line => `<p>${escapeHtml(line)}</p>`).join('')}</div>` : '';
    return `<article class="intelligence-selected-evidence"><span>报告</span><p>${escapeHtml(report.overview || '')}</p><small>${report.materialCount || 0} 份材料 · ${report.candidateCount || 0} 位候选人 · 同一对象只保留这一份</small></article>${list('简历中的事实', report.resumeFindings)}${list('转写中的事实', report.transcriptFindings)}${report.gaps ? `<p>${escapeHtml(report.gaps)}</p>` : ''}`;
  }
- async function refreshIntelligenceReport(kind, item) {
-   const slot = document.querySelector(`[data-intelligence-report="${kind}"]`);
-   if (!slot || !item?.name) return;
+ function reportWritePlan(kind, item) {
    const pack = reportSourcePack(kind, item);
+   if (!pack.resumeExcerpts.length && !pack.transcriptExcerpts.length) return null;
    const sourceKey = JSON.stringify(pack);
    const stored = readIntelligenceReports()[`${kind}:${item.name}`];
-   if (stored?.sourceKey === sourceKey && stored.overview) { slot.innerHTML = reportMarkup(stored, false); return; }
-   if (!pack.resumeExcerpts.length && !pack.transcriptExcerpts.length || !REMOTE_BACKEND) { slot.innerHTML = reportMarkup(stored, false); return; }
-   slot.innerHTML = reportMarkup(stored, true);
-   const loadingKey = `${kind}:${item.name}:${sourceKey}`;
-   if (app.intelligenceReportLoading === loadingKey) return;
-   app.intelligenceReportLoading = loadingKey;
+   if (stored?.sourceKey === sourceKey && stored.overview) return null;
+   if (app.intelligenceReportFailed?.[`${kind}:${item.name}`] === sourceKey) return null;
+   return { pack, sourceKey, stored };
+ }
+ function paintOpenReport(kind, item, report, pending) {
+   const slot = document.querySelector(`[data-intelligence-report="${kind}"]`);
+   if (!slot) return;
+   const openKey = kind === 'industry' ? app.intelligenceIndustryDetail : app.intelligenceCompanyDetail;
+   if (openKey && openKey !== item.key) return;
+   slot.innerHTML = reportMarkup(report, pending);
+ }
+ function refreshIntelligenceReport(kind, item) {
+   const plan = reportWritePlan(kind, item);
+   const stored = readIntelligenceReports()[`${kind}:${item.name}`];
+   paintOpenReport(kind, item, stored, Boolean(plan) && REMOTE_BACKEND);
+   if (plan && REMOTE_BACKEND) app.intelligenceReportPriority = { kind, key: item.key, name: item.name };
+ }
+ function queuedReportSubjects() {
+   const industries = intelligenceDimensionRecords('industry', [], { period: 'all' }).slice(0, 12);
+   const companies = intelligenceRecords({ period: 'all' }).slice(0, 24);
+   return [...industries.map(item => ({ kind: 'industry', item })), ...companies.map(item => ({ kind: 'company', item }))];
+ }
+ function takeNextReportJob() {
+   const priority = app.intelligenceReportPriority;
+   if (priority?.name) {
+     const lists = priority.kind === 'industry' ? intelligenceDimensionRecords('industry', [], { period: 'all' }) : intelligenceRecords({ period: 'all' });
+     const item = lists.find(row => row.key === priority.key || row.name === priority.name);
+     if (item) {
+       app.intelligenceReportPriority = null;
+       if (reportWritePlan(priority.kind, item)) return { kind: priority.kind, item };
+     }
+   }
+   return queuedReportSubjects().find(job => reportWritePlan(job.kind, job.item)) || null;
+ }
+ async function loadServerIntelligenceReports() {
+   if (!REMOTE_BACKEND || app.intelligenceReportsLoaded) return;
    try {
-     const result = await generate({ action: 'write-intelligence-report', kind, name: item.name, materialCount: item.count || 0, candidateCount: item.candidateCount || item.count || 0, ...pack });
-     if (!result?.report?.overview) return;
-     const next = { ...result.report, sourceKey, savedAt: new Date().toISOString() };
-     writeIntelligenceReport(next);
-     const current = document.querySelector(`[data-intelligence-report="${kind}"]`);
-     if (current) current.innerHTML = reportMarkup(next, false);
+     const response = await authenticatedFetch(apiUrl('/api/intelligence-reports'));
+     const data = await response.json().catch(() => ({}));
+     if (!response.ok) return;
+     app.intelligenceReportsLoaded = true;
+     (data.reports || []).forEach(report => { if (report?.overview && report.kind && report.name) writeIntelligenceReport(report); });
+     if (app.view === 'intelligence') {
+       const topic = app.intelligenceTopic;
+       if (topic === 'industry' && app.intelligenceIndustryDetail) {
+         const item = intelligenceDimensionRecords('industry', [], { period: 'all' }).find(row => row.key === app.intelligenceIndustryDetail);
+         if (item) paintOpenReport('industry', item, readIntelligenceReports()[`industry:${item.name}`], Boolean(reportWritePlan('industry', item)));
+       }
+       if (topic === 'company' && app.intelligenceCompanyDetail) {
+         const item = intelligenceRecords({ period: 'all' }).find(row => row.key === app.intelligenceCompanyDetail);
+         if (item) paintOpenReport('company', item, readIntelligenceReports()[`company:${item.name}`], Boolean(reportWritePlan('company', item)));
+       }
+     }
    } catch (error) {
+     app.intelligenceReportsLoaded = false;
+     console.warn('[AceCall intelligence reports]', error);
+   }
+ }
+ async function writeQueuedReport(kind, item) {
+   const plan = reportWritePlan(kind, item);
+   if (!plan || app.intelligenceReportInFlight) return;
+   const flight = `${kind}:${item.name}`;
+   app.intelligenceReportInFlight = flight;
+   try {
+     const result = await generate({ action: 'write-intelligence-report', kind, name: item.name, materialCount: item.count || 0, candidateCount: item.candidateCount || item.count || 0, sourceKey: plan.sourceKey, ...plan.pack });
+     if (!result?.report?.overview) { app.intelligenceReportFailed = { ...(app.intelligenceReportFailed || {}), [flight]: plan.sourceKey }; return; }
+     const next = { ...result.report, sourceKey: plan.sourceKey, savedAt: result.report.updatedAt || new Date().toISOString() };
+     writeIntelligenceReport(next);
+     paintOpenReport(kind, item, next, false);
+   } catch (error) {
+     app.intelligenceReportFailed = { ...(app.intelligenceReportFailed || {}), [flight]: plan.sourceKey };
      console.warn('[AceCall intelligence report]', error);
    } finally {
-     if (app.intelligenceReportLoading === loadingKey) app.intelligenceReportLoading = '';
+     if (app.intelligenceReportInFlight === flight) app.intelligenceReportInFlight = '';
+   }
+ }
+ async function runIntelligenceReportQueue() {
+   if (!REMOTE_BACKEND || app.intelligenceReportQueueRunning) return;
+   app.intelligenceReportQueueRunning = true;
+   try {
+     await loadServerIntelligenceReports();
+     let written = 0;
+     while (written < 36) {
+       const job = takeNextReportJob();
+       if (!job) break;
+       await writeQueuedReport(job.kind, job.item);
+       written += 1;
+     }
+   } finally {
+     app.intelligenceReportQueueRunning = false;
    }
  }
  async function refreshIntelligenceNarratives(facts) {
