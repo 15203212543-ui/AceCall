@@ -11,6 +11,7 @@ const { prepareDocumentVersions } = require('./document-text');
 const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMatches, applyUploadedResumeAssignment } = require('./job-assignment');
 const { proposeNameCandidates, chooseDisplayedName, extractProfileFields } = require('./resume-profile');
 const { buildCallQuestions } = require('./call-preparation');
+const { PHONE_SCREEN_STANDARD, prepareQuestionGuide, selectPhoneScreenQuestions } = require('./phone-screen-questions');
 const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
 const { classifyInterviewQuestions, analyzeInterviewQuestions } = require('./interview-question-analysis');
 const { compactIntelligenceFacts, intelligencePrompt, sanitizeIntelligenceFindings } = require('./intelligence-narrative');
@@ -2156,8 +2157,8 @@ async function generateVerifiedPreparation(payload) {
         ...payload,
         generationAttempt: attempt,
         generationDirective: attempt === 1
-          ? '逐条结合简历、岗位 JD 和初筛规则生成。'
-          : '上次结果没有通过个性化依据校验，请重新生成；不得复用通用模板，每个问题必须提供具体 evidence。'
+          ? '按 HR 电话初筛生成约 10 题：6 个基本信息，4 个只问职责和结果的业务问题。'
+          : '上次结果没有达到基本信息 6 题、业务问题 4 题。请重写：每题点名简历或 JD 中的事实，不要原理题，不要模板句。'
       });
       return validatePreparationQuestions(payload, generated);
     } catch (error) {
@@ -2176,19 +2177,20 @@ function validatePreparationQuestions(payload, generated) {
     source: String(item?.source || '').replace(/\s+/g, ' ').trim(),
     evidence: String(item?.evidence || '').replace(/\s+/g, ' ').trim()
   })).filter(item => item.question && item.evidence);
-  if (questions.length < 8) throw new Error('DeepSeek 返回的个性化问题或具体依据不足');
+  const selected = selectPhoneScreenQuestions(questions);
   return {
     ...generated,
-    questions: questions.slice(0, 18),
+    questions: selected,
     generationMeta: {
-      mode: 'ai', provider: 'deepseek', generatedAt: new Date().toISOString(),
+      mode: 'ai', provider: 'deepseek', standard: PHONE_SCREEN_STANDARD, generatedAt: new Date().toISOString(),
+      mix: { basic: selected.filter(item => item.category === '基本信息').length, business: selected.filter(item => item.category === '业务问题').length },
       basis: { resumeCharacters: String(payload.resume || '').length, jdCharacters: String(payload.jd || '').length, rulesCharacters: String(payload.rules || '').length, keywordCount: Array.isArray(payload.keywords) ? payload.keywords.length : 0 }
     }
   };
 }
 
 function prepareSchema() {
-  return '初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）；questions 数组，每项含 category、question、reason、source（简历事实/JD要求/初筛规则/待核验）、evidence（输入材料中的具体依据）。生成12-18个问题并覆盖高优先级核验项。每个问题必须有非空 evidence，禁止只写通用初筛或核实岗位相关事实。';
+  return `初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）。${prepareQuestionGuide()}`;
 }
 function matchSchema() {
   return '岗位匹配字段：jobId 字符串（主岗位ID）；score 0到100整数；confidence（高/中/低）；status（已分配/待分配）；dimensions 数组，每项含 item、score、evidence；alternativeJobs 数组，每项含 name、score、reason；risks 数组，每项含 risk、evidence。根据简历事实和岗位JD、关键词进行语义匹配，缺失信息不等于不匹配，不得使用年龄、性别、婚育、籍贯等因素。';
@@ -2206,8 +2208,9 @@ function finalizeGeneratedResult(payload, generated) {
     return { ...generated, ...decision, jobId: decision.jobId, status: decision.status, score: decision.score };
   }
   if (payload.action === 'prepare') {
+    if (generated.generationMeta?.standard === PHONE_SCREEN_STANDARD) return generated;
     const aiQuestions = (Array.isArray(generated.questions) ? generated.questions : []).filter(item => String(item?.question || '').trim() && String(item?.evidence || '').trim());
-    if (aiQuestions.length >= 8) return { ...generated, questions: aiQuestions.slice(0, 18) };
+    if (aiQuestions.length >= 8) return { ...generated, questions: aiQuestions.slice(0, 10) };
     const profile = draftJobProfile({ jd: payload.jd, rules: payload.rules, keywords: payload.keywords });
     const decision = evaluateJobMatches({ resume: payload.resume, jobs: [{ id: 'current', name: payload.roleName || '', status: 'active', jd: payload.jd, rules: payload.rules, keywords: payload.keywords }] });
     const supplements = buildCallQuestions({ profile, items: decision.results?.[0]?.items || [], manual: payload.manualQuestions || [] });
