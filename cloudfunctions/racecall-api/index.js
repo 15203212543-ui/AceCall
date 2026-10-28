@@ -30,7 +30,9 @@ const {
   extractLabeledCandidateName,
   extractNameFromFileName,
   extractExperienceYearsFromFileName,
-  chooseCandidateName
+  chooseCandidateName,
+  isNonPersonName,
+  isPlausibleCandidateName
 } = require('./resume-text');
 const { classifyTranscription, presentTranscriptionStatus } = require('./transcription-route');
 const factCenter = require('./fact-center');
@@ -1700,7 +1702,7 @@ async function migrateStoredResumes(context) {
   ]);
   const jobs = jobResult.data || [];
   const migrated = []; const failed = [];
-  for (const source of candidateResult.data || []) {
+  for (const source of (candidateResult.data || []).filter(source => { const name = String(source.candidateName || source.resumeMeta?.candidateName || '').trim(); return !name || !isPlausibleCandidateName(name) || isNonPersonName(name); })) {
     const id = source.id || source._id; const originalText = String(source.resume || '').trim();
     if (!id || !originalText) { failed.push({ id, reason: '没有已保存的简历文本' }); continue; }
     try {
