@@ -22,6 +22,7 @@ const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '127.0.0.1';
 const provider = getModelProvider();
+const localIntelligenceReports = new Map();
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -59,7 +60,9 @@ const server = http.createServer(async (request, response) => {
         const reportInput = compactReportInput(payload);
         if (provider !== 'deepseek') return sendJson(response, 200, { result: { report: null }, mode: 'demo', provider });
         const generated = await generateWithDeepSeek({ action: payload.action, ...reportInput });
-        return sendJson(response, 200, { result: { report: sanitizeIntelligenceReport(generated, reportInput) }, mode: 'ai', provider });
+        const report = sanitizeIntelligenceReport(generated, reportInput);
+        if (report) localIntelligenceReports.set(`${report.kind}:${report.name}`, { ...report, sourceKey: String(payload.sourceKey || '').slice(0, 8000), updatedAt: new Date().toISOString() });
+        return sendJson(response, 200, { result: { report: report ? localIntelligenceReports.get(`${report.kind}:${report.name}`) : null }, mode: 'ai', provider });
       }
       const generated = provider === 'deepseek'
         ? await generateWithDeepSeek(payload)
@@ -75,6 +78,9 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, parsed);
     }
 
+    if (request.method === 'GET' && request.url === '/api/intelligence-reports') {
+      return sendJson(response, 200, { reports: [...localIntelligenceReports.values()] });
+    }
     if (request.method !== 'GET') return sendJson(response, 405, { error: 'Method not allowed' });
     serveStatic(request.url, response);
   } catch (error) {

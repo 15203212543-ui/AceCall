@@ -54,7 +54,8 @@ const COLLECTIONS = {
   documents: factCenter.COLLECTIONS.documents,
   facts: factCenter.COLLECTIONS.facts,
   jobProfiles: factCenter.COLLECTIONS.jobProfiles,
-  aiTasks: factCenter.COLLECTIONS.aiTasks
+  aiTasks: factCenter.COLLECTIONS.aiTasks,
+  intelligenceReports: 'acecall_intelligence_reports'
 };
 let cloudbaseApp;
 
@@ -232,6 +233,9 @@ const server = http.createServer(async (request, response) => {
       await audit(context, 'interview-question.review', review.questionId || 'question', review);
       return sendJson(response, 200, { ok: true, review });
     }
+    if (request.method === 'GET' && url.pathname === '/api/intelligence-reports') {
+      return sendJson(response, 200, await listIntelligenceReports(await getRequestContext(request)));
+    }
     if (request.method === 'POST' && url.pathname === '/api/generate') {
       const context = await guardAiRoute(request, '/api/generate');
       const payload = await readJson(request);
@@ -257,8 +261,9 @@ const server = http.createServer(async (request, response) => {
           if (!process.env.DEEPSEEK_API_KEY) return sendJson(response, 200, { result: { report: null }, mode: 'demo', provider: 'demo' });
           const generated = await generateWithDeepSeek({ action: payload.action, ...reportInput });
           const report = sanitizeIntelligenceReport(generated, reportInput);
-          await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload: reportInput, result: { report }, startedAt }));
-          return sendJson(response, 200, { result: { report }, mode: 'ai', provider: 'deepseek' });
+          const saved = report ? await saveIntelligenceReport(context, report, payload.sourceKey) : null;
+          await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload: reportInput, result: { report: saved }, startedAt }));
+          return sendJson(response, 200, { result: { report: saved }, mode: 'ai', provider: 'deepseek' });
         }
         if (payload.action === 'prepare' && !process.env.DEEPSEEK_API_KEY) {
           throw serviceError('电话准备服务正在恢复，请稍后重试', 503);
@@ -1946,6 +1951,43 @@ function cleanDocument(document) {
 // the handler below would report a generic 500 "服务暂时不可用" and the real cause
 // stayed invisible. Every write path that echoes back a record read from the
 // database must strip the server-managed fields first.
+function intelligenceReportId(tenantId, kind, name) {
+  return `ir_${String(tenantId || '').replace(/[^\w-]/g, '').slice(0, 40)}_${kind}_${Buffer.from(String(name || '')).toString('base64url')}`.slice(0, 180);
+}
+
+async function listIntelligenceReports(context) {
+  try {
+    const result = await getDatabase().collection(COLLECTIONS.intelligenceReports).where({ tenantId: context.tenantId }).limit(80).get();
+    const rows = Array.isArray(result.data) ? result.data : [];
+    return { reports: rows.filter(row => row?.overview && row.tenantId === context.tenantId).map(row => ({ kind: row.kind, name: row.name, sourceKey: row.sourceKey || '', overview: row.overview, resumeFindings: row.resumeFindings || [], transcriptFindings: row.transcriptFindings || [], gaps: row.gaps || '', materialCount: row.materialCount || 0, candidateCount: row.candidateCount || 0, updatedAt: row.updatedAt || '' })) };
+  } catch {
+    return { reports: [] };
+  }
+}
+
+async function saveIntelligenceReport(context, report, sourceKey) {
+  const stored = {
+    id: intelligenceReportId(context.tenantId, report.kind, report.name),
+    tenantId: context.tenantId,
+    kind: report.kind,
+    name: report.name,
+    sourceKey: String(sourceKey || '').slice(0, 8000),
+    overview: report.overview,
+    resumeFindings: (report.resumeFindings || []).slice(0, 4),
+    transcriptFindings: (report.transcriptFindings || []).slice(0, 4),
+    gaps: report.gaps || '',
+    materialCount: report.materialCount || 0,
+    candidateCount: report.candidateCount || 0,
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    await getDatabase().collection(COLLECTIONS.intelligenceReports).doc(stored.id).set(stored);
+  } catch (error) {
+    console.error(JSON.stringify({ level: 'warn', message: 'intelligence report save failed', kind: report.kind }));
+  }
+  return stored;
+}
+
 function persistable(document) {
   const { _id, _openid, ...rest } = document || {};
   return rest;
