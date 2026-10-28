@@ -616,12 +616,17 @@ async function refreshEnteredView(view) {
   const stillHere = () => serial === enteredViewSerial && app.view === view;
   try {
     if (CASE_REFRESH_VIEWS.has(view)) {
-      const response = await authenticatedFetch(apiUrl('/api/cases'), { timeoutMs: 60000 });
+      const response = await authenticatedFetch(apiUrl('/api/cases?detail=summary'), { timeoutMs: 45000 });
       if (!stillHere()) return;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(cloudError(response.status, data));
       const previous = new Map(app.cases.map(item => [item.id, item]));
-      app.cases = (data.cases || []).filter(isMeaningfulCandidate).map(item => data.bodiesIncluded ? item : retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+      const incomingCases = (data.cases || []).filter(isMeaningfulCandidate);
+      // A transient empty response must never erase the list already visible to
+      // the user. An actually empty workspace is established by initial state,
+      // not by a later refresh that can be interrupted by a gateway timeout.
+      if (!incomingCases.length && app.cases.length) throw new Error('云端本次未返回候选人列表，已保留当前数据');
+      app.cases = incomingCases.map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
       if (data.bodiesIncluded) app.analysisTextsLoaded = true;
       if (app.remoteState) app.remoteState.cases = app.cases;
       localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
@@ -2430,7 +2435,7 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关没有放行这次请求，请稍后重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'),{timeoutMs:45000});if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate);const remoteCases=(remote.cases||[]).filter(isMeaningfulCandidate);const previous=new Map([...cachedCases,...app.cases].map(item=>[item.id,item]));const mergedCases=remoteCases.map(item=>retainLoadedCase(previous.get(item.id),item));app.remoteState={jobs:remote.jobs||[],cases:mergedCases,rules:remote.rules||[]};app.jobs=app.remoteState.jobs.length?app.remoteState.jobs:readStore(JOBS_KEY);app.cases=(mergedCases.length||!cachedCases.length?mergedCases:cachedCases).sort(byImported);teamRules=(app.remoteState.rules.length?app.remoteState.rules.map(item=>item.content).filter(Boolean):readStore(RULES_KEY));app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);if(cachedCases.length)app.cases=cachedCases;if(cachedJobs.length)app.jobs=cachedJobs;if(cachedRules.length)teamRules=cachedRules;app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};toast(`云端读取较慢，已保留当前数据并可稍后自动刷新：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','screeningLoadFailed','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}
@@ -2451,7 +2456,7 @@ async function authenticatedFetch(url, options = {}) {
   if (!cloudbaseAuth) throw new Error('登录已过期，请重新登录');
   const request = async token => {
     const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); headers.set('X-AceCall-Token', `Bearer ${token}`);
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs || 20000);
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs || 45000);
     try { return await fetch(url, { ...options, headers, signal: controller.signal }); }
     catch (error) { if (error.name === 'AbortError') throw new Error('CloudBase请求超时，请检查网络后重试'); throw new Error('CloudBase网络连接失败，请检查网络或跨域配置'); }
     finally { clearTimeout(timer); }
