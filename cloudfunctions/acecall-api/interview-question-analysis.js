@@ -484,31 +484,69 @@ function classifyInterviewQuestions(input = {}) {
   };
 }
 
-function boundaryPrompt(pending, job) {
+function analysisPrompt(items, job, input) {
+  const resumes = (Array.isArray(input.sessions) ? input.sessions : []).slice(0, 6).map(item => ({
+    candidateName: String(item.candidateName || '').slice(0, 40),
+    jobName: String(item.jobName || '').slice(0, 80),
+    resumeExcerpt: String(item.resumeExcerpt || '').replace(/\s+/g, ' ').trim().slice(0, 240)
+  })).filter(item => item.resumeExcerpt);
   return {
-    instructions: '你只给面试官已经问出的句子分类，不能新编问题。classification 只能是 communication_check、condition_check、job_question、needs_context。evidenceQuote 必须是该句原文中的连续片段。normalizedQuestion 不能加入原句没有的城市、金额或日期。无法判断时返回 needs_context。输出 JSON：{"items":[{"id":"","classification":"","conditionType":null,"normalizedQuestion":null,"evidenceQuote":"","mergeWithPrevious":false,"reasonCode":""}]}',
+    instructions: '你只给面试官已经问出的句子分类，并写一句提问总结。不能新编问题。classification 只能是 communication_check、condition_check、job_question、needs_context。evidenceQuote 必须是该句原文中的连续片段。normalizedQuestion 不能加入原句没有的城市、金额或日期。summary 和 followUpStyle 只能复述这些句子、岗位 JD 和简历摘录里已经出现的内容，不能新增公司、城市或数字。无法判断时返回 needs_context。输出 JSON：{"summary":"","followUpStyle":"","items":[{"id":"","classification":"","conditionType":null,"normalizedQuestion":null,"evidenceQuote":"","mergeWithPrevious":false,"reasonCode":""}]}',
     input: JSON.stringify({
       job: { name: job.name, jd: String(job.jd || '').slice(0, 1200), rules: job.rules, verify: job.verify, keywords: job.keywords },
-      items: pending
+      resumes,
+      items: items.map(item => ({ id: item.id, rawText: item.rawText, contextBefore: item.contextBefore, contextAfter: item.contextAfter, jobName: item.jobName }))
     })
   };
+}
+
+function groundedSentence(text, corpus) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+  if (value.length < 8 || introducesFact(value, corpus)) return '';
+  return value;
+}
+
+function unavailableDecisions(pending, reasonCode) {
+  return pending.map(item => ({ id: item.id, classification: 'needs_context', evidenceQuote: item.rawText, reasonCode }));
 }
 
 async function analyzeInterviewQuestions(input = {}, completeAi) {
   const preview = classifyInterviewQuestions(input);
   const pending = preview.pendingAi || [];
-  if (!preview.aiEligible || !pending.length) return preview;
-  let decisions = pending.map(item => ({ id: item.id, classification: 'needs_context', evidenceQuote: item.rawText, reasonCode: 'ai_unavailable' }));
-  if (typeof completeAi === 'function') {
-    try {
-      const job = boundJob(input);
-      const raw = await completeAi(boundaryPrompt(pending, job));
-      if (Array.isArray(raw?.items)) decisions = raw.items;
-    } catch {
-      decisions = pending.map(item => ({ id: item.id, classification: 'needs_context', evidenceQuote: item.rawText, reasonCode: 'ai_failed' }));
-    }
+  const reviewable = (preview.items || []).filter(item => item.classification !== 'communication_check' && !item.mergedInto).slice(0, 20);
+  if (typeof completeAi !== 'function') {
+    if (!preview.aiEligible || !pending.length) return preview;
+    return classifyInterviewQuestions({ ...input, aiDecisions: unavailableDecisions(pending, 'ai_unavailable') });
   }
-  return classifyInterviewQuestions({ ...input, aiDecisions: decisions });
+  if (!reviewable.length) return preview;
+  const job = boundJob(input);
+  const corpus = corpusOf(input.sessions);
+  let raw = null;
+  try {
+    raw = await completeAi(analysisPrompt(reviewable, job, input));
+  } catch {
+    raw = null;
+  }
+  if (!raw || !Array.isArray(raw.items)) {
+    if (!preview.aiEligible || !pending.length) return preview;
+    return classifyInterviewQuestions({ ...input, aiDecisions: unavailableDecisions(pending, 'ai_failed') });
+  }
+  const result = classifyInterviewQuestions({ ...input, aiDecisions: raw.items });
+  const pendingIds = new Set(pending.map(item => item.id));
+  result.items = result.items.map(item => {
+    if (pendingIds.has(item.id) || item.mergedInto || item.classification === 'communication_check') return item;
+    const decision = raw.items.find(entry => entry && (entry.id === item.id || entry.questionId === item.id));
+    if (!decision || !validateAiDecision(decision, item, corpus).ok) return item;
+    const next = { ...item };
+    applyDecision(next, decision, corpus);
+    return next;
+  });
+  const summary = groundedSentence(raw.summary, corpus);
+  const followUpStyle = groundedSentence(raw.followUpStyle, corpus);
+  if (summary) result.summary = summary;
+  if (followUpStyle) result.followUpStyle = followUpStyle;
+  result.provider = 'deepseek';
+  return result;
 }
 
 module.exports = {
@@ -518,5 +556,5 @@ module.exports = {
   RULES_VERSION,
   classifyInterviewQuestions,
   analyzeInterviewQuestions,
-  boundaryPrompt
+  analysisPrompt
 };

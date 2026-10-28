@@ -270,6 +270,10 @@ function renderInterviewers() {
   root.querySelector('[data-refresh-interviewer]')?.addEventListener('click', async event => { event.currentTarget.disabled = true; await loadMokaInterviews({ force: true }); await loadInterviewerLibrary({ force: true }); await loadTranscriptImports({ force: true }); if (runtime.loadAnalysisTexts) await runtime.loadAnalysisTexts(true); renderInterviewers(); renderInterviewerFollowups(); });
 }
 
+function resumeExcerptFor(name) {
+  const person = (app.cases || []).find(item => name && item.candidateName === name);
+  return String(person?.resume || person?.resumeSummary || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+}
 function interviewerTranscripts(filters = {}) {
   const captured = transcriptCaptureEntries(filters).map(item => ({
     id: item.id || '',
@@ -278,6 +282,7 @@ function interviewerTranscripts(filters = {}) {
     interviewer: item.interviewer || '',
     round: item.round || '',
     startedAt: item.startedAt || '',
+    resumeExcerpt: resumeExcerptFor(item.candidateName),
     text: String(item.text || '').replace(/[^\S\n]+/g, ' ').trim().slice(0, 4000)
   })).filter(item => item.text.length >= 40);
   if (captured.length) return captured;
@@ -288,6 +293,7 @@ function interviewerTranscripts(filters = {}) {
     interviewer: item.interviewer || '',
     round: item.round || '',
     startedAt: item.startedAt || '',
+    resumeExcerpt: resumeExcerptFor(item.candidateName),
     text: String(item.transcript || '').replace(/[^\S\n]+/g, ' ').trim().slice(0, 4000)
   }));
 }
@@ -343,7 +349,8 @@ function questionAnalysisHtml(result = {}) {
   const missing = covered.filter(row => !row.covered).map(row => row.item);
   const coverage = result.allowPersonalReview ? `<p>${escapeHtml(covered.length ? `岗位覆盖：${asked.length ? `已问到 ${asked.join('、')}` : '还没有问到配置的要求'}${missing.length ? `；未问到 ${missing.join('、')}` : ''}。` : '岗位没有配置可对照的关键词。')}${result.followUpStyle ? escapeHtml(result.followUpStyle) : ''}</p>` : '';
   const excluded = result.excludedCommunicationCount > 0 ? `<p class="question-excluded">已排除 ${result.excludedCommunicationCount} 条通话确认</p>` : '';
-  return `${coverage}${jobBlock}${conditionBlock}${needsBlock}${excluded}` || '<p>当前转写里没有可展示的岗位问题。</p>';
+  const summary = result.summary ? `<p>${escapeHtml(result.summary)}</p>` : '';
+  return `${summary}${coverage}${jobBlock}${conditionBlock}${needsBlock}${excluded}` || '<p>当前转写里没有可展示的岗位问题。</p>';
 }
 function renderInterviewerFollowups() {
   const root = $('#interviewersView'); const page = root?.querySelector('.interviewer-analysis-page'); if (!page) return;
@@ -370,7 +377,7 @@ function renderInterviewerFollowups() {
   const compareStart = comparison.length ? (comparePage - 1) * comparePageSize + 1 : 0;
   const compareEnd = comparison.length ? compareStart + compareVisible.length - 1 : 0;
   const comparePager = comparison.length > comparePageSize ? `<div class="interview-record-pager"><button type="button" data-compare-page="prev"${comparePage <= 1 ? ' disabled' : ''}>上一页</button><label>第 <select data-compare-page-select>${Array.from({ length: comparePageCount }, (_, index) => `<option value="${index + 1}"${index + 1 === comparePage ? ' selected' : ''}>${index + 1}</option>`).join('')}</select> / ${comparePageCount} 页</label><span>${compareStart}–${compareEnd} / ${comparison.length} 位</span><button type="button" data-compare-page="next"${comparePage >= comparePageCount ? ' disabled' : ''}>下一页</button></div>` : '';
-  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">区分通话确认、条件核验和岗位问题。只有岗位问题进入高频列表</p></div><span>${allSessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${sampleLimited ? '样本不足' : '岗位口径'}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverageLabel}</b></div><div><span>条件核验</span><b>${cached ? (cached.items || []).filter(item => item.classification === 'condition_check').length : '—'}</b></div><div><span>待判断</span><b>${cached ? (cached.items || []).filter(item => item.classification === 'needs_context').length : '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">每页 5 位，其余分页查看</p></div><span>${comparison.length ? `${compareStart}–${compareEnd} / ${comparison.length} 位` : '0 位'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${compareVisible.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count < 5 ? '样本不足' : (row.count ? `${row.passRate}%` : '—')}</td><td>${row.hired}</td><td>${row.count < 5 ? '—' : (selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—')}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div>${comparePager}</section>`;
+  const section = document.createElement('section'); section.className = 'interviewer-followups'; section.innerHTML = `<div class="research-grid interviewer-analysis-grid"><section class="surface"><div class="surface-head"><div><h2>面试问题与偏好</h2><p class="surface-subtitle">优先由 DeepSeek 按当前筛选的转写、岗位 JD 和简历摘录归类。通话确认不进入高频列表</p></div><span>${allSessions.length} 份转写</span></div><div class="surface-body recommendation-list interviewer-insight" data-interviewer-insight>${insightHtml}</div></section><section class="surface"><div class="surface-head"><div><h2>面试官阶段评分</h2><p class="surface-subtitle">第三阶段：只评价面试过程质量，不替代录用决定</p></div><span class="interviewer-score-badge">${sampleLimited ? '样本不足' : '岗位口径'}</span></div><div class="surface-body interviewer-score-grid"><div><span>问题覆盖</span><b>${coverageLabel}</b></div><div><span>条件核验</span><b>${cached ? (cached.items || []).filter(item => item.classification === 'condition_check').length : '—'}</b></div><div><span>待判断</span><b>${cached ? (cached.items || []).filter(item => item.classification === 'needs_context').length : '—'}</b></div></div></section></div><section class="surface interviewer-team-compare"><div class="surface-head"><div><h2>团队面试官对比</h2><p class="surface-subtitle">每页 5 位，其余分页查看</p></div><span>${comparison.length ? `${compareStart}–${compareEnd} / ${comparison.length} 位` : '0 位'}</span></div><div class="surface-body table-wrap"><table><thead><tr><th>面试官</th><th>已完成面试</th><th>通过率</th><th>最终入职</th><th>相对当前</th></tr></thead><tbody>${compareVisible.map(row => `<tr class="${row.name === selected ? 'current-interviewer-row' : ''}"><td><strong>${escapeHtml(row.name)}</strong>${row.name === selected ? '<small>当前查看</small>' : ''}</td><td>${row.count}</td><td>${row.count < 5 ? '样本不足' : (row.count ? `${row.passRate}%` : '—')}</td><td>${row.hired}</td><td>${row.count < 5 ? '—' : (selected && row.name !== selected ? (row.passRate > (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较高' : row.passRate < (comparison.find(item => item.name === selected)?.passRate || 0) ? '通过率较低' : '接近') : '—')}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">接入更多面试官数据后展示团队对比。</div></td></tr>'}</tbody></table></div>${comparePager}</section>`;
   page.append(section);
   const captureList = page.querySelector('.transcript-capture-list');
   const recordList = page.querySelector('.interview-record-list');
