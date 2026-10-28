@@ -1285,7 +1285,7 @@ function openDashboardFilter(filter) {
     if (filter === 'call') status.value = '待电话';
     else if (filter === 'review') status.value = '待确认';
     else if (filter === 'assignment-review') input.value = '待确认岗位';
-    else if (filter === 'high') input.value = '高匹配度';
+    else if (filter === 'high') input.value = '';
     else if (filter === 'competitor') input.value = '竞品经历';
     filterCandidates(true);
     if (filter === 'all') { input.value = ''; status.value = ''; job.value = ''; filterCandidates(true); }
