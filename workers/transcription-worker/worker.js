@@ -12,6 +12,9 @@ const PORT = Number(process.env.PORT || 9000);
 const INTERVAL_MS = Math.max(5_000, Number(process.env.WORKER_INTERVAL_MS || 5_000));
 const COLLECTION = 'acecall_transcription_tasks';
 const WORKER_ID = process.env.WORKER_ID || `worker-${crypto.randomUUID()}`;
+const LEASE_MS = Math.max(60_000, Number(process.env.TRANSCRIPTION_LEASE_MS || 60 * 60 * 1000));
+const MAX_ATTEMPTS = Math.max(1, Number(process.env.TRANSCRIPTION_MAX_ATTEMPTS || 3));
+const RETRY_DELAY_MS = Math.max(5_000, Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 30_000));
 // CloudBase's uploadFile only accepts a Buffer, so a single uploaded slice must
 // stay well inside the worker's memory budget. 15 minutes of 16 kHz mono PCM is
 // ~28 MB, which keeps a two-hour call to eight separate uploads.
@@ -285,7 +288,7 @@ async function uploadSlice(filePath, task, index) {
   const cloudPath = `${task.storagePrefix}/asr-${String(index).padStart(5, '0')}.${extension}`;
   const uploaded = await storage().uploadFile({ cloudPath, fileContent });
   const fileID = uploaded.fileID || cloudPath;
-  return { fileID, cloudPath, url: await tempFileUrl(fileID), bytes: fileContent.length };
+  return { fileID, cloudPath, url: await tempFileUrl(fileID), bytes: fileContent.length, audioBuffer: fileContent };
 }
 
 function mergeSliceResults(results) {
@@ -333,21 +336,58 @@ function persistable(document) {
  * 随机串，doc(id) 会找不到它、导致任务永远卡在 queued。按字段查询两种都能覆盖。
  */
 async function claimTask(task) {
+  const currentStatus = String(task.status || '');
+  const leaseExpired = !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= Date.now();
+  if (currentStatus !== 'queued' && !(['transcribing', 'converting', 'merging'].includes(currentStatus) && leaseExpired)) return null;
   const now = new Date().toISOString();
-  const updated = { ...task, status: 'transcribing', workerId: WORKER_ID, startedAt: now, updatedAt: now, error: '' };
-  const patch = persistable(updated);
-  delete patch._id;
-
-  const claimed = await database().collection(COLLECTION)
-    .where({ id: task.id, status: 'queued' })
-    .update(patch);
+  const updated = {
+    ...task,
+    status: 'transcribing',
+    workerId: WORKER_ID,
+    startedAt: task.startedAt || now,
+    updatedAt: now,
+    lastHeartbeatAt: now,
+    leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString(),
+    attempts: Number(task.attempts || 0) + 1,
+    nextRetryAt: '',
+    error: ''
+  };
+  const collection = database().collection(COLLECTION);
+  const query = { id: task.id, status: currentStatus };
+  if (currentStatus !== 'queued' && task.leaseExpiresAt && database().command?.lte) {
+    query.leaseExpiresAt = database().command.lte(now);
+  }
+  const claimed = await collection.where(query).update(persistable(updated));
   const changed = Number(claimed?.updated ?? claimed?.updatedCount ?? 0);
-  if (!changed) throw new Error(`任务 ${task.id} 已被其他 worker 领取，跳过`);
+  if (!changed) return null;
+  Object.assign(task, updated);
   return updated;
 }
 
 async function updateTask(task, patch) {
-  await database().collection(COLLECTION).doc(task.id).set(persistable({ ...task, ...patch, updatedAt: new Date().toISOString() }));
+  const updated = { ...task, ...patch, updatedAt: new Date().toISOString() };
+  Object.assign(task, updated);
+  await database().collection(COLLECTION).doc(task.id).set(persistable(updated));
+  return updated;
+}
+
+async function renewLease(task) {
+  return updateTask(task, {
+    leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString(),
+    lastHeartbeatAt: new Date().toISOString()
+  });
+}
+
+async function transcribeWithLease(provider, input, task) {
+  const heartbeat = setInterval(() => {
+    renewLease(task).catch(error => console.error(`[AceCall transcription worker] lease renewal failed: ${error.message}`));
+  }, Math.max(30_000, Math.floor(LEASE_MS / 3)));
+  heartbeat.unref?.();
+  try {
+    return await provider.transcribe(input);
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 /**
@@ -380,6 +420,7 @@ function resolveEngine(taskEngine) {
 
 async function processTask(task) {
   const claimed = await claimTask(task);
+  if (!claimed) return;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acecall-transcription-'));
   try {
     const provider = createProvider(resolveEngine(claimed.engine));
@@ -404,14 +445,20 @@ async function processTask(task) {
     const results = [];
     for (const [index, slice] of prepared.slices.entries()) {
       const uploaded = await uploadSlice(slice.path, claimed, index);
-      const result = await provider.transcribe({
+      const sliceDuration = prepared.sliced
+        ? Math.min(prepared.segmentSeconds, Math.max(0, duration - slice.offsetSeconds))
+        : duration;
+      const shortAudioLimit = Math.max(1, Number(process.env.BAIDU_SHORT_AUDIO_MAX_SECONDS || 60));
+      const result = await transcribeWithLease(provider, {
         audioUrl: uploaded.url,
+        audioBuffer: provider.name === 'baidu' && sliceDuration > 0 && sliceDuration <= shortAudioLimit ? uploaded.audioBuffer : undefined,
         fileName: path.basename(slice.path),
         mimeType: path.extname(slice.path) === '.wav' ? 'audio/wav' : 'application/octet-stream',
+        durationSeconds: sliceDuration,
         language: claimed.language || process.env.WHISPER_LANGUAGE || '',
         prompt: claimed.hotwords || process.env.ACECALL_ASR_HOTWORDS || '',
         task: claimed
-      });
+      }, claimed);
       results.push({ offsetSeconds: slice.offsetSeconds, result });
     }
 
@@ -421,6 +468,8 @@ async function processTask(task) {
     await updateTask(claimed, {
       status: 'completed',
       engine,
+      leaseExpiresAt: '',
+      lastHeartbeatAt: new Date().toISOString(),
       normalizedPath: prepared.sliced ? '' : `${claimed.storagePrefix}/asr-00000.${path.extname(prepared.slices[0].path).slice(1)}`,
       result: {
         ...(results[0]?.result || {}),
@@ -435,7 +484,19 @@ async function processTask(task) {
       error: ''
     });
   } catch (error) {
-    await updateTask(claimed, { status: 'failed', error: error.message || '转写失败', failedAt: new Date().toISOString() });
+    const message = error.message || '转写失败';
+    const attempts = Number(claimed.attempts || 1);
+    if (attempts < MAX_ATTEMPTS) {
+      await updateTask(claimed, {
+        status: 'queued',
+        error: message,
+        nextRetryAt: new Date(Date.now() + RETRY_DELAY_MS * attempts).toISOString(),
+        leaseExpiresAt: '',
+        retryAt: new Date().toISOString()
+      });
+    } else {
+      await updateTask(claimed, { status: 'failed', error: message, failedAt: new Date().toISOString(), leaseExpiresAt: '' });
+    }
   } finally {
     await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
   }
@@ -445,8 +506,16 @@ async function poll() {
   if (running) return;
   running = true;
   try {
-    const result = await database().collection(COLLECTION).where({ status: 'queued' }).limit(1).get();
-    const task = result.data?.[0];
+    const now = Date.now();
+    const queued = await database().collection(COLLECTION).where({ status: 'queued' }).limit(20).get();
+    let task = (queued.data || []).find(item => !item.nextRetryAt || Date.parse(item.nextRetryAt) <= now);
+    if (!task) {
+      for (const status of ['transcribing', 'converting', 'merging']) {
+        const result = await database().collection(COLLECTION).where({ status }).limit(20).get();
+        task = (result.data || []).find(item => !item.leaseExpiresAt || Date.parse(item.leaseExpiresAt) <= now);
+        if (task) break;
+      }
+    }
     if (task) await processTask(task);
   } catch (error) {
     console.error(`[AceCall transcription worker] ${error.message}`);

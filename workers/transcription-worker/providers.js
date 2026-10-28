@@ -1,5 +1,6 @@
 const DEFAULT_BAIDU_CREATE_URL = 'https://aip.baidubce.com/rpc/2.0/aasr/v1/create';
 const DEFAULT_BAIDU_QUERY_URL = 'https://aip.baidubce.com/rpc/2.0/aasr/v1/query';
+const DEFAULT_BAIDU_SHORT_URL = 'https://vop.baidu.com/server_api';
 
 function providerError(message, status = 502) {
   const error = new Error(message);
@@ -30,7 +31,43 @@ async function getBaiduToken() {
 class BaiduProvider {
   constructor() { this.name = 'baidu'; this.requiresNormalizedWav = true; }
 
-  async transcribe({ audioUrl, fileName }) {
+  async transcribe(input = {}) {
+    const durationSeconds = Number(input.durationSeconds || 0);
+    const shortLimit = Math.max(1, Number(process.env.BAIDU_SHORT_AUDIO_MAX_SECONDS || 60));
+    if (input.audioBuffer?.length && durationSeconds > 0 && durationSeconds <= shortLimit && process.env.BAIDU_SHORT_AUDIO !== '0') {
+      try {
+        return await this.transcribeShort(input);
+      } catch (error) {
+        if (process.env.BAIDU_SHORT_AUDIO_FALLBACK_LONG === '0') throw error;
+        console.warn(`[AceCall transcription worker] 百度短语音快速路径失败，回退长语音：${error.message}`);
+      }
+    }
+    return this.transcribeLong(input);
+  }
+
+  async transcribeShort({ audioBuffer, fileName, durationSeconds }) {
+    const token = await getBaiduToken();
+    const endpoint = assertUrl(process.env.BAIDU_SHORT_ASR_URL || DEFAULT_BAIDU_SHORT_URL, 'BAIDU_SHORT_ASR_URL');
+    const extension = String(fileName || '').split('.').pop()?.toLowerCase() || 'wav';
+    const format = extension === 'pcm' ? 'pcm' : 'wav';
+    const cuid = encodeURIComponent(process.env.BAIDU_ASR_CUID || 'acecall-worker');
+    const devPid = Number(process.env.BAIDU_SHORT_ASR_PID || 1537);
+    const response = await fetch(`${endpoint}?cuid=${cuid}&token=${encodeURIComponent(token)}&dev_pid=${devPid}`, {
+      method: 'POST',
+      headers: { 'Content-Type': `audio/${format}; rate=16000`, 'Content-Length': String(audioBuffer.length) },
+      body: audioBuffer,
+      signal: AbortSignal.timeout(Number(process.env.BAIDU_SHORT_TIMEOUT_MS || 15_000))
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || Number(body.err_no || 0) !== 0) {
+      throw providerError(`百度短语音识别失败（${response.status}）：${body.err_msg || body.err_no || '未知错误'}`, 422);
+    }
+    const text = normalizeBaiduText(body.result || body.text || '');
+    if (!text) throw providerError('百度短语音未返回有效文字', 422);
+    return { text, provider: this.name, providerTaskId: '', duration: durationSeconds, segments: [] };
+  }
+
+  async transcribeLong({ audioUrl, fileName }) {
     if (!audioUrl) throw providerError('百度长音频识别需要可访问的音频 URL', 422);
     const token = await getBaiduToken();
     const createUrl = assertUrl(process.env.BAIDU_ASR_CREATE_URL || DEFAULT_BAIDU_CREATE_URL, 'BAIDU_ASR_CREATE_URL');
