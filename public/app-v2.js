@@ -81,7 +81,7 @@ let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
-const TRANSCRIPTION_STATUS_POLL_MS = 2000;
+const TRANSCRIPTION_STATUS_POLL_MS = 1000;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 const RECORDING_SESSION_KEY = 'acecall.recordingSession';
@@ -616,12 +616,17 @@ async function refreshEnteredView(view) {
   const stillHere = () => serial === enteredViewSerial && app.view === view;
   try {
     if (CASE_REFRESH_VIEWS.has(view)) {
-      const response = await authenticatedFetch(apiUrl('/api/cases'));
+      const response = await authenticatedFetch(apiUrl('/api/cases?detail=summary'), { timeoutMs: 45000 });
       if (!stillHere()) return;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(cloudError(response.status, data));
       const previous = new Map(app.cases.map(item => [item.id, item]));
-      app.cases = (data.cases || []).filter(isMeaningfulCandidate).map(item => data.bodiesIncluded ? item : retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+      const incomingCases = (data.cases || []).filter(isMeaningfulCandidate);
+      // A transient empty response must never erase the list already visible to
+      // the user. An actually empty workspace is established by initial state,
+      // not by a later refresh that can be interrupted by a gateway timeout.
+      if (!incomingCases.length && app.cases.length) throw new Error('云端本次未返回候选人列表，已保留当前数据');
+      app.cases = incomingCases.map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
       if (data.bodiesIncluded) app.analysisTextsLoaded = true;
       if (app.remoteState) app.remoteState.cases = app.cases;
       localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
@@ -1618,6 +1623,7 @@ function renderCandidateDetail() {
   if (!item) { navigate('candidates'); return; }
   if (!item.resume && !item.resumeLoading && !item.resumeLoadFailed && (item.documentId || item.resumeMeta?.originalFileId)) ensureResumeText(item);
   void loadCandidateScreening(item.id);
+  if (legacyTemplatePreparation(item)) void regenerateLegacyPreparation(item);
   $('#candidateDetailView').innerHTML = `<div class="detail-header"><div class="identity"><div class="person"><span class="portrait">${escapeHtml((item.candidateName || '候').slice(0,1))}</span><div><h1>${escapeHtml(item.candidateName || '未命名候选人')}</h1><p>${escapeHtml(item.roleName || '岗位待设置')} · ${displayStatus(item)}</p></div></div><div><button class="secondary" data-back-candidates>返回列表</button> ${statusOf(item) === '待电话' ? '<button class="primary" data-detail-tab="call">进入电话工作台</button>' : ''}</div></div><div class="tabs">${[['overview','概览'],['call','电话初筛'],['resume','简历'],['history','历史记录']].map(([id,label]) => `<button class="tab ${app.detailTab === id ? 'active' : ''}" data-detail-tab="${id}">${label}</button>`).join('')}</div></div><div class="detail-content" id="detailBody"></div>`;
   renderDetailTab(item);
   bindCommonActions($('#candidateDetailView'));
@@ -1652,6 +1658,29 @@ function screeningRecordPending(item) {
   if (!item || item.screeningLoadFailed) return false;
   return (item.hasPreparation && !item.preparation) || (item.hasSummary && !item.communicationSummary) || (item.hasReport && !item.report) || (item.hasTranscript && !item.transcript);
 }
+function legacyTemplatePreparation(item) {
+  const preparation = item?.preparation;
+  const questions = Array.isArray(preparation?.questions) ? preparation.questions : [];
+  if (!preparation || preparation.generationMeta?.provider === 'deepseek' || item.communicationSummary || item.report) return false;
+  if (!questions.length || questions.length > 6) return false;
+  const generic = questions.filter(question => {
+    const text = String(question?.question || question || '');
+    const source = String(question?.source || question?.reason || '');
+    return /请确认(?:地点|薪资|到岗|竞业)|请说明与.+相关的经历/.test(text) || /^(?:必备|待核验|通用|初筛准备)$/.test(source);
+  });
+  return generic.length === questions.length;
+}
+
+async function regenerateLegacyPreparation(item) {
+  if (!item || item.preparationRegenerating || !legacyTemplatePreparation(item)) return;
+  item.preparationRegenerating = true;
+  if (app.view === 'candidate' && app.candidateId === item.id) renderCandidateDetail();
+  try {
+    await generatePreparation(item, { automatic: true });
+  } finally {
+    item.preparationRegenerating = false;
+  }
+}
 function overviewTab(item) {
   const prep = item.preparation;
   if (!prep && screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
@@ -1663,16 +1692,16 @@ function overviewTab(item) {
 
 function callTab(item) {
   if (screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
+  if (item.preparationRegenerating) return '<div class="surface empty">正在根据候选人简历与岗位要求生成电话初筛问题…</div>';
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
-  const recordingLabel = draft?.file ? `${draft.file.name} · ${formatBytes(draft.file.size)}` : item.callRecording?.fileName || '尚未添加录音';
   const liveRecording = recordingSession?.candidateId === item.id ? recordingSession : null;
   const recordingNow = liveRecording?.phase === 'recording';
   const recordingBusy = liveRecording?.phase === 'stopping';
   const otherRecording = Boolean(recordingSession && ['recording', 'stopping'].includes(recordingSession.phase) && recordingSession.candidateId !== item.id);
-  const recordingStatusText = recordingNow ? recordingStatusLabel(recordingSession) : recordingBusy ? (recordingSession.message || '正在停止录音，请稍候…') : `${recordingLabel}。录音前请先向候选人告知并取得同意。`;
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2><span>保存原始事实</span></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><label class="recording-consent"><input type="checkbox" id="recordingConsent" ${recordingNow || recordingBusy || item.recordingConsent?.accepted ? 'checked' : ''}><span>已告知候选人本次沟通会录音，并取得同意。未同意时不开始录音，可以继续手工记录。</span></label><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea><small class="muted-text">录音会按 8MB 分片上传，支持最长约 120 分钟；转写完成后自动写入电话记录。</small></div></div></div><div class="call-footer"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="consentConfirmed" ${item.consentConfirmed ? 'checked' : ''}> 已完成录音或转写告知</label><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  const recordingStatusText = recordingNow ? recordingStatusLabel(recordingSession) : recordingBusy ? recordingProgressLabel(recordingSession.message || '正在停止录音，请稍候…') : (draft?.file || item.callRecording ? '录音已添加' : '尚未添加录音');
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea></div></div></div><div class="call-footer"><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {
@@ -1780,7 +1809,7 @@ async function importResumeBatch(files, options = {}) {
     try {
       const result = await parseResumeFileForImport(file);
       if (!looksLikeResume(result.text)) throw new Error('文件内容不像简历，已跳过，请确认文件后重试');
-      candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, file, result.metadata); candidate.candidateName = result.metadata.candidateName || file.name.replace(/\.[^.]+$/, '');
+      candidate.resume = result.text; candidate.resumeMeta = await persistOriginalResume(candidate.id, file, result.metadata); candidate.candidateName = result.metadata.candidateName || '';
       const sameContact = app.cases.find(item => item.id !== candidate.id && ((result.metadata.phone && item.resumeMeta?.phone === result.metadata.phone) || (result.metadata.email && item.resumeMeta?.email && item.resumeMeta.email.toLowerCase() === result.metadata.email.toLowerCase())));
       const match = await matchResumeToJobs(candidate.resume, candidate.candidateName, candidate.resumeMeta?.fileName || file.name);
       applyJobMatch(candidate, match); candidate.ingestStatus = sameContact ? '正在核对重复记录' : '已入库'; candidate.duplicateOf = sameContact?.id || ''; candidate.updatedAt = new Date().toISOString(); await persistCases(candidate);
@@ -1881,22 +1910,22 @@ async function reconcilePendingAssignments() {
   if (reviewed) { renderCurrent(); toast(`已按新规则复核 ${reviewed} 份简历，其中 ${assigned} 份自动分配`); }
 }
 
-async function generatePreparation(candidate) {
+async function generatePreparation(candidate, options = {}) {
   if (!candidate) return; const button = $('[data-generate-prep]'); if (button) button.disabled = true;
   try {
     await ensureResumeText(candidate);
     if (!String(candidate.resume || '').trim()) throw new Error(candidate.resumeError || '简历解析文本还没有准备好');
     if (!String(candidate.jd || '').trim() && candidate.jobId) { const job = app.jobs.find(item => item.id === candidate.jobId); if (job?.jd) candidate.jd = job.jd; }
     candidate.preparation = await generate({ action:'prepare', roleName:candidate.roleName, candidateName:candidate.candidateName, jd:candidate.jd, resume:candidate.resume, rules:candidate.rules, keywords:candidate.keywords });
-    candidate.updatedAt = new Date().toISOString(); persistCases(candidate); renderCandidateDetail(); toast('电话准备已自动完成');
+    candidate.updatedAt = new Date().toISOString(); await persistCases(candidate); renderCandidateDetail(); toast(options.automatic ? '电话初筛问题已更新' : '电话准备已自动完成');
   } catch (error) { toast(error.message); if (button) button.disabled = false; }
 }
 
 async function completeCall() {
-  const candidate = currentCandidate(); const transcript = $('#callTranscript').value.trim(); if (!transcript) return toast('请先填写电话记录'); if (!$('#consentConfirmed').checked) return toast('请先确认已完成录音或转写告知');
+  const candidate = currentCandidate(); const transcript = $('#callTranscript').value.trim(); if (!transcript) return toast('请先填写电话记录');
   const button = $('[data-complete-call]'); button.disabled = true; button.textContent = '正在生成结果';
   try {
-    candidate.transcript = transcript; candidate.consentConfirmed = true;
+    candidate.transcript = transcript;
     if (recordingDraft.candidateId === candidate.id && recordingDraft.file) {
       candidate.callRecording = recordingDraft.uploaded && recordingDraft.taskId
         ? { fileName: recordingDraft.file.name, mimeType: recordingDraft.file.type || 'audio/webm', size: recordingDraft.file.size, source: recordingDraft.source || 'upload', recordedAt: new Date().toISOString(), status: 'queued', transcriptionTaskId: recordingDraft.taskId }
@@ -2020,16 +2049,22 @@ function returnToRecordingCall() {
   navigate('candidate');
 }
 
+function recordingProgressLabel(message = '') {
+  const text = String(message || '');
+  const separator = text.indexOf(' · ');
+  return separator < 0 ? text : text.slice(separator + 3);
+}
+
 function noteRecordingProgress(message) {
   const ownerId = recordingSession?.candidateId || recordingDraft.candidateId;
   const viewingCall = app.view === 'candidate' && app.detailTab === 'call' && (!ownerId || app.candidateId === ownerId);
   const status = $('#recordingStatus');
-  if (status && viewingCall) status.textContent = message;
+  if (status && viewingCall) status.textContent = recordingProgressLabel(message);
   if (!recordingSession) return;
   recordingSession.message = message;
   if (!recordingDockVisible(recordingSession, currentRecordingView())) return;
   const meta = $('#recordingDockMeta');
-  if (meta) meta.textContent = recordingSession.phase === 'transcribing' ? '已停止，转写中' : message;
+  if (meta) meta.textContent = recordingSession.phase === 'transcribing' ? '已停止，转写中' : recordingProgressLabel(message);
 }
 
 async function restoreDesktopRecording() {
@@ -2135,7 +2170,7 @@ async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
     const task = data.task || {};
     const status = viewing ? $('#recordingStatus') : null;
     if (['created', 'uploading', 'uploaded', 'queued', 'converting', 'transcribing', 'merging'].includes(task.status)) {
-      if (status) status.textContent = `${fileName} · ${task.status === 'queued' ? '排队等待转写服务' : `转写处理中（${task.status}）`}`;
+      if (status) status.textContent = recordingProgressLabel(`${fileName} · ${task.status === 'queued' ? '排队等待转写服务' : `转写处理中（${task.status}）`}`);
       return pollTranscriptionTask(taskId, fileName, attempts + 1);
     }
     if (task.status === 'completed' && task.result?.text) {
@@ -2147,14 +2182,14 @@ async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
         persistCases(owner);
       }
       if (transcript && !transcript.value.trim()) transcript.value = task.result.text;
-      if (status) status.textContent = `${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`;
+      if (status) status.textContent = recordingProgressLabel(`${fileName} · 已完成转写 ${task.result.characters || task.result.text.length} 字`);
       return toast('录音已自动转写到电话记录');
     }
-    if (status) status.textContent = `${fileName} · 转写失败：${task.error || '请稍后重试'}`;
+    if (status) status.textContent = recordingProgressLabel(`${fileName} · 转写失败：${task.error || '请稍后重试'}`);
   } catch (error) {
     if (attempts < 3) return pollTranscriptionTask(taskId, fileName, attempts + 1);
     const status = viewing ? $('#recordingStatus') : null;
-    if (status) status.textContent = `${fileName} · 转写状态查询失败：${error.message}`;
+    if (status) status.textContent = recordingProgressLabel(`${fileName} · 转写状态查询失败：${error.message}`);
   }
 }
 
@@ -2181,12 +2216,9 @@ async function convertWebmToWav(file) {
 }
 
 async function startBrowserRecording() {
-  const consent = $('#recordingConsent');
-  if (consent && !consent.checked) return toast('请先告知候选人并取得同意后再录音。未同意时请直接填写电话记录。');
   const candidate = currentCandidate();
   if (!candidate) return toast('请先打开候选人再录音');
   if (recordingSession && ['recording', 'stopping'].includes(recordingSession.phase)) return toast('当前已经在录音中');
-  candidate.recordingConsent = { accepted: true, at: new Date().toISOString(), candidateId: candidate.id || '', session: app.authUser?.email || app.authUser?.username || '' };
   let desktopReady = false;
   try {
     const response = await fetch(`${DESKTOP_AGENT_URL}/status`, { signal: AbortSignal.timeout(900) });
@@ -2430,19 +2462,19 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关没有放行这次请求，请稍后重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'));if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();app.remoteState={jobs:remote.jobs||[],cases:(remote.cases||[]).filter(isMeaningfulCandidate),rules:remote.rules||[]};app.jobs=app.remoteState.jobs;app.cases=[...app.remoteState.cases].sort(byImported);teamRules=app.remoteState.rules.map(item=>item.content).filter(Boolean);app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);app.jobs=cachedJobs;app.cases=cachedCases;teamRules=cachedRules;app.remoteState={jobs:cachedJobs,cases:cachedCases,rules:cachedRules.map(content=>({content}))};toast(`CloudBase暂不可用，已保留本机缓存：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'),{timeoutMs:45000});if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate);const remoteCases=(remote.cases||[]).filter(isMeaningfulCandidate);const previous=new Map([...cachedCases,...app.cases].map(item=>[item.id,item]));const mergedCases=remoteCases.map(item=>retainLoadedCase(previous.get(item.id),item));app.remoteState={jobs:remote.jobs||[],cases:mergedCases,rules:remote.rules||[]};app.jobs=app.remoteState.jobs.length?app.remoteState.jobs:readStore(JOBS_KEY);app.cases=(mergedCases.length||!cachedCases.length?mergedCases:cachedCases).sort(byImported);teamRules=(app.remoteState.rules.length?app.remoteState.rules.map(item=>item.content).filter(Boolean):readStore(RULES_KEY));app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);if(cachedCases.length)app.cases=cachedCases;if(cachedJobs.length)app.jobs=cachedJobs;if(cachedRules.length)teamRules=cachedRules;app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};toast(`云端读取较慢，已保留当前数据并可稍后自动刷新：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','screeningLoadFailed','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}
 function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app.jobs));localStorage.setItem(CASES_KEY,JSON.stringify(app.cases.map(caseForCache)));localStorage.setItem(RULES_KEY,JSON.stringify(teamRules));}
 function mergeScreeningBody(item, body = {}){if(!item||!body)return;if(body.preparation)item.preparation=body.preparation;if(body.transcript)item.transcript=body.transcript;if(body.communicationSummary)item.communicationSummary=body.communicationSummary;if(body.report)item.report=body.report;if(body.consentConfirmed)item.consentConfirmed=true;if(body.callRecording)item.callRecording=body.callRecording;}
-async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;if(!screeningRecordPending(item))return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok){item.screeningLoadFailed=true;if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();return;}const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}catch(error){item.screeningLoadFailed=true;console.warn('[AceCall candidate screening]',error);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}finally{item.screeningLoading=false;}}
+async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;if(!screeningRecordPending(item))return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok){item.screeningLoadFailed=true;if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();return;}const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();if(legacyTemplatePreparation(item))void regenerateLegacyPreparation(item);}catch(error){item.screeningLoadFailed=true;console.warn('[AceCall candidate screening]',error);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}finally{item.screeningLoading=false;}}
 let analysisTextsInFlight=null;
 async function loadAnalysisTexts(force=false){if(!REMOTE_BACKEND)return;if(app.analysisTextsLoaded&&!force)return;if(analysisTextsInFlight&&!force)return analysisTextsInFlight;analysisTextsInFlight=(async()=>{const response=await authenticatedFetch(apiUrl('/api/screenings/texts'));if(response.status===404)return;const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));const byId=new Map((data.records||[]).map(record=>[record.candidateId,record]));app.cases.forEach(item=>mergeScreeningBody(item,byId.get(item.id)));app.analysisTextsLoaded=true;if(app.view==='interviewers'){renderInterviewers();renderInterviewerFollowups();}if(app.view==='intelligence')renderIntelligence();})().catch(error=>console.warn('[AceCall screening texts]',error));try{return await analysisTextsInFlight;}finally{analysisTextsInFlight=null;}}
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
 function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
 async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
-async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v1',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
+async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v2'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v2',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated)toast(`已重新整理 ${result.migrated} 份存量简历`);}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);} $('#serviceStatus').textContent=error.message||'服务状态未知';}}
 async function authenticatedFetch(url, options = {}) {
   // The login screen is controlled by initializeAuth/signIn only. A rejected
@@ -2451,7 +2483,7 @@ async function authenticatedFetch(url, options = {}) {
   if (!cloudbaseAuth) throw new Error('登录已过期，请重新登录');
   const request = async token => {
     const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${token}`); headers.set('X-AceCall-Token', `Bearer ${token}`);
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs || 20000);
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs || 45000);
     try { return await fetch(url, { ...options, headers, signal: controller.signal }); }
     catch (error) { if (error.name === 'AbortError') throw new Error('CloudBase请求超时，请检查网络后重试'); throw new Error('CloudBase网络连接失败，请检查网络或跨域配置'); }
     finally { clearTimeout(timer); }
