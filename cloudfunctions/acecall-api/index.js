@@ -234,7 +234,12 @@ const server = http.createServer(async (request, response) => {
           await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, result, startedAt }));
           return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
         }
-        const generated = process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
+        if (payload.action === 'prepare' && !process.env.DEEPSEEK_API_KEY) {
+          throw serviceError('电话准备服务正在恢复，请稍后重试', 503);
+        }
+        const generated = payload.action === 'prepare'
+          ? await generateVerifiedPreparation(payload)
+          : process.env.DEEPSEEK_API_KEY ? await generateWithDeepSeek(payload) : generateDemo(payload);
         const result = finalizeGeneratedResult(payload, generated);
         await rememberAiTask(context, buildAiTaskRecord({ action: payload.action, payload, result, startedAt }));
         return sendJson(response, 200, { result, mode: process.env.DEEPSEEK_API_KEY ? 'ai' : 'demo', provider: process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'demo' });
@@ -2094,7 +2099,7 @@ function buildModelPrompt(payload) {
   }
   const schema = payload.action === 'prepare' ? prepareSchema() : payload.action === 'summarize' ? summarySchema() : payload.action === 'synthesize' ? synthesisSchema() : matchSchema();
   return {
-    instructions: `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。${schema}`,
+    instructions: `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。对于 prepare 任务，必须优先使用候选人简历全文、当前岗位 JD 和初筛规则：问题应点名材料里的具体公司、岗位、项目、职责、技能、结果或 JD 要求，不得用通用模板替代已经存在的事实；每个问题都要在 evidence 中提供对应依据。${schema}`,
     input: JSON.stringify(payload)
   };
 }
@@ -2126,8 +2131,47 @@ async function generateWithDeepSeek(payload) {
   return JSON.parse(content);
 }
 
+async function generateVerifiedPreparation(payload) {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const generated = await generateWithDeepSeek({
+        ...payload,
+        generationAttempt: attempt,
+        generationDirective: attempt === 1
+          ? '逐条结合简历、岗位 JD 和初筛规则生成。'
+          : '上次结果没有通过个性化依据校验，请重新生成；不得复用通用模板，每个问题必须提供具体 evidence。'
+      });
+      return validatePreparationQuestions(payload, generated);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 350));
+    }
+  }
+  throw serviceError(`个性化电话准备生成失败，系统已自动重试：${lastError?.message || 'DeepSeek 暂不可用'}`, 503);
+}
+
+function validatePreparationQuestions(payload, generated) {
+  const questions = (Array.isArray(generated?.questions) ? generated.questions : []).map(item => ({
+    ...item,
+    question: String(item?.question || '').replace(/\s+/g, ' ').trim(),
+    reason: String(item?.reason || '').replace(/\s+/g, ' ').trim(),
+    source: String(item?.source || '').replace(/\s+/g, ' ').trim(),
+    evidence: String(item?.evidence || '').replace(/\s+/g, ' ').trim()
+  })).filter(item => item.question && item.evidence);
+  if (questions.length < 8) throw new Error('DeepSeek 返回的个性化问题或具体依据不足');
+  return {
+    ...generated,
+    questions: questions.slice(0, 18),
+    generationMeta: {
+      mode: 'ai', provider: 'deepseek', generatedAt: new Date().toISOString(),
+      basis: { resumeCharacters: String(payload.resume || '').length, jdCharacters: String(payload.jd || '').length, rulesCharacters: String(payload.rules || '').length, keywordCount: Array.isArray(payload.keywords) ? payload.keywords.length : 0 }
+    }
+  };
+}
+
 function prepareSchema() {
-  return '初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）；questions 数组，每项含 category、question、reason、source（匹配点/风险点/重点核验/通用）。生成12-18个问题，并覆盖所有高优先级核验项。';
+  return '初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）；questions 数组，每项含 category、question、reason、source（简历事实/JD要求/初筛规则/待核验）、evidence（输入材料中的具体依据）。生成12-18个问题并覆盖高优先级核验项。每个问题必须有非空 evidence，禁止只写通用初筛或核实岗位相关事实。';
 }
 function matchSchema() {
   return '岗位匹配字段：jobId 字符串（主岗位ID）；score 0到100整数；confidence（高/中/低）；status（已分配/待分配）；dimensions 数组，每项含 item、score、evidence；alternativeJobs 数组，每项含 name、score、reason；risks 数组，每项含 risk、evidence。根据简历事实和岗位JD、关键词进行语义匹配，缺失信息不等于不匹配，不得使用年龄、性别、婚育、籍贯等因素。';
@@ -2147,8 +2191,13 @@ function finalizeGeneratedResult(payload, generated) {
   if (payload.action === 'prepare') {
     const profile = draftJobProfile({ jd: payload.jd, rules: payload.rules, keywords: payload.keywords });
     const decision = evaluateJobMatches({ resume: payload.resume, jobs: [{ id: 'current', name: payload.roleName || '', status: 'active', jd: payload.jd, rules: payload.rules, keywords: payload.keywords }] });
-    const questions = buildCallQuestions({ profile, items: decision.results?.[0]?.items || [], manual: payload.manualQuestions || [] });
-    return questions.length ? { ...generated, questions } : generated;
+    const supplements = buildCallQuestions({ profile, items: decision.results?.[0]?.items || [], manual: payload.manualQuestions || [] });
+    const aiQuestions = Array.isArray(generated.questions) ? generated.questions : [];
+    const seen = new Set();
+    const questions = [...aiQuestions, ...supplements.map(item => ({ ...item, evidence: item.evidence || item.reason || item.source }))]
+      .filter(item => { const key = String(item?.question || '').replace(/\s+/g, ' ').trim(); if (!key || seen.has(key)) return false; seen.add(key); return true; })
+      .slice(0, 18);
+    return { ...generated, questions };
   }
   if (payload.action === 'summarize') return checkCallSummary(generated, payload.transcript || '');
   if (payload.action === 'synthesize') return checkSynthesis(generated, `${payload.resume || ''}\n${payload.transcript || ''}`);
