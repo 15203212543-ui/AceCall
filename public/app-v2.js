@@ -1691,7 +1691,8 @@ function screeningRecordPending(item) {
 function legacyTemplatePreparation(item) {
   const preparation = item?.preparation;
   const questions = Array.isArray(preparation?.questions) ? preparation.questions : [];
-  if (!preparation || preparation.generationMeta?.provider === 'deepseek' || item.communicationSummary || item.report) return false;
+  if (!preparation || item.preparationRefreshAttempted || item.communicationSummary || item.report || preparation.generationMeta?.standard === 'hr-phone-6-4') return false;
+  if (preparation.generationMeta?.provider === 'deepseek') return questions.length > 0;
   if (!questions.length) return false;
   const generic = questions.filter(question => {
     const text = String(question?.question || question || '');
@@ -1703,12 +1704,14 @@ function legacyTemplatePreparation(item) {
 
 async function regenerateLegacyPreparation(item) {
   if (!item || item.preparationRegenerating || !legacyTemplatePreparation(item)) return;
+  item.preparationRefreshAttempted = true;
   item.preparationRegenerating = true;
   if (app.view === 'candidate' && app.candidateId === item.id) renderCandidateDetail();
   try {
     await generatePreparation(item, { automatic: true });
   } finally {
     item.preparationRegenerating = false;
+    if (app.view === 'candidate' && app.candidateId === item.id) renderCandidateDetail();
   }
 }
 function overviewTab(item) {
@@ -1722,7 +1725,7 @@ function overviewTab(item) {
 
 function callTab(item) {
   if (screeningRecordPending(item)) return '<div class="surface empty">正在读取已保存的初筛记录…</div>';
-  if (item.preparationRegenerating) return '<div class="surface empty">正在根据候选人简历与岗位要求生成电话初筛问题…</div>';
+  if (item.preparationRegenerating) return '<div class="surface empty">正在生成电话初筛问题：6 个基本信息，4 个业务问题…</div>';
   if (item.report) return resultTab(item);
   const questions = item.preparation?.questions || [];
   const draft = recordingDraft.candidateId === item.id ? recordingDraft : null;
@@ -1731,7 +1734,7 @@ function callTab(item) {
   const recordingBusy = liveRecording?.phase === 'stopping';
   const otherRecording = Boolean(recordingSession && ['recording', 'stopping'].includes(recordingSession.phase) && recordingSession.candidateId !== item.id);
   const recordingStatusText = recordingNow ? recordingStatusLabel(recordingSession) : recordingBusy ? recordingProgressLabel(recordingSession.message || '正在停止录音，请稍候…') : (draft?.file || item.callRecording ? '录音已添加' : '尚未添加录音');
-  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml(question.reason || question.source || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea></div></div></div><div class="call-footer"><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
+  return `<div class="call-grid"><div class="surface"><div class="surface-head"><h2>本次核验问题</h2><span>${questions.length} 项</span></div><div class="surface-body">${questions.length ? questions.map((question,index) => `<label class="question"><input type="checkbox" data-question="${index}"><span><b>${escapeHtml(question.question || question)}</b><small>${escapeHtml([question.category, question.reason || question.source].filter(Boolean).join(' · ') || '初筛必问项')}</small></span></label>`).join('') : '<div class="empty">请先生成电话准备</div>'}</div></div><div class="surface"><div class="surface-head"><h2>电话记录</h2></div><div class="surface-body"><div class="recording-tools"><div class="recording-actions"><button class="secondary" type="button" id="startRecording" ${recordingNow || recordingBusy || otherRecording ? 'disabled' : ''}>开始录音</button><button class="secondary" type="button" id="stopRecording" ${recordingNow ? '' : 'disabled'}>${recordingBusy ? '正在停止…' : '停止录音'}</button><label class="secondary upload-trigger"><span>上传录音</span><input id="callAudioInput" type="file" accept="audio/*" hidden></label></div><small id="recordingStatus" class="muted-text">${escapeHtml(recordingStatusText)}</small><audio id="callAudioPreview" controls class="audio-preview" ${draft?.url ? '' : 'hidden'} src="${draft?.url || ''}"></audio></div><textarea class="call-notes" id="callTranscript" placeholder="粘贴电话转写，或等待异步转写结果…">${escapeHtml(item.transcript || '')}</textarea></div></div></div><div class="call-footer"><button class="primary" data-complete-call>完成电话并生成结果</button></div>`;
 }
 
 function resultTab(item) {

@@ -6,6 +6,7 @@ loadEnv(path.join(__dirname, '.env'));
 
 const { analyzeInterviewQuestions } = require('./cloudfunctions/acecall-api/interview-question-analysis');
 const { compactIntelligenceFacts, intelligencePrompt, sanitizeIntelligenceFindings } = require('./cloudfunctions/acecall-api/intelligence-narrative');
+const { prepareQuestionGuide } = require('./cloudfunctions/acecall-api/phone-screen-questions');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -282,7 +283,7 @@ async function generateWithOpenAI(payload) {
 }
 
 function prepareSchema() {
-  return '初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）；questions 数组，每项含 category、question、reason、source（匹配点/风险点/重点核验/通用）。生成12-18个问题，并覆盖所有高优先级核验项。';
+  return `初筛方案字段：summary 对象，含 headline、experience、relevantBackground、openFacts；matches 数组，每项含 requirement、evidence、confidence（高/中/低）；risks 数组，每项含 risk、evidence、impact；verification 数组，每项含 item、reason、priority（高/中/低）。${prepareQuestionGuide()}`;
 }
 
 function matchSchema() {
