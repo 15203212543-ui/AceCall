@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mergeStoredCandidate, buildLegacyDocument, storedRecord, recordInTenant, presentCaseDetail } = require('./candidate-documents');
+const { mergeStoredCandidate, buildLegacyDocument, storedRecord, recordInTenant, presentCaseDetail, presentCaseSummary } = require('./candidate-documents');
 
 test('a later save keeps parsed resume text and the document id', () => {
   const stored = { _id: 'db', resume: '工作经历：负责后端开发', documentId: 'doc_12345678', resumeMeta: { fileName: '演示.pdf', originalFileId: 'cloud://file' }, candidateName: '演示' };
@@ -13,6 +13,23 @@ test('a later save keeps parsed resume text and the document id', () => {
 test('an incoming resume replaces the stored text', () => {
   const saved = mergeStoredCandidate({ resume: '旧正文' }, { resume: '新的工作经历正文' });
   assert.equal(saved.resume, '新的工作经历正文');
+});
+
+test('a page list keeps screening flags and leaves out the resume text', () => {
+  const summary = presentCaseSummary(
+    { id: 'cand-1', candidateName: '示例', resume: '很长的简历正文', documentId: 'doc_1', resumeSummary: '摘要' },
+    { preparation: { questions: ['问职责'] }, transcript: '电话原文', report: { reviewConfirmed: true, finalDecision: '推荐业务面试' }, communicationSummary: { overview: '已沟通' } }
+  );
+  assert.equal(summary.resume, undefined);
+  assert.equal(summary.resumeOmitted, true);
+  assert.equal(summary.documentId, 'doc_1');
+  assert.equal(summary.transcript, undefined);
+  assert.equal(summary.report, undefined);
+  assert.equal(summary.hasReport, true);
+  assert.equal(summary.hasSummary, true);
+  assert.equal(summary.hasPreparation, true);
+  assert.equal(summary.reviewConfirmed, true);
+  assert.equal(summary.finalDecision, '推荐业务面试');
 });
 
 test('a page refresh includes the resume text and the saved screening', () => {
