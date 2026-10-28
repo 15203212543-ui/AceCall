@@ -838,16 +838,21 @@ function renderTalentMarket() {
    };
    const current = topicConfig[topic];
    const joinFocus = item => [...new Set([...(item.relatedProducts || []), ...(item.relatedBusinesses || []), ...(item.products || []), ...(item.businesses || [])])].slice(0, 3).join('、');
+   const narrativeSummary = (kind, name) => String((app.intelligenceNarratives?.findings || []).find(row => row.kind === kind && row.name === name)?.summary || '').trim();
    const industryBrief = item => {
+     const written = narrativeSummary('industry', item.name);
+     if (written) return written;
      const focus = joinFocus(item);
      if (focus) return `${item.name}相关经历主要集中在${focus}，目前覆盖 ${item.candidateCount || item.count} 位候选人。`;
      return `现有访谈确认了${item.name}相关从业经历，目前覆盖 ${item.candidateCount || item.count} 位候选人，尚未形成稳定的需求方向。`;
    };
    const companyBrief = item => {
+     const written = narrativeSummary('company', item.name);
+     if (written) return written;
      const focus = [...new Set([...(item.industries || []), ...(item.businesses || []), ...(item.products || [])])].slice(0, 3).join('、');
      return `${item.count} 份候选人材料包含该公司任职经历${focus ? `，相关背景涉及${focus}` : '，具体业务方向尚待更多材料补充'}。`;
    };
-   const talentBrief = item => `${item.name}相关经验出现在 ${item.count} 份候选人访谈中${item.count < 2 ? '，当前仅作为个案参考' : '，可继续观察后续岗位与人才需求'}。`;
+   const talentBrief = item => narrativeSummary('talent', item.name) || `${item.name}相关经验出现在 ${item.count} 份候选人访谈中${item.count < 2 ? '，当前仅作为个案参考' : '，可继续观察后续岗位与人才需求'}。`;
    const insightRows = [
      industries[0] ? { type: '行业观察', tone: 'industry', title: `${industries[0].name}行业候选人经验分布`, source: industries[0].sources?.join(' / ') || '候选人访谈', coverage: `${industries[0].count} 份材料`, summary: industryBrief(industries[0]) } : null,
      companies[0] ? { type: '公司人才', tone: 'company', title: `${companies[0].name}人才背景概览`, source: '候选人工作经历', coverage: `${companies[0].count} 份材料`, summary: companyBrief(companies[0]) } : null,
@@ -894,6 +899,14 @@ function renderTalentMarket() {
    const period = $('#intelligenceHomePeriod'); if (period) { period.value = app.intelligencePeriod || 'all'; period.addEventListener('change', event => { app.intelligencePeriod = event.target.value || 'all'; app.intelligenceIndustryDetail = ''; renderIntelligence(); }); }
    $$('#intelligenceView [data-intelligence-topic]').forEach(button => button.addEventListener('click', () => { app.intelligenceTopic = button.dataset.intelligenceTopic; renderIntelligence(); }));
    loadIndustryNews(app.intelligencePeriod);
+   if (!topic) {
+     const narrativeFacts = {
+       industries: industries.slice(0, 4).map(item => ({ name: item.name, count: item.count, candidates: item.candidateCount || 0, focus: joinFocus(item) })),
+       companies: companies.slice(0, 4).map(item => ({ name: item.name, count: item.count, candidates: item.candidateCount || 0, focus: [...new Set([...(item.industries || []), ...(item.businesses || []), ...(item.products || [])])].slice(0, 3).join('、') })),
+       talents: [...products, ...businesses].slice(0, 3).map(item => ({ name: item.name, count: item.count, candidates: item.candidateCount || 0, focus: '' }))
+     };
+     void refreshIntelligenceNarratives(narrativeFacts);
+   }
  }
 
  function paintIndustryNews(period = 'all') {
@@ -907,6 +920,23 @@ function renderTalentMarket() {
    }));
  }
 
+ async function refreshIntelligenceNarratives(facts) {
+   if (!REMOTE_BACKEND) return;
+   const key = JSON.stringify(facts);
+   if (key === '{"industries":[],"companies":[],"talents":[]}') return;
+   if (app.intelligenceNarratives?.key === key || app.intelligenceNarrativesLoading === key) return;
+   app.intelligenceNarrativesLoading = key;
+   try {
+     const result = await generate({ action: 'summarize-intelligence', ...facts });
+     const findings = Array.isArray(result?.findings) ? result.findings : [];
+     app.intelligenceNarratives = { key, findings };
+     if (findings.length && app.view === 'intelligence' && !app.intelligenceTopic) renderIntelligence();
+   } catch (error) {
+     console.warn('[AceCall intelligence narrative]', error);
+   } finally {
+     if (app.intelligenceNarrativesLoading === key) app.intelligenceNarrativesLoading = '';
+   }
+ }
  async function loadIndustryNews(period = 'all') {
    const body = $('#industryNewsBody');
    if (!body) return;
@@ -1662,7 +1692,7 @@ function legacyTemplatePreparation(item) {
   const preparation = item?.preparation;
   const questions = Array.isArray(preparation?.questions) ? preparation.questions : [];
   if (!preparation || preparation.generationMeta?.provider === 'deepseek' || item.communicationSummary || item.report) return false;
-  if (!questions.length || questions.length > 6) return false;
+  if (!questions.length) return false;
   const generic = questions.filter(question => {
     const text = String(question?.question || question || '');
     const source = String(question?.source || question?.reason || '');
@@ -2373,7 +2403,7 @@ async function parseResume(file) {
 
 async function generate(payload) {
   if (STATIC_DEMO) return localGenerate(payload);
-  const response = await authenticatedFetch(apiUrl('/api/generate'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI服务调用失败'); return data.result;
+  const response = await authenticatedFetch(apiUrl('/api/generate'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), timeoutMs: 45000 }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI服务调用失败'); return data.result;
 }
 
 async function persistOriginalResume(candidateId, file, metadata = {}) {

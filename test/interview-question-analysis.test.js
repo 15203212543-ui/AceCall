@@ -162,6 +162,35 @@ test('dedupe keeps every source session and human review overrides the class', (
   assert.equal(reviewed.items[0].classificationSource, 'human');
 });
 
+test('deepseek classifies one transcript and rejects a summary that adds a city', async () => {
+  const sessions = [session('面试官：你在交易系统中具体负责哪一部分？')];
+  const result = await analyzeInterviewQuestions({ sessionCount: 1, job, sessions }, async prompt => {
+    const item = JSON.parse(prompt.input).items[0];
+    assert.equal(prompt.input.includes('可以听见吗'), false);
+    return {
+      summary: '提问集中在交易系统中的职责范围。',
+      followUpStyle: '是否接受北京？',
+      items: [{ id: item.id, classification: 'job_question', evidenceQuote: '具体负责哪一部分', normalizedQuestion: item.rawText, reasonCode: 'job_cue' }]
+    };
+  });
+  assert.equal(result.provider, 'deepseek');
+  assert.equal(result.summary, '提问集中在交易系统中的职责范围。');
+  assert.equal(result.followUpStyle, '');
+  assert.equal(result.items[0].classificationSource, 'ai');
+});
+
+test('communication lines are not sent to deepseek even for a single transcript', async () => {
+  let called = false;
+  const result = await analyzeInterviewQuestions({
+    sessionCount: 1,
+    job,
+    sessions: [session('你好，可以听见吗？')]
+  }, async () => { called = true; return { items: [] }; });
+  assert.equal(called, false);
+  assert.equal(result.provider, undefined);
+  assert.equal(result.items.some(item => item.classification === 'job_question'), false);
+});
+
 test('multiple jobs are not treated as one JD', () => {
   const result = classifyInterviewQuestions({
     sessionCount: 5,
