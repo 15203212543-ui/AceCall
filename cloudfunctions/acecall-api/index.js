@@ -18,7 +18,7 @@ const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-si
 const { listIndustryNews } = require('./industry-news');
 const { prepareTenantInterviewReminders, readInterviewReminders } = require('./interview-reminder');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
-const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, mergeStoredCandidate } = require('./candidate-documents');
+const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, storedRecord, mergeStoredCandidate } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
 const { findDuplicateCandidate, collapseDuplicateCases, resumeIdentity } = require('./candidate-dedupe');
 const { planMokaLinks } = require('./job-moka-link');
@@ -1281,11 +1281,11 @@ function isMeaningfulCandidateRecord(candidate = {}) {
 async function loadCandidateScreening(context, id) {
   const db = getDatabase();
   const candidateResult = await db.collection(COLLECTIONS.candidates).doc(id).get().catch(() => ({ data: null }));
-  const candidate = candidateResult.data;
+  const candidate = storedRecord(candidateResult);
   if (!candidate) throw serviceError('Not found', 404);
   assertSameTenant(candidate, context);
   const screeningResult = await db.collection(COLLECTIONS.screenings).doc(id).get().catch(() => ({ data: null }));
-  const screening = screeningResult.data || {};
+  const screening = storedRecord(screeningResult) || {};
   if (screening.tenantId) assertSameTenant(screening, context);
   return {
     id,
