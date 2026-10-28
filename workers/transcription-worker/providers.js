@@ -8,6 +8,12 @@ function providerError(message, status = 502) {
   return error;
 }
 
+function normalizeBaiduText(value) {
+  if (Array.isArray(value)) return value.map(item => typeof item === 'string' ? item : item?.text || item?.result || '').filter(Boolean).join('\n').trim();
+  if (value && typeof value === 'object') return String(value.text || value.result || '').trim();
+  return String(value || '').trim();
+}
+
 function assertUrl(value, name) {
   try { return new URL(value).toString(); } catch { throw providerError(`${name} 配置无效`, 503); }
 }
