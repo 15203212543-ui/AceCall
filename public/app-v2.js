@@ -616,12 +616,13 @@ async function refreshEnteredView(view) {
   const stillHere = () => serial === enteredViewSerial && app.view === view;
   try {
     if (CASE_REFRESH_VIEWS.has(view)) {
-      const response = await authenticatedFetch(apiUrl('/api/cases'));
+      const response = await authenticatedFetch(apiUrl('/api/cases'), { timeoutMs: 60000 });
       if (!stillHere()) return;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(cloudError(response.status, data));
       const previous = new Map(app.cases.map(item => [item.id, item]));
-      app.cases = (data.cases || []).filter(isMeaningfulCandidate).map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+      app.cases = (data.cases || []).filter(isMeaningfulCandidate).map(item => data.bodiesIncluded ? item : retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+      if (data.bodiesIncluded) app.analysisTextsLoaded = true;
       if (app.remoteState) app.remoteState.cases = app.cases;
       localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
       if (stillHere()) renderCurrent();

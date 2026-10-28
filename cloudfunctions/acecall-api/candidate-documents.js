@@ -24,6 +24,20 @@ function presentCaseSummary(candidate = {}, screening = {}) {
   return { ...view, ...screeningFlags(screening) };
 }
 
+function presentCaseDetail(candidate = {}, screening = {}, document = null) {
+  const view = presentCaseSummary(candidate, screening);
+  const resume = String(document?.cleanedText || document?.rawText || candidate.resume || '');
+  view.resume = resume;
+  if (resume.trim()) view.resumeOmitted = false;
+  view.preparation = screening.preparation || null;
+  view.transcript = String(screening.transcript || '');
+  view.communicationSummary = screening.communicationSummary || null;
+  view.report = screening.report || null;
+  view.callRecording = screening.callRecording || null;
+  if (screening.consentConfirmed) view.consentConfirmed = true;
+  return view;
+}
+
 function presentCandidateForState(candidate = {}) {
   const resume = String(candidate.resume || '');
   const view = { ...candidate };
@@ -88,4 +102,4 @@ function mergeStoredCandidate(stored, incoming = {}) {
   return next;
 }
 
-module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, screeningFlags, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate };
+module.exports = { resumeSummary, presentCandidateForState, presentCaseSummary, presentCaseDetail, screeningFlags, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate };

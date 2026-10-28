@@ -18,7 +18,7 @@ const { internalCluesFromFacts, rubricFromCorrections } = require('./industry-si
 const { listIndustryNews } = require('./industry-news');
 const { prepareTenantInterviewReminders, readInterviewReminders } = require('./interview-reminder');
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
-const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate } = require('./candidate-documents');
+const { presentCandidateForState, presentCaseSummary, presentCaseDetail, buildLegacyDocument, storedRecord, recordInTenant, mergeStoredCandidate } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
 const { findDuplicateCandidate, collapseDuplicateCases, resumeIdentity } = require('./candidate-dedupe');
 const { planMokaLinks } = require('./job-moka-link');
@@ -164,7 +164,7 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, await updateMember(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await loadState(await getRequestContext(request)));
-    if (request.method === 'GET' && url.pathname === '/api/cases') return sendJson(response, 200, { cases: await loadCaseSummaries(await getRequestContext(request)) });
+    if (request.method === 'GET' && url.pathname === '/api/cases') return sendJson(response, 200, await loadCaseDetails(await getRequestContext(request)));
     if (request.method === 'GET' && url.pathname === '/api/jobs') return sendJson(response, 200, { jobs: await loadJobCatalog(await getRequestContext(request)) });
     if (request.method === 'GET' && url.pathname === '/api/screenings/texts') return sendJson(response, 200, await loadScreeningTexts(await getRequestContext(request)));
     if (request.method === 'GET' && url.pathname.match(/^\/api\/candidates\/[^/]+\/screening$/)) {
@@ -1256,6 +1256,53 @@ async function loadDocumentText(context, id) {
     parseVersion: document.parseVersion || '',
     lineMap: document.pageOrLineMap || []
   };
+}
+
+async function listResumeTexts(tenantId) {
+  const db = getDatabase();
+  const documents = [];
+  for (let skip = 0; skip < 2000; skip += 100) {
+    let query = db.collection(COLLECTIONS.documents).where({ tenantId });
+    if (skip) query = query.skip(skip);
+    const result = await query.limit(100).get();
+    const batch = result.data || [];
+    for (const item of batch) {
+      const cleanedText = String(item.cleanedText || '');
+      documents.push({
+        id: item.id || item._id || '',
+        candidateId: item.candidateId || '',
+        cleanedText,
+        rawText: cleanedText.trim() ? '' : String(item.rawText || ''),
+        updatedAt: item.updatedAt || ''
+      });
+    }
+    if (batch.length < 100) break;
+  }
+  return documents;
+}
+
+async function loadCaseDetails(context) {
+  const db = getDatabase();
+  const [candidatesResult, screeningsResult, documents] = await Promise.all([
+    db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).orderBy('createdAt', 'desc').limit(500).get(),
+    db.collection(COLLECTIONS.screenings).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(500).get(),
+    listResumeTexts(context.tenantId)
+  ]);
+  const screenings = new Map();
+  for (const item of screeningsResult.data || []) if (!screenings.has(item.candidateId)) screenings.set(item.candidateId, item);
+  const documentsById = new Map();
+  const documentsByCandidate = new Map();
+  for (const document of documents) {
+    if (document.id && !documentsById.has(document.id)) documentsById.set(document.id, document);
+    const current = documentsByCandidate.get(document.candidateId);
+    if (document.candidateId && (!current || String(document.updatedAt) > String(current.updatedAt))) documentsByCandidate.set(document.candidateId, document);
+  }
+  const cases = (candidatesResult.data || []).filter(isMeaningfulCandidateRecord).map(candidate => {
+    const screening = screenings.get(candidate.id || candidate._id) || {};
+    const document = documentsById.get(candidate.documentId) || documentsByCandidate.get(candidate.id || candidate._id) || null;
+    return cleanDocument(presentCaseDetail(candidate, screening, document));
+  });
+  return { cases: collapseDuplicateCases(cases), bodiesIncluded: true };
 }
 
 async function loadCaseSummaries(context) {
