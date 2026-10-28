@@ -833,3 +833,6 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .job-pager button:disabled{color:#9aa5b5;cursor:not-allowed}
 .job-pager span{color:#7b899d;font-size:10px}
 @media(max-width:900px){.jobs-page{padding-bottom:45px}}
+.profile-level{display:flex;flex-wrap:wrap;gap:4px;align-items:center;width:100%}
+.profile-level>span{width:28px;color:var(--muted);font-size:9px}
+.profile-level>strong{font-size:12px;line-height:1.4}
