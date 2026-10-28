@@ -882,14 +882,14 @@ function renderTalentMarket() {
    const companyFilters = [...new Set(companies.flatMap(item => [...(item.industries || []), ...(item.products || [])]))].slice(0, 8);
    const companyListRows = filteredCompanyRecords.slice(0, 50).map((item, index) => `<button type="button" class="intelligence-company-card ${item.key === app.intelligenceCompanyDetail ? 'active' : ''}" data-intelligence-company="${escapeHtml(item.key)}"><span class="intelligence-company-mark">▥</span><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml([...(item.industries || []), ...(item.businesses || [])].slice(0, 3).join(' · ') || '候选人工作经历')}</small><i>${item.count} 条关联材料 · ${(item.sources || []).join(' / ') || '来源待确认'}</i></span><b>›</b></button>`).join('');
    const companyDynamics = filteredCompanyRecords.slice(0, 4).map(item => `<article class="intelligence-company-dynamic"><span class="intelligence-dynamic-icon">⌁</span><div><strong>${escapeHtml(item.name)}人才背景概览</strong><p>${escapeHtml(companyBrief(item))}</p><small>${item.count} 份候选人材料 · 资料来自工作经历</small></div></article>`).join('');
-   const companyDetail = `<div class="intelligence-company-page"><div class="intelligence-company-toolbar"><input id="intelligenceCompanySearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="搜索公司名称或行业"><button type="button" data-intelligence-company-clear>＋</button></div><div class="intelligence-company-filter-row"><button class="active" type="button" data-company-filter="">全部公司</button>${companyFilters.map(filter => `<button type="button" data-company-filter="${escapeHtml(filter)}">${escapeHtml(filter)}</button>`).join('')}</div><section class="surface intelligence-company-list-surface"><div class="surface-head"><div><h2>公司人才分布</h2><p class="surface-subtitle">根据候选人工作经历汇总，行业归属以对应任职内容为准</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body intelligence-company-list">${companyListRows || '<div class="intelligence-home-empty">当前候选人材料中没有可展示的公司信息。</div>'}</div></section><section class="surface intelligence-company-dynamics"><div class="surface-head"><div><h2>重点公司概览</h2><p class="surface-subtitle">展示候选人覆盖情况与相关经验方向，不代表企业官方动态</p></div></div><div class="surface-body">${companyDynamics || '<div class="intelligence-home-empty">当前没有可展示的公司人才信息。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>公司报告</h2><p class="surface-subtitle">每家公司只保留一份，简历和转写增加后更新这一份</p></div></div><div class="surface-body" data-intelligence-report="company"><div class="intelligence-home-empty">点开一家公司即可看到已写好的报告。材料有变化时，后台会更新这一份。</div></div></section></div>`;
+   const companyDetail = `<div class="intelligence-company-page"><div class="intelligence-company-toolbar"><input id="intelligenceCompanySearch" type="search" value="${escapeHtml(app.intelligenceQuery || '')}" placeholder="搜索公司名称或行业"><button type="button" data-intelligence-company-clear>清空</button></div><div class="intelligence-company-filter-row"><button class="active" type="button" data-company-filter="">全部公司</button>${companyFilters.map(filter => `<button type="button" data-company-filter="${escapeHtml(filter)}">${escapeHtml(filter)}</button>`).join('')}</div><section class="surface intelligence-company-list-surface"><div class="surface-head"><div><h2>公司人才分布</h2><p class="surface-subtitle">根据候选人工作经历汇总，行业归属以对应任职内容为准</p></div><button class="link-action" type="button" data-intelligence-home>返回首页 →</button></div><div class="surface-body intelligence-company-list">${companyListRows || '<div class="intelligence-home-empty">当前候选人材料中没有可展示的公司信息。</div>'}</div></section><section class="surface intelligence-company-dynamics"><div class="surface-head"><div><h2>重点公司概览</h2><p class="surface-subtitle">展示候选人覆盖情况与相关经验方向，不代表企业官方动态</p></div></div><div class="surface-body">${companyDynamics || '<div class="intelligence-home-empty">当前没有可展示的公司人才信息。</div>'}</div></section><section class="surface"><div class="surface-head"><div><h2>公司报告</h2><p class="surface-subtitle">每家公司只保留一份，简历和转写增加后更新这一份</p></div></div><div class="surface-body" data-intelligence-report="company"><div class="intelligence-home-empty">点开一家公司即可看到已写好的报告。材料有变化时，后台会更新这一份。</div></div></section></div>`;
    const root = $('#intelligenceView');
    if (current) {
      root.innerHTML = `<div class="page research-page intelligence-research-page"><div class="page-title"><div><button class="intelligence-back" type="button" data-intelligence-home>← 行业情报</button><h1>${current.title}</h1><p>${current.desc}</p></div><select id="intelligenceTopicSource"><option value="">全部访谈来源</option><option>正式面试转写</option><option>电话沟通转写</option></select></div>${topic === 'industry' ? industryDetail : topic === 'company' ? companyDetail : `<div class="intelligence-detail-layout"><section class="surface"><div class="surface-head"><div><h2>${current.label}</h2><p class="surface-subtitle">共 ${current.data.length} 项，点击查看资料出处</p></div></div><div class="surface-body intelligence-detail-list">${detailRows || '<div class="intelligence-home-empty">当前主题暂无可展示信息。</div>'}</div></section><section class="surface intelligence-topic-explainer"><div class="surface-head"><div><h2>统计说明</h2><p class="surface-subtitle">范围与口径</p></div></div><div class="surface-body"><p>${topic === 'talent' ? '本页统计候选人在访谈中明确说明的产品与业务经验，未说明的内容不纳入。' : '本页汇总行业、公司、产品和业务信息，具体出处可在详情中查看。'}</p><div class="intelligence-source-mini"><b>${sourceSummary.total}</b><span>份候选人访谈纳入统计</span></div></div></section></div>`}</div>`;
      const source = $('#intelligenceTopicSource'); if (source) { source.value = app.intelligenceSource || ''; source.addEventListener('change', event => { app.intelligenceSource = event.target.value; source.value = app.intelligenceSource || ''; renderIntelligence(); }); }
      $('#intelligenceView [data-intelligence-home]')?.addEventListener('click', () => { app.intelligenceTopic = ''; renderIntelligence(); });
      $$('#intelligenceView [data-intelligence-object]').forEach(button => button.addEventListener('click', () => { app.intelligenceSelected = button.dataset.intelligenceObject; if (topic === 'industry') { app.intelligenceIndustryDetail = button.dataset.intelligenceObject; renderIntelligence(); } else toast('已选择该项'); }));
-     $('#intelligenceCompanySearch')?.addEventListener('input', event => { app.intelligenceQuery = event.target.value; renderIntelligence(); });
+     $('#intelligenceCompanySearch')?.addEventListener('input', event => { const cursor = event.target.selectionStart; app.intelligenceQuery = event.target.value; renderIntelligence(); const input = $('#intelligenceCompanySearch'); if (!input) return; input.focus(); const pos = Math.min(cursor ?? input.value.length, input.value.length); input.setSelectionRange(pos, pos); });
      $('#intelligenceView [data-intelligence-company-clear]')?.addEventListener('click', () => { app.intelligenceQuery = ''; renderIntelligence(); });
      $$('#intelligenceView [data-company-filter]').forEach(button => button.addEventListener('click', () => { app.intelligenceQuery = button.dataset.companyFilter || ''; renderIntelligence(); }));
     $$('#intelligenceView [data-intelligence-company]').forEach(button => button.addEventListener('click', () => { app.intelligenceCompanyDetail = button.dataset.intelligenceCompany || ''; renderIntelligence(); }));
@@ -939,29 +939,47 @@ function renderTalentMarket() {
    return [...new Set(values.map(value => String(value || '').replace(/\s+/g, ' ').trim()).filter(value => value.length >= 8))].slice(0, 6).map(value => value.slice(0, 180));
  }
  function reportSourcePack(kind, item) {
-   const records = intelligenceSourceRecords().filter(record => (!app.intelligenceSource || record.sourceType === app.intelligenceSource) && intelligenceMatchesPeriod(record, app.intelligencePeriod));
+   const records = companyMaterialRecords().filter(record => (!app.intelligenceSource || record.sourceType === app.intelligenceSource || record.sourceType === '简历') && intelligenceMatchesPeriod(record, app.intelligencePeriod));
    const resumes = [];
    const transcripts = kind === 'industry' ? [...(item.evidenceSnippets || [])] : [];
    records.forEach(record => {
+     const resumeText = record.resume || record.resumeSummary || '';
      if (kind === 'industry') {
-       extractResumeWorkExperiences(record.resume || '').forEach(experience => {
+       extractResumeWorkExperiences(resumeText).forEach(experience => {
          if (companyIndustryFromName(experience.company).includes(item.name) || String(experience.text || '').includes(item.name)) resumes.push(experience.text);
        });
+       splitEvidenceSentences(resumeText).filter(sentence => isReliableIndustryEvidence(sentence, item.name)).forEach(sentence => resumes.push(sentence));
        return;
      }
-     extractResumeWorkExperiences(record.resume || '').forEach(experience => {
+     extractResumeWorkExperiences(resumeText).forEach(experience => {
        if (normalizeCompanyName(experience.company).toLowerCase() === item.key) resumes.push(experience.text);
      });
-     splitEvidenceSentences(record.transcript || '').filter(sentence => sentence.includes(item.name)).forEach(sentence => transcripts.push(sentence));
+     splitEvidenceSentences(`${resumeText}\n${record.transcript || ''}`).forEach(sentence => {
+       if (!sentence.includes(item.name)) return;
+       if (String(record.transcript || '').includes(sentence)) transcripts.push(sentence);
+       else resumes.push(sentence);
+     });
    });
    if (kind === 'company' && item.evidence) resumes.push(item.evidence);
    return { resumeExcerpts: uniqueReportLines(resumes), transcriptExcerpts: uniqueReportLines(transcripts) };
  }
+ function draftIntelligenceReport(kind, item, pack) {
+   const resumes = pack.resumeExcerpts || [];
+   const transcripts = pack.transcriptExcerpts || [];
+   const people = item.candidateCount || item.count || 0;
+   if (!resumes.length && !transcripts.length) {
+     return { kind, name: item.name, overview: `《${item.name}》这份报告只根据已解析的简历和面试转写来写。当前这两类材料里还没有直接出现该名称下的任职或业务描述。`, resumeFindings: [], transcriptFindings: [], gaps: '之后有新的简历或转写解析到这个名称，会更新这一份，不另起第二份。', materialCount: item.count || 0, candidateCount: people, drafted: true };
+   }
+   return { kind, name: item.name, overview: `《${item.name}》这份报告由已解析材料整理：简历 ${resumes.length} 条，面试转写 ${transcripts.length} 条，涉及 ${people} 位候选人。下面只保留材料里已经写到的内容。`, resumeFindings: resumes.slice(0, 4), transcriptFindings: transcripts.slice(0, 4), gaps: !resumes.length ? '简历里还没有对上这个名称的任职描述。' : !transcripts.length ? '面试转写里还没有直接谈到这个名称。' : '材料没有写到的公司、数字和趋势，不在这份报告里补充。', materialCount: item.count || 0, candidateCount: people, drafted: true };
+ }
+ function presentIntelligenceReport(stored, draft) {
+   if (!stored?.overview) return draft;
+   return { ...draft, ...stored, resumeFindings: stored.resumeFindings?.length ? stored.resumeFindings : draft.resumeFindings, transcriptFindings: stored.transcriptFindings?.length ? stored.transcriptFindings : draft.transcriptFindings, gaps: stored.gaps || draft.gaps };
+ }
  function reportMarkup(report, pending) {
-   if (pending && !report) return '<div class="intelligence-home-empty">这份报告正在后台整理，写好后会显示在这里。</div>';
-   if (!report) return '<div class="intelligence-home-empty">同一对象只保留一份报告。材料增加后，后台会更新这一份。</div>';
-   const list = (title, items) => items?.length ? `<div class="intelligence-selected-evidence"><span>${title}</span>${items.map(line => `<p>${escapeHtml(line)}</p>`).join('')}</div>` : '';
-   return `<article class="intelligence-selected-evidence"><span>报告</span><p>${escapeHtml(report.overview || '')}</p><small>${report.materialCount || 0} 份材料 · ${report.candidateCount || 0} 位候选人 · 同一对象只保留这一份</small></article>${list('简历中的事实', report.resumeFindings)}${list('转写中的事实', report.transcriptFindings)}${report.gaps ? `<p>${escapeHtml(report.gaps)}</p>` : ''}`;
+   if (!report?.overview) return '<div class="intelligence-home-empty">点开一个行业或一家公司后，这里会按简历和转写显示一份报告。</div>';
+   const list = (title, items, empty) => `<div class="intelligence-selected-evidence"><span>${title}</span>${items?.length ? items.map(line => `<p>${escapeHtml(line)}</p>`).join('') : `<p>${empty}</p>`}</div>`;
+   return `<article class="intelligence-selected-evidence"><span>报告</span><p>${escapeHtml(report.overview || '')}</p><small>${report.materialCount || 0} 份材料 · ${report.candidateCount || 0} 位候选人 · 同一对象只保留这一份${pending ? ' · 正在整理表述' : ''}</small></article>${list('简历中的事实', report.resumeFindings, '简历里还没有可引用的任职描述。')}${list('转写中的事实', report.transcriptFindings, '面试转写里还没有直接谈到这个名称。')}${report.gaps ? `<p>${escapeHtml(report.gaps)}</p>` : ''}`;
  }
  function reportWritePlan(kind, item) {
    const pack = reportSourcePack(kind, item);
@@ -980,9 +998,11 @@ function renderTalentMarket() {
    slot.innerHTML = reportMarkup(report, pending);
  }
  function refreshIntelligenceReport(kind, item) {
-   const plan = reportWritePlan(kind, item);
+   const pack = reportSourcePack(kind, item);
+   const draft = draftIntelligenceReport(kind, item, pack);
    const stored = readIntelligenceReports()[`${kind}:${item.name}`];
-   paintOpenReport(kind, item, stored, Boolean(plan) && REMOTE_BACKEND);
+   const plan = reportWritePlan(kind, item);
+   paintOpenReport(kind, item, presentIntelligenceReport(stored, draft), Boolean(plan) && REMOTE_BACKEND);
    if (plan && REMOTE_BACKEND) app.intelligenceReportPriority = { kind, key: item.key, name: item.name };
  }
  function queuedReportSubjects() {
@@ -1014,11 +1034,11 @@ function renderTalentMarket() {
        const topic = app.intelligenceTopic;
        if (topic === 'industry' && app.intelligenceIndustryDetail) {
          const item = intelligenceDimensionRecords('industry', [], { period: 'all' }).find(row => row.key === app.intelligenceIndustryDetail);
-         if (item) paintOpenReport('industry', item, readIntelligenceReports()[`industry:${item.name}`], Boolean(reportWritePlan('industry', item)));
+         if (item) paintOpenReport('industry', item, presentIntelligenceReport(readIntelligenceReports()[`industry:${item.name}`], draftIntelligenceReport('industry', item, reportSourcePack('industry', item))), Boolean(reportWritePlan('industry', item)));
        }
        if (topic === 'company' && app.intelligenceCompanyDetail) {
          const item = intelligenceRecords({ period: 'all' }).find(row => row.key === app.intelligenceCompanyDetail);
-         if (item) paintOpenReport('company', item, readIntelligenceReports()[`company:${item.name}`], Boolean(reportWritePlan('company', item)));
+         if (item) paintOpenReport('company', item, presentIntelligenceReport(readIntelligenceReports()[`company:${item.name}`], draftIntelligenceReport('company', item, reportSourcePack('company', item))), Boolean(reportWritePlan('company', item)));
        }
      }
    } catch (error) {
@@ -1036,7 +1056,7 @@ function renderTalentMarket() {
      if (!result?.report?.overview) { app.intelligenceReportFailed = { ...(app.intelligenceReportFailed || {}), [flight]: plan.sourceKey }; return; }
      const next = { ...result.report, sourceKey: plan.sourceKey, savedAt: result.report.updatedAt || new Date().toISOString() };
      writeIntelligenceReport(next);
-     paintOpenReport(kind, item, next, false);
+     paintOpenReport(kind, item, presentIntelligenceReport(next, draftIntelligenceReport(kind, item, plan.pack)), false);
    } catch (error) {
      app.intelligenceReportFailed = { ...(app.intelligenceReportFailed || {}), [flight]: plan.sourceKey };
      console.warn('[AceCall intelligence report]', error);
@@ -1186,7 +1206,7 @@ function renderTalentMarket() {
      const before = line.slice(0, date?.index || 0).replace(/[|｜·•,，、:：]+$/g, '').trim();
      const after = line.slice((date?.index || 0) + (date?.[0]?.length || 0)).replace(/^[|｜·•,，、:：\s]+/g, '').trim();
      const previous = lineIndex > 0 ? section[lineIndex - 1].trim() : '';
-     const company = [before, after, previous].map(normalizeCompanyName).find(isReliableCompanyName) || '';
+     const company = [before, after, previous].map(normalizeCompanyName).find(name => isReliableCompanyName(name) || isReliableStructuredCompanyName(name)) || '';
      const nextIndex = starts[index + 1] ?? section.length;
      return { company, text: section.slice(Math.max(0, lineIndex - (company === normalizeCompanyName(previous) ? 1 : 0)), nextIndex).join('。') };
    }).filter(item => item.company);
@@ -1215,6 +1235,7 @@ function renderTalentMarket() {
      if (!evidenceSnippets.length) return [];
      const relatedCompanies = new Set();
      evidenceSnippets.forEach(sentence => extractCompanyEntities(sentence).forEach(name => relatedCompanies.add(name)));
+     extractOrganizationNames(`${item.resume || ''}\n${item.resumeSummary || ''}\n${item.transcript || ''}`).forEach(name => relatedCompanies.add(name));
      if (isReliableStructuredCompanyName(currentCompany) && evidenceSnippets.some(sentence => sentence.includes(currentCompany) || /目前|现在|当前|我们公司|所在公司|这家公司/.test(sentence))) relatedCompanies.add(currentCompany);
      experiences.forEach(experience => {
        const experienceSentences = splitEvidenceSentences(experience.text);
@@ -1285,21 +1306,22 @@ function renderTalentMarket() {
     // Combine résumé, phone-screen, and formal interview evidence; source labels remain available for later filtering.
    const source = intelligenceSourceRecords();
    const groups = new Map();
-   source.filter(item => (!filters.source || item.sourceType === filters.source) && intelligenceMatchesPeriod(item, filters.period)).forEach((item, index) => {
-     const text = `${item.transcript || ''}\n${item.resume || ''}`.replace(/\r/g, '');
+   companyMaterialRecords().filter(item => (!filters.source || item.sourceType === filters.source || item.sourceType === '简历') && intelligenceMatchesPeriod(item, filters.period)).forEach((item, index) => {
+     const text = `${item.transcript || ''}\n${item.resume || ''}\n${item.resumeSummary || ''}`.replace(/\r/g, '');
      const recordKey = item.recordKey || item.id || item._id || `${item.sourceType}-${index}`;
      const structuredCompanies = item.resumeMeta?.companies || item.companies || [];
      const structuredCompany = item.resumeMeta?.currentCompany || item.currentCompany || item.company || item.mokaData?.companyName || '';
      const structuredCompanyKeys = new Set([structuredCompany, ...structuredCompanies].map(normalizeCompanyName).filter(isReliableStructuredCompanyName).map(name => name.toLowerCase()));
-     const experiences = extractResumeWorkExperiences(item.resume || '');
+     const experiences = extractResumeWorkExperiences(item.resume || item.resumeSummary || '');
      const resumeNames = [...structuredCompanies, ...experiences.map(experience => experience.company), ...extractResumeCompanyNames(item.resume || '')];
      const industrySignals = extractIndustrySignals(item);
-     const explicitTextNames = item.resume ? [] : extractCompanyEntities(text);
+     const explicitTextNames = extractOrganizationNames(text);
      const names = [...new Set([structuredCompany, ...resumeNames, ...explicitTextNames].filter(Boolean))];
      names.forEach(rawName => {
        const name = normalizeCompanyName(rawName);
        const key = name.toLowerCase();
-       if (!isReliableCompanyName(name) && !structuredCompanyKeys.has(key)) return;
+       const acceptedKeys = new Set([...explicitTextNames, ...resumeNames, ...experiences.map(experience => experience.company)].map(value => normalizeCompanyName(value).toLowerCase()));
+       if (!isReliableCompanyName(name) && !structuredCompanyKeys.has(key) && !acceptedKeys.has(key)) return;
        const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], industries: [], products: [], businesses: [], recordKeys: [] };
        const isNewRecord = !existing.recordKeys.includes(recordKey);
        if (isNewRecord) { existing.count += 1; if (item.transcript) existing.transcripts += 1; existing.recordKeys.push(recordKey); }
@@ -1316,7 +1338,13 @@ function renderTalentMarket() {
        groups.set(key, existing);
      });
    });
-   return [...groups.values()];
+   return [...groups.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
+ }
+ function companyMaterialRecords() {
+   const transcribed = intelligenceSourceRecords();
+   const seen = new Set(transcribed.map(item => item.candidateId || item.id));
+   const resumes = app.cases.filter(item => String(item.resume || item.resumeSummary || '').trim() && !seen.has(item.id)).map(item => ({ ...item, resume: item.resume || item.resumeSummary || '', transcript: '', source: 'acecall', sourceType: '简历', recordKey: `resume-${item.id}` }));
+   return [...transcribed, ...resumes];
  }
 
  function intelligenceSourceRecords() {
@@ -1333,6 +1361,31 @@ function renderTalentMarket() {
    }).filter(Boolean);
  }
 
+ function acceptableOrganizationName(name = '') {
+   if (!name || name.length < 2 || name.length > 24) return false;
+   if (/哪|什么|这类|一类|机构|行业|业务|客户|系统|经验|岗位|项目/.test(name)) return false;
+   if (isReliableCompanyName(name)) {
+     const head = name.replace(/(?:股份有限公司|有限公司|集团公司|集团|科技|证券|银行|基金|保险|资本)$/, '');
+     if (!head || /^(服务|我在|在|从事|负责|一家|这个|那个|相关|所属|国内|关于|对于|来自|通过|以及|或者|如果|因为|所以|之前|目前|现在)$/.test(head)) return false;
+     return true;
+   }
+   return isReliableStructuredCompanyName(name);
+ }
+ function extractOrganizationNames(text = '') {
+   const result = new Set();
+   extractCompanyEntities(text).forEach(name => { if (acceptableOrganizationName(name)) result.add(name); });
+   const suffixPattern = /(?<![\u4e00-\u9fffA-Za-z0-9])([\u4e00-\u9fffA-Za-z0-9]{2,12}(?:股份有限公司|有限公司|集团|科技|证券|银行|基金|保险|资本))/g;
+   for (const match of String(text).matchAll(suffixPattern)) {
+     const name = normalizeCompanyName(match[1]);
+     if (acceptableOrganizationName(name)) result.add(name);
+   }
+   const employerPattern = /(?:就职于|任职于|供职于|曾在|现就职于|目前在|之前在)\s*([\u4e00-\u9fffA-Za-z0-9]{2,16})/g;
+   for (const match of String(text).matchAll(employerPattern)) {
+     const name = normalizeCompanyName(String(match[1] || '').replace(/(负责|担任|从事|工作|任职).*$/, ''));
+     if (acceptableOrganizationName(name)) result.add(name);
+   }
+   return [...result];
+ }
  function extractCompanyEntities(text = '') {
    const result = new Set();
    const sentencePattern = /[^。！？\n]{0,60}(?:就职于|任职于|供职于|来自|曾在|上一家公司是|目前任职于|公司名称是|任职公司为)\s*([A-Za-z0-9\u4e00-\u9fff]{2,30}(?:公司|集团|科技|银行|证券|基金|保险|资本|传媒|教育|医疗|互联网|软件|股份|有限))[^。！？\n]{0,60}/g;
@@ -1365,7 +1418,7 @@ function renderTalentMarket() {
      const left = line.slice(0, date.index).replace(/[|｜·•,，、:：]+$/g, '').trim();
      const previous = index > 0 ? section[index - 1].replace(datePattern, '').trim() : '';
      const candidate = normalizeCompanyName(left || previous);
-     if (candidate && isReliableCompanyName(candidate) && !result.includes(candidate)) result.push(candidate);
+     if (candidate && (isReliableCompanyName(candidate) || isReliableStructuredCompanyName(candidate)) && !result.includes(candidate)) result.push(candidate);
    });
    return result.slice(0, 8);
  }
