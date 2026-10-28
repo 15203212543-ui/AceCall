@@ -1347,24 +1347,47 @@ async function claimCandidateIdentity(db, tenantId, candidateId, incoming) {
   return '';
 }
 
+async function requestMokaJobPage(client, hireMode, offset) {
+  try {
+    const response = await client.request('/api-platform/v1/jobs/getJobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hireMode, limit: 100, offset, status: 'open' })
+    });
+    const jobs = response.body?.data?.jobs;
+    if (!response.ok || !Array.isArray(jobs)) return null;
+    return {
+      total: Number(response.body.data?.total || jobs.length),
+      jobs: jobs.map(job => ({ id: String(job.id || '').trim(), name: String(job.title || job.name || '').trim(), code: String(job.mjCode || '').trim() })).filter(job => job.id && job.name)
+    };
+  } catch { return null; }
+}
+
+async function listOpenMokaJobs(client, hireMode) {
+  const first = await requestMokaJobPage(client, hireMode, 0);
+  if (!first?.jobs.length) return [];
+  const jobs = [...first.jobs];
+  const pageSize = first.jobs.length;
+  const offsets = [];
+  for (let offset = pageSize; offset < first.total; offset += pageSize) offsets.push(offset);
+  for (let index = 0; index < offsets.length; index += 8) {
+    const pages = await Promise.all(offsets.slice(index, index + 8).map(offset => requestMokaJobPage(client, hireMode, offset)));
+    for (const page of pages) if (page) jobs.push(...page.jobs);
+  }
+  return jobs;
+}
+
 async function listMokaJobOptions() {
   const client = createMokaClient();
   if (!client.config.baseUrl || !client.config.apiKey) return [];
   const collected = [];
-  for (const path of [client.config.jobsPath, client.config.requisitionsPath]) {
-    try {
-      const response = await client.request(path);
-      if (!response.ok) continue;
-      const records = flattenMokaRecords(response.body).map(normalizeMokaJob).filter(job => job.id && job.name);
-      if (records.length) { collected.push(...records); break; }
-    } catch {}
-  }
+  for (const hireMode of ['social', 'campus']) collected.push(...await listOpenMokaJobs(client, hireMode));
   const seen = new Set();
   return collected.filter(job => {
     if (seen.has(job.id)) return false;
     seen.add(job.id);
     return true;
-  }).slice(0, 500).map(job => ({ id: job.id, name: job.name, department: job.department || '' }));
+  });
 }
 
 async function linkStoredJobsToMoka(context) {
@@ -1375,7 +1398,7 @@ async function linkStoredJobsToMoka(context) {
   const db = getDatabase();
   const now = new Date().toISOString();
   for (const link of links) {
-    await db.collection(COLLECTIONS.jobs).doc(link.id).update({ mokaJobId: link.mokaJobId, syncedFromMokaAt: now, updatedAt: now });
+    await db.collection(COLLECTIONS.jobs).doc(link.id).update({ mokaJobId: link.mokaJobId, mokaJobCode: link.mokaJobCode || '', syncedFromMokaAt: now, updatedAt: now });
   }
   return { ok: true, linked: links, mokaJobs };
 }
@@ -1391,9 +1414,10 @@ async function assignMokaJob(context, id, input = {}) {
   assertSameTenant(existing, context);
   const options = await listMokaJobOptions();
   if (!options.length) throw serviceError('暂时没有拉到 Moka 岗位，请稍后重试', 503);
-  if (!options.some(job => String(job.id) === mokaJobId)) throw serviceError('这个 Moka 岗位不在当前可关联列表中', 400);
+  const selected = options.find(job => String(job.id) === mokaJobId);
+  if (!selected) throw serviceError('这个 Moka 岗位不在当前可关联列表中', 400);
   const now = new Date().toISOString();
-  await db.collection(COLLECTIONS.jobs).doc(id).update({ mokaJobId, syncedFromMokaAt: now, updatedAt: now });
+  await db.collection(COLLECTIONS.jobs).doc(id).update({ mokaJobId, mokaJobCode: selected.code || '', syncedFromMokaAt: now, updatedAt: now });
   return { ok: true, id, mokaJobId };
 }
 
@@ -1405,7 +1429,7 @@ async function saveJob(context, id, input) {
   const existingJobResult = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
   const existingJob = Array.isArray(existingJobResult.data) ? existingJobResult.data[0] : existingJobResult.data;
   const { _id, _openid, ...storedJob } = existingJob && typeof existingJob === 'object' ? existingJob : {};
-  const job = { ...storedJob, ...pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']) };
+  const job = { ...storedJob, ...pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'mokaJobCode', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']) };
   if (input.confirmProfile) {
     const confirmed = confirmJobProfile(draftJobProfile({ ...input, profile: input.profile }), context.uid, now);
     job.profile = confirmed;
