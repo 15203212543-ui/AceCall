@@ -10,7 +10,7 @@ and writes the result back to the same task document.
 - `TCB_ENV`: canonical CloudBase environment id.
 - `CLOUDBASE_APIKEY`: server API key with database and storage access.
 - `TRANSCRIPTION_PROVIDER`: `baidu`, `whisper`, or `funasr` (default: `baidu`).
-- `WORKER_INTERVAL_MS`: polling interval, default `15000`.
+- `WORKER_INTERVAL_MS`: queued-task polling interval in milliseconds, default and maximum `3000`, minimum `1000`.
 
 Provider configuration is intentionally server-side:
 

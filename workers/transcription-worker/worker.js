@@ -9,7 +9,7 @@ const { once } = require('node:events');
 const { createProvider } = require('./providers');
 
 const PORT = Number(process.env.PORT || 9000);
-const INTERVAL_MS = Math.max(5_000, Number(process.env.WORKER_INTERVAL_MS || 5_000));
+const INTERVAL_MS = Math.min(3_000, Math.max(1_000, Number(process.env.WORKER_INTERVAL_MS || 3_000)));
 const COLLECTION = 'acecall_transcription_tasks';
 const WORKER_ID = process.env.WORKER_ID || `worker-${crypto.randomUUID()}`;
 const LEASE_MS = Math.max(60_000, Number(process.env.TRANSCRIPTION_LEASE_MS || 60 * 60 * 1000));
