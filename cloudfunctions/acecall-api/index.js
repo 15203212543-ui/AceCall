@@ -20,7 +20,8 @@ const { prepareTenantInterviewReminders, readInterviewReminders } = require('./i
 const { consumeRateLimit, redactSecrets, assertSameTenant } = require('./request-guard');
 const { presentCandidateForState, presentCaseSummary, buildLegacyDocument, mergeStoredCandidate } = require('./candidate-documents');
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
-const { findDuplicateCandidate } = require('./candidate-dedupe');
+const { findDuplicateCandidate, collapseDuplicateCases, resumeIdentity } = require('./candidate-dedupe');
+const { planMokaLinks } = require('./job-moka-link');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -165,6 +166,17 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname.match(/^\/api\/candidates\/[^/]+\/screening$/)) {
       const id = validateId(url.pathname.split('/')[3]);
       return sendJson(response, 200, await loadCandidateScreening(await getRequestContext(request), id));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/integrations/moka/jobs') {
+      await getRequestContext(request);
+      return sendJson(response, 200, { jobs: await listMokaJobOptions() });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/jobs/moka-links') {
+      return sendJson(response, 200, await linkStoredJobsToMoka(await getRequestContext(request)));
+    }
+    if (request.method === 'PUT' && /^\/api\/jobs\/[^/]+\/moka-link$/.test(url.pathname)) {
+      const id = validateId(url.pathname.split('/')[3]);
+      return sendJson(response, 200, await assignMokaJob(await getRequestContext(request), id, await readJson(request)));
     }
     if (request.method === 'PUT' && url.pathname.startsWith('/api/jobs/')) {
       const id = validateId(url.pathname.slice('/api/jobs/'.length));
@@ -1256,7 +1268,7 @@ async function loadState(context) {
     const screening = screenings.get(candidate.id || candidate._id) || {};
     return cleanDocument(presentCaseSummary(candidate, screening));
   });
-  return { jobs: jobs.map(job => ({ ...job, matchingEligible: isAutomaticAssignmentJob(job) })), cases, rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
+  return { jobs: jobs.map(job => ({ ...job, matchingEligible: isAutomaticAssignmentJob(job) })), cases: collapseDuplicateCases(cases), rules: (rulesResult.data || []).map(cleanDocument), workspace: { tenantId: context.tenantId, role: context.role } };
 }
 
 function isMeaningfulCandidateRecord(candidate = {}) {
@@ -1319,12 +1331,81 @@ async function listTenantJobs(tenantId) {
   return dedupeStoredJobs(jobs).map(cleanDocument);
 }
 
+async function claimCandidateIdentity(db, tenantId, candidateId, incoming) {
+  const identity = resumeIdentity(incoming);
+  const key = identity.phone || identity.email;
+  if (!key) return '';
+  const claimId = `k${crypto.createHash('sha1').update(`${tenantId}|${key}`).digest('hex')}`.slice(0, 40);
+  const ref = db.collection('acecall_candidate_keys').doc(claimId);
+  const currentResult = await ref.get().catch(() => ({ data: null }));
+  const current = Array.isArray(currentResult.data) ? currentResult.data[0] : currentResult.data;
+  if (current?.candidateId && current.candidateId !== candidateId) return current.candidateId;
+  await ref.set({ tenantId, candidateId, createdAt: new Date().toISOString() });
+  const confirmedResult = await ref.get().catch(() => ({ data: null }));
+  const confirmed = Array.isArray(confirmedResult.data) ? confirmedResult.data[0] : confirmedResult.data;
+  if (confirmed?.candidateId && confirmed.candidateId !== candidateId) return confirmed.candidateId;
+  return '';
+}
+
+async function listMokaJobOptions() {
+  const client = createMokaClient();
+  if (!client.config.baseUrl || !client.config.apiKey) return [];
+  const collected = [];
+  for (const path of [client.config.jobsPath, client.config.requisitionsPath]) {
+    try {
+      const response = await client.request(path);
+      if (!response.ok) continue;
+      const records = flattenMokaRecords(response.body).map(normalizeMokaJob).filter(job => job.id && job.name);
+      if (records.length) { collected.push(...records); break; }
+    } catch {}
+  }
+  const seen = new Set();
+  return collected.filter(job => {
+    if (seen.has(job.id)) return false;
+    seen.add(job.id);
+    return true;
+  }).slice(0, 500).map(job => ({ id: job.id, name: job.name, department: job.department || '' }));
+}
+
+async function linkStoredJobsToMoka(context) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const mokaJobs = await listMokaJobOptions();
+  const jobs = await listTenantJobs(context.tenantId);
+  const links = planMokaLinks(jobs, mokaJobs);
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  for (const link of links) {
+    await db.collection(COLLECTIONS.jobs).doc(link.id).update({ mokaJobId: link.mokaJobId, syncedFromMokaAt: now, updatedAt: now });
+  }
+  return { ok: true, linked: links, mokaJobs };
+}
+
+async function assignMokaJob(context, id, input = {}) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const mokaJobId = String(input.mokaJobId || '').trim().slice(0, 80);
+  if (!mokaJobId) throw serviceError('请选择要关联的 Moka 岗位', 400);
+  const db = getDatabase();
+  const existingResult = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+  const existing = Array.isArray(existingResult.data) ? existingResult.data[0] : existingResult.data;
+  if (!existing) throw serviceError('Not found', 404);
+  assertSameTenant(existing, context);
+  const options = await listMokaJobOptions();
+  if (!options.length) throw serviceError('暂时没有拉到 Moka 岗位，请稍后重试', 503);
+  if (!options.some(job => String(job.id) === mokaJobId)) throw serviceError('这个 Moka 岗位不在当前可关联列表中', 400);
+  const now = new Date().toISOString();
+  await db.collection(COLLECTIONS.jobs).doc(id).update({ mokaJobId, syncedFromMokaAt: now, updatedAt: now });
+  return { ok: true, id, mokaJobId };
+}
+
 async function saveJob(context, id, input) {
   requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
   await assertWritableRecord(COLLECTIONS.jobs, id, context.tenantId);
   const now = new Date().toISOString();
-  const job = pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']);
+  const existingJobResult = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+  const existingJob = Array.isArray(existingJobResult.data) ? existingJobResult.data[0] : existingJobResult.data;
+  const { _id, _openid, ...storedJob } = existingJob && typeof existingJob === 'object' ? existingJob : {};
+  const job = { ...storedJob, ...pick(input, ['industry', 'name', 'category', 'location', 'department', 'business', 'businessLine', 'aliases', 'jd', 'keywords', 'rules', 'status', 'source', 'mokaJobId', 'syncedFromMokaAt', 'createdAt', 'updatedAt', 'profileHistory']) };
   if (input.confirmProfile) {
     const confirmed = confirmJobProfile(draftJobProfile({ ...input, profile: input.profile }), context.uid, now);
     job.profile = confirmed;
@@ -1374,10 +1455,11 @@ async function saveCandidate(context, id, input) {
   if (!storedCandidate) {
     const tenantCandidates = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
     const duplicate = findDuplicateCandidate(incoming, tenantCandidates.data || [], id);
-    if (duplicate) {
-      const canonicalCandidateId = duplicate.candidate.id || duplicate.candidate._id;
-      await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate.reason });
-      return { ok: true, duplicate: true, canonicalCandidateId, duplicateReason: duplicate.reason };
+    const claimedBy = duplicate ? '' : await claimCandidateIdentity(db, context.tenantId, id, incoming);
+    const canonicalCandidateId = duplicate ? (duplicate.candidate.id || duplicate.candidate._id) : claimedBy;
+    if (canonicalCandidateId) {
+      await audit(context, 'candidate.duplicate-skipped', id, { canonicalCandidateId, reason: duplicate?.reason || 'concurrent-upload' });
+      return { ok: true, duplicate: true, canonicalCandidateId, duplicateReason: duplicate?.reason || 'concurrent-upload' };
     }
   }
   const screening = pick(input, ['preparation', 'transcript', 'consentConfirmed', 'callRecording', 'communicationSummary', 'report']);

@@ -836,3 +836,5 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .profile-level{display:flex;flex-wrap:wrap;gap:4px;align-items:center;width:100%}
 .profile-level>span{width:28px;color:var(--muted);font-size:9px}
 .profile-level>strong{font-size:12px;line-height:1.4}
+.job-status.linked{background:#e5efeb;color:#35665d}
+.job-status.unlinked{background:#f4e6e6;color:#9a5e5e}
