@@ -81,6 +81,7 @@ let pendingTeamRule = '';
 let recordingDraft = { candidateId: null, file: null, url: '', source: '', taskId: '', recordingId: '', uploaded: false };
 const RECORDING_CHUNK_SIZE = 8 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 500 * 1024 * 1024;
+const TRANSCRIPTION_STATUS_POLL_MS = 2000;
 const RESUME_MAX_BYTES = 50 * 1024 * 1024;
 const DESKTOP_AGENT_URL = 'http://127.0.0.1:17890';
 const RECORDING_SESSION_KEY = 'acecall.recordingSession';
@@ -2027,7 +2028,7 @@ async function transcribeRecording(file) {
 
 async function pollTranscriptionTask(taskId, fileName, attempts = 0) {
   if (!taskId || attempts > 100) return;
-  await sleep(3000);
+  await sleep(TRANSCRIPTION_STATUS_POLL_MS);
   if (recordingDraft.taskId !== taskId) return;
   const ownerId = recordingDraft.candidateId;
   const viewing = app.view === 'candidate' && app.candidateId === ownerId && app.detailTab === 'call';
