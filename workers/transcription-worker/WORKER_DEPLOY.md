@@ -76,7 +76,7 @@ CloudRun、ECS + Docker、K8s 均可。只要满足上面四条要求。此时 A
 | `CLOUDBASE_SECRET_ID` | 腾讯云 API 密钥 ID（`AKID` 开头） |
 | `CLOUDBASE_SECRET_KEY` | 腾讯云 API 密钥 Key |
 | `TRANSCRIPTION_PROVIDER` | `baidu` 或 `whisper` |
-| `WORKER_INTERVAL_MS` | `15000` |
+| `WORKER_INTERVAL_MS` | `3000` |
 
 > **注意：不要用 `CLOUDBASE_APIKEY`。** `@cloudbase/node-sdk` 的配置类型里没有
 > `accessKey` 字段，只认 `secretId` / `secretKey`。云函数写 `accessKey` 能用是因为
