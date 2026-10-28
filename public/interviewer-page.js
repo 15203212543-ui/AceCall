@@ -317,11 +317,23 @@ function questionCard(result, item, extra = '') {
   const sourceLine = sources.join('、') || '当前转写';
   return `<details class="question-card"><summary><span>${escapeHtml(label)}</span>${badge}</summary><div class="question-meta"><span>候选人 · ${escapeHtml(sourceLine)}</span><span>类型 · 专业岗位问题</span></div><p><b>原始转写：</b>${escapeHtml([item.rawText, ...(item.mergedRaw || [])].filter(Boolean).join(' / '))}</p><p><b>岗位准则：</b>${escapeHtml(item.jobCriteriaId || item.conditionLabel || '未关联具体准则')}</p><p><b>转写证据：</b>来自该场真实面试原句，未补写外部内容。</p>${extra}</details>`;
 }
+function isProfessionalQuestion(item = {}) {
+  const text = String(item.normalizedText || item.rawText || '').replace(/\s+/g, '');
+  if (!text || /自我介绍|介绍一下你自己|先介绍一下自己|能听见吗|听得到吗|现在方便吗/.test(text)) return false;
+  if (!/[？?]|吗$|呢$|什么|怎么|如何|为什么|有没有|是否|能不能|可不可以/.test(text)) return false;
+  return /下单|订单|委托|成交|交易|交易所|资金|冻结|解冻|持仓|结算|清算|风控|报价|询价|期权|衍生品|FIX|消息|开户|KYC|AML|行情|稳定性|性能|并发|延迟|故障|海外银行卡|银行卡|入金|出金|币种|富途|证券账户|交易账户|港股|美股|复投|资金账户|客户账户|托管|清算交收|岗位|工作|项目|职责|经验|负责/.test(text);
+}
 function questionAnalysisHtml(result = {}) {
   const items = result.items || [];
-  const jobQuestions = items.filter(item => item.classification === 'job_question' && (result.sampleLimited || item.confirmed)).sort((left, right) => (right.sources?.length || 0) - (left.sources?.length || 0));
+  const promoted = new Set();
+  const jobQuestions = items.filter(item => {
+    const accepted = item.classification === 'job_question' && (result.sampleLimited || item.confirmed);
+    const recovered = !accepted && item.classification === 'needs_context' && isProfessionalQuestion(item);
+    if (recovered) promoted.add(item.id);
+    return accepted || recovered;
+  }).sort((left, right) => (right.sources?.length || 0) - (left.sources?.length || 0));
   const conditions = items.filter(item => item.classification === 'condition_check');
-  const needs = items.filter(item => item.classification === 'needs_context' || (item.classification === 'job_question' && !result.sampleLimited && !item.confirmed));
+  const needs = items.filter(item => !promoted.has(item.id) && (item.classification === 'needs_context' || (item.classification === 'job_question' && !result.sampleLimited && !item.confirmed)));
   const reviewButtons = item => `<div class="question-actions"><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="job_question">归入岗位问题</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="condition_check">归入条件核验</button><button type="button" data-review-question="${escapeHtml(item.id)}" data-review-class="needs_context">保留待判断</button></div>`;
   const visibleJobs = jobQuestions.slice(0, 5);
   const extraJobs = jobQuestions.slice(5);
