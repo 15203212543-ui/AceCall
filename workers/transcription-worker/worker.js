@@ -285,7 +285,7 @@ async function uploadSlice(filePath, task, index) {
   const cloudPath = `${task.storagePrefix}/asr-${String(index).padStart(5, '0')}.${extension}`;
   const uploaded = await storage().uploadFile({ cloudPath, fileContent });
   const fileID = uploaded.fileID || cloudPath;
-  return { fileID, cloudPath, url: await tempFileUrl(fileID), bytes: fileContent.length };
+  return { fileID, cloudPath, url: await tempFileUrl(fileID), bytes: fileContent.length, audioBuffer: fileContent };
 }
 
 function mergeSliceResults(results) {
@@ -404,10 +404,16 @@ async function processTask(task) {
     const results = [];
     for (const [index, slice] of prepared.slices.entries()) {
       const uploaded = await uploadSlice(slice.path, claimed, index);
+      const sliceDuration = prepared.sliced
+        ? Math.min(prepared.segmentSeconds, Math.max(0, duration - slice.offsetSeconds))
+        : duration;
+      const shortAudioLimit = Math.max(1, Number(process.env.BAIDU_SHORT_AUDIO_MAX_SECONDS || 60));
       const result = await provider.transcribe({
         audioUrl: uploaded.url,
+        audioBuffer: provider.name === 'baidu' && sliceDuration > 0 && sliceDuration <= shortAudioLimit ? uploaded.audioBuffer : undefined,
         fileName: path.basename(slice.path),
         mimeType: path.extname(slice.path) === '.wav' ? 'audio/wav' : 'application/octet-stream',
+        durationSeconds: sliceDuration,
         language: claimed.language || process.env.WHISPER_LANGUAGE || '',
         prompt: claimed.hotwords || process.env.ACECALL_ASR_HOTWORDS || '',
         task: claimed
