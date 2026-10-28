@@ -215,7 +215,15 @@ class SyncAgent {
       if (!looksLikeResume(result.text)) throw new Error('内容未识别为简历或面试转写');
       const candidate = { id: crypto.randomUUID(), candidateName: result.metadata?.candidateName || path.basename(filePath, path.extname(filePath)), resume: result.text, resumeMeta: { ...result.metadata, fileName: path.basename(filePath), source: 'local-sync-agent' }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ingestStatus: '已解析待分配' };
       await this.assignJob(candidate);
-      if (this.options.apiBase) await this.saveCandidate(candidate);
+      if (this.options.apiBase) {
+        const saved = await this.saveCandidate(candidate);
+        if (saved?.duplicate) {
+          this.state.imported[key] = { file: filePath, importedAt: new Date().toISOString(), type: 'duplicate', candidateId: saved.canonicalCandidateId || '' };
+          delete this.state.failures[key];
+          console.log(`[AceCall] 已有相同简历，未重复上传：${path.basename(filePath)}`);
+          return;
+        }
+      }
       this.state.imported[key] = { file: filePath, importedAt: new Date().toISOString(), candidateId: candidate.id };
       delete this.state.failures[key];
       console.log(`[AceCall] 已完成：${path.basename(filePath)}${this.options.apiBase ? '，已同步后端' : '，仅本地解析'}`);

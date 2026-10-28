@@ -123,6 +123,7 @@ function bindShell() {
   $$('[data-close]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));
   $('#candidateForm').addEventListener('submit', createCandidate);
   $('#jobForm').addEventListener('submit', saveJob);
+  $('#mokaLinkForm').addEventListener('submit', saveMokaLink);
   $('#resumeUploadButton').addEventListener('click', () => $('#resumeFileInput').click());
   $('#resumeFileInput').addEventListener('change', event => parseResume(event.target.files?.[0]));
   window.addEventListener('hashchange', () => navigate(location.hash.replace('#', '') || 'dashboard', false));
@@ -1458,6 +1459,7 @@ function renderJobs() {
   const library = document.createElement('div'); library.className = 'surface rules-library'; library.innerHTML = `<div class="surface-head"><h2>团队规则库</h2><span>共享给团队成员</span></div><div class="surface-body"><div class="rule-add"><input id="teamRuleInput" placeholder="添加常用核验规则"><button class="secondary" id="addTeamRule" type="button">添加规则</button></div><div class="rule-list">${teamRules.map((rule, index) => `<button class="rule-chip" data-use-rule="${index}" type="button">＋ ${escapeHtml(rule)}</button>`).join('') || '<span class="muted-text">还没有共享规则</span>'}</div></div>`; $('#jobsView .page').append(library);
   $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
   filterJobs();
+  void syncMokaJobLinks();
 }
 
 function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) { teamRules.push(value); const rule = { id: crypto.randomUUID(), content: value, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); } localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
@@ -1465,7 +1467,7 @@ function useTeamRule(index) { const value = teamRules[index]; if (!value) return
 
 function jobCards(jobs) {
   if (!jobs.length) return '<div class="surface empty">暂无岗位，请先建立岗位标准。</div>';
-  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions"><button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
+  return jobs.map(job => { const count = app.cases.filter(item => item.jobId === job.id).length; const closed = job.status === 'closed'; const linked = Boolean(String(job.mokaJobId || '').trim()); return `<article class="job-item ${closed ? 'job-closed' : ''}"><header><div><h2>${escapeHtml(job.name)} <span class="job-status ${closed ? 'closed' : 'active'}">${closed ? '已关闭' : '在招'}</span> <span class="job-status ${linked ? 'linked' : 'unlinked'}">${linked ? '已关联' : '未关联'}</span></h2><p>${escapeHtml(job.industry || '其他')} · ${closed ? '保留历史记录' : '可接收新候选人'}</p></div><div class="job-actions">${linked ? '' : `<button class="link-action" data-link-moka="${job.id}" type="button">手动关联</button>`}<button class="link-action" data-edit-job="${job.id}">编辑</button><button class="link-action" data-toggle-job="${job.id}">${closed ? '重新开启' : '关闭岗位'}</button></div></header><div class="keywords">${(job.keywords || []).slice(0,6).map(word => `<span>${escapeHtml(word)}</span>`).join('') || '<span>待设置关键词</span>'}</div><div class="job-meta"><span>${count} 位候选人</span><span>${app.cases.filter(item => item.jobId === job.id && statusOf(item) === '待电话').length} 位待初筛</span><span>更新于 ${formatDate(job.updatedAt)}</span></div></article>`; }).join('');
 }
 
 function filterJobs(resetPage) {
@@ -1482,7 +1484,47 @@ function filterJobs(resetPage) {
   $$('#jobBoard [data-job-page]').forEach(button => button.addEventListener('click', () => { if (button.disabled) return; jobPage = Number(button.dataset.jobPage) || 1; filterJobs(); }));
 }
 
-function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); }
+function bindJobActions(root) { root.querySelectorAll('[data-toggle-job]').forEach(button => button.addEventListener('click', () => toggleJobStatus(button.dataset.toggleJob))); root.querySelectorAll('[data-link-moka]').forEach(button => button.addEventListener('click', () => openMokaLinkDialog(button.dataset.linkMoka))); }
+let mokaLinkSync = null;
+async function syncMokaJobLinks() {
+  if (!REMOTE_BACKEND || mokaLinkSync) return mokaLinkSync;
+  mokaLinkSync = (async () => {
+    const response = await authenticatedFetch(apiUrl('/api/jobs/moka-links'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { mokaLinkSync = null; return; }
+    app.mokaJobs = data.mokaJobs || [];
+    let changed = false;
+    for (const link of data.linked || []) {
+      const job = app.jobs.find(item => item.id === link.id);
+      if (job && job.mokaJobId !== link.mokaJobId) { job.mokaJobId = link.mokaJobId; changed = true; }
+    }
+    if (changed && app.view === 'jobs') filterJobs();
+  })().catch(error => { mokaLinkSync = null; console.warn('[AceCall moka jobs]', error); });
+  return mokaLinkSync;
+}
+function openMokaLinkDialog(id) {
+  const job = app.jobs.find(item => item.id === id); if (!job) return;
+  const used = new Set(app.jobs.filter(item => item.id !== id && item.mokaJobId).map(item => item.mokaJobId));
+  const options = app.mokaJobs || [];
+  $('#mokaLinkJobId').value = id;
+  $('#mokaLinkJobName').textContent = job.name;
+  $('#mokaLinkSelect').innerHTML = options.length ? options.map(item => `<option value="${escapeHtml(item.id)}" ${used.has(item.id) ? 'disabled' : ''}>${escapeHtml(item.name)}${used.has(item.id) ? '（已关联其他岗位）' : ''}</option>`).join('') : '<option value="">暂时没有拉到 Moka 岗位</option>';
+  $('#mokaLinkDialog').showModal();
+}
+async function saveMokaLink(event) {
+  event.preventDefault();
+  const id = $('#mokaLinkJobId').value;
+  const mokaJobId = $('#mokaLinkSelect').value;
+  if (!mokaJobId) return toast('请选择要关联的 Moka 岗位');
+  const response = await authenticatedFetch(apiUrl(`/api/jobs/${encodeURIComponent(id)}/moka-link`), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mokaJobId }) });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return toast(result.error || '关联失败');
+  const job = app.jobs.find(item => item.id === id);
+  if (job) job.mokaJobId = mokaJobId;
+  $('#mokaLinkDialog').close();
+  if (app.view === 'jobs') filterJobs();
+  toast('已关联 Moka 岗位');
+}
 async function toggleJobStatus(id) {
   const job = app.jobs.find(item => item.id === id); if (!job) return;
   const closing = job.status !== 'closed';
@@ -2234,7 +2276,7 @@ function applySelectedTeamRule() { const index = Number($('#jobRuleLibraryInput'
 function saveCurrentRuleToLibrary() { const value = $('#jobRulesInput').value.trim(); if (!value) return toast('请先填写初筛规则'); const lines = value.split(/\n+/).map(item => item.trim()).filter(Boolean); const added = lines.filter(item => !teamRules.includes(item)); if (!added.length) return toast('规则库中已存在这些规则'); added.forEach(item => { teamRules.push(item); const rule = { id: crypto.randomUUID(), content: item, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); }); localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); populateRuleLibrary(); renderJobs(); toast(`已共享 ${added.length} 条规则`); }
 
 function saveJob(event) {
-  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), category:$('#jobCategoryInput').value.trim(), location:$('#jobLocationInput').value.trim(), department:$('#jobDepartmentInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), status:old?.status === 'closed' ? 'closed' : 'active', createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
+  event.preventDefault(); const id = $('#jobIdInput').value || crypto.randomUUID(); const old = app.jobs.find(job => job.id === id); const job = { id, industry:$('#jobIndustryInput').value, name:$('#jobNameInput').value.trim(), category:$('#jobCategoryInput').value.trim(), location:$('#jobLocationInput').value.trim(), department:$('#jobDepartmentInput').value.trim(), jd:$('#jobJdInput').value.trim(), keywords:parseKeywords($('#jobKeywordsInput').value), rules:$('#jobRulesInput').value.trim(), status:old?.status === 'closed' ? 'closed' : 'active', mokaJobId:old?.mokaJobId || '', createdAt:old?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() }; if (!job.name || !job.jd) return toast('请填写岗位名称和JD'); app.jobs = [job,...app.jobs.filter(item => item.id !== id)]; persistJobs(job); $('#jobDialog').close(); renderJobs(); toast(old ? '岗位已更新' : '岗位已创建');
 }
 
 async function parseResume(file) {

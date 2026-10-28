@@ -18,6 +18,18 @@ test('an exact file fingerprint still works when contact extraction differs', ()
   assert.equal(duplicateReason(resume('new', { ...fingerprint, phone: '13800138000' }), resume('old', fingerprint)), 'resume-file');
 });
 
+test('same person and same file body still match when two accounts use different file names', () => {
+  const shared = { originalSize: 207936, characters: 887 };
+  assert.equal(duplicateReason(
+    resume('new', { ...shared, fileName: '演示人选.pdf' }, { candidateName: '演示人选' }),
+    resume('old', { ...shared, fileName: '【人力管培】演示人选.pdf' }, { candidateName: '演示人选' })
+  ), 'resume-content');
+  assert.equal(duplicateReason(
+    resume('new', { originalSize: 10, characters: 20 }, { candidateName: '张伟' }),
+    resume('old', { originalSize: 11, characters: 20 }, { candidateName: '张伟' })
+  ), '');
+});
+
 test('same name alone is not a duplicate and the current id is excluded', () => {
   assert.equal(duplicateReason(resume('new', {}, { candidateName: '张伟' }), resume('old', {}, { candidateName: '张伟' })), '');
   assert.equal(findDuplicateCandidate(resume('same', { email: 'a@b.com' }), [resume('same', { email: 'a@b.com' })], 'same'), null);
