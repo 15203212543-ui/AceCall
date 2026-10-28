@@ -839,3 +839,4 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .job-status.linked{background:#e5efeb;color:#35665d}
 .job-status.unlinked{background:#f4e6e6;color:#9a5e5e}
 .call-footer{justify-content:flex-end}
+.dashboard-page .action-surface{display:none}
