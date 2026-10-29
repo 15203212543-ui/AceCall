@@ -104,22 +104,50 @@ function sameInterviewPerson(left, right) {
   return a.length >= 2 && b.length >= 2 && (a === b || a.includes(b) || b.includes(a));
 }
 
+function standardizeReportQuestion(line = '') {
+  let question = String(line || '').replace(/^(?:面试官|Interviewer)[：:]\s*/i, '').replace(/\s+/g, ' ').trim();
+  question = question.replace(/^(?:(?:嗯+|呃+|哦+|啊+|诶+|唉+|那个|就是|然后|对|对的|好的|正确|正确的)(?:[，,、。！？!：:\s]+|$))+/, '').trim();
+  question = question.replace(/^(?:我想问一下|我想了解一下|请问一下)[，,、:\s]*/i, '').trim();
+  question = question.replace(/[啊呢吧哈呀]+[？?。！!]?$/, '').replace(/[？?。！!]+$/, '').trim();
+  if (!question || question.length < 8) return '';
+  if (/^(?:嗯+|呃+|哦+|啊+|好的?|对的?|正确的?|没问题|可以|行|知道了|了解了)$/i.test(question)) return '';
+  const communication = /听得到|听见|听清|信号|方便说话|现在方便|稍等|录制|共享屏幕|看得到|自我介绍|介绍一下你自己/;
+  const interviewSignal = /负责|职责|项目|结果|指标|上线|经验|能力|岗位|团队|协作|业务|客户|产品|技术|方案|解决|量化|规模|动机|离职|薪资|到岗|入职|地点|竞业|出差|风险|难点|挑战|流程|标准|方法/;
+  if (communication.test(question) && !interviewSignal.test(question)) return '';
+  const isQuestion = /[？?]$/.test(String(line).trim()) || /(?:吗|呢|什么|怎么|如何|为什么|为何|是否|有没有|能不能|哪些|多少|哪种|怎样)$/.test(question);
+  if (!isQuestion) return '';
+  return `${question}？`;
+}
+
+function reportRecommendations(selectionScore = {}, records = [], standardizedQuestionCount = selectionScore.questionTotal || 0) {
+  const recommendations = [...(selectionScore.recommendations || [])];
+  const add = item => { if (item && !recommendations.includes(item)) recommendations.push(item); };
+  if (!records.length) return ['当前筛选范围内暂无面试记录，暂无法形成改进建议。'];
+  if (!standardizedQuestionCount) add('围绕岗位核心职责、关键项目、个人贡献和量化结果，提前准备结构化问题。');
+  else if (selectionScore.coverage !== null && selectionScore.coverage < 80) add('覆盖岗位核心能力、项目经历和结果验证，避免只围绕单一话题提问。');
+  if (standardizedQuestionCount && !selectionScore.followTotal) add('候选人回答后继续追问职责边界、个人贡献、结果数据和形成原因。');
+  else if (selectionScore.depth !== null && selectionScore.depth < 60) add('增加基于候选人回答的追问，重点核实职责、结果、规模和决策依据。');
+  if (selectionScore.completeness < 80) add('面试结束后及时填写通过、淘汰或待定结论，并补充判断依据。');
+  if (records.some(item => !String(item.transcript || '').trim())) add('确保正式面试转写完整，便于复盘提问质量和沉淀岗位标准。');
+  return recommendations.slice(0, 6);
+}
+
 function interviewerReportDocument({ selected = '', filters = {}, records = [], outcomes = {}, selectionScore = {} } = {}) {
   const scope = selected || '全部面试官';
   const period = filters.period ? `近 ${filters.period} 天` : '全部时间';
   const questions = new Map();
   records.forEach(record => {
     String(record.transcript || '').split(/\n+/).forEach(line => {
-      const question = line.replace(/^(?:面试官|Interviewer)[：:]\s*/i, '').trim();
-      if (!question || !(/[？?]$/.test(question) || /(?:吗|呢|什么|怎么|如何|为什么|为何|是否|有没有|能不能)$/.test(question))) return;
-      questions.set(question, (questions.get(question) || 0) + 1);
+      const question = standardizeReportQuestion(line);
+      if (question) questions.set(question, (questions.get(question) || 0) + 1);
     });
   });
   const topQuestions = [...questions.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const standardizedQuestionCount = [...questions.values()].reduce((sum, count) => sum + count, 0);
   const recordsHtml = records.slice(0, 20).map(record => `<tr><td>${escapeHtml(record.candidateName || '未命名候选人')}</td><td>${escapeHtml(record.jobName || '未识别岗位')}</td><td>${escapeHtml(record.round || '—')}</td><td>${escapeHtml(formatDate(record.startedAt))}</td><td>${escapeHtml(interviewResultLabel(record))}</td></tr>`).join('');
-  const recommendations = (selectionScore.recommendations || []).map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>当前没有需要特别关注的改进项。</li>';
+  const recommendations = reportRecommendations(selectionScore, records, standardizedQuestionCount).map(item => `<li>${escapeHtml(item)}</li>`).join('');
   const questionHtml = topQuestions.map(([question, count]) => `<li>${escapeHtml(question)} <small>（${count} 次）</small></li>`).join('') || '<li>当前筛选范围内暂无可识别的面试问题。</li>';
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(scope)}面试官报告</title><style>body{font-family:Arial,"Microsoft YaHei",sans-serif;color:#172033;line-height:1.6;margin:38px}h1{font-size:24px;margin:0 0 6px}h2{font-size:16px;border-bottom:1px solid #dfe5ee;padding-bottom:6px;margin-top:26px}.meta{color:#64748b;font-size:12px}.metrics{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.metric{border:1px solid #dfe5ee;border-radius:8px;padding:10px 14px;min-width:120px}.metric b{display:block;font-size:20px}.metric span{font-size:12px;color:#64748b}li{margin:6px 0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #dfe5ee;padding:7px;text-align:left}th{background:#f5f7fb}</style></head><body><h1>${escapeHtml(scope)} · 面试官分析报告</h1><div class="meta">统计范围：${escapeHtml([filters.job && `岗位：${filters.job}`, filters.round && `环节：${filters.round}`, period].filter(Boolean).join(' · '))}　生成时间：${escapeHtml(new Date().toLocaleString('zh-CN'))}</div><h2>一、面试概览</h2><div class="metrics"><div class="metric"><b>${outcomes.completed || 0}</b><span>已完成面试</span></div><div class="metric"><b>${outcomes.passed || 0}</b><span>面试通过</span></div><div class="metric"><b>${outcomes.rejected || 0}</b><span>面试淘汰</span></div><div class="metric"><b>${outcomes.pending || 0}</b><span>待评价</span></div><div class="metric"><b>${selectionScore.score === null || selectionScore.score === undefined ? '样本不足' : selectionScore.score}</b><span>面试表现分</span></div><div class="metric"><b>${selectionScore.completeness ?? 0}%</b><span>评价完成率</span></div></div><h2>二、提问与关注重点</h2><p>有效问题 ${selectionScore.questionTotal || 0} 条，追问信号 ${selectionScore.followTotal || 0} 条，问题覆盖 ${selectionScore.coverage === null || selectionScore.coverage === undefined ? '—' : `${selectionScore.coverage}%`}。</p><ol>${questionHtml}</ol><h2>三、面试改进建议</h2><ul>${recommendations}</ul><h2>四、面试记录</h2><table><thead><tr><th>候选人</th><th>岗位</th><th>环节</th><th>面试时间</th><th>结果</th></tr></thead><tbody>${recordsHtml || '<tr><td colspan="5">当前筛选范围内暂无面试记录。</td></tr>'}</tbody></table><p class="meta">数据来源：Moka 面试记录与 AceCall 已导入转写。报告用于招聘复盘和经验沉淀，最终判断以人工确认结果为准。</p></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(scope)}面试官报告</title><style>body{font-family:Arial,"Microsoft YaHei",sans-serif;color:#172033;line-height:1.6;margin:38px}h1{font-size:24px;margin:0 0 6px}h2{font-size:16px;border-bottom:1px solid #dfe5ee;padding-bottom:6px;margin-top:26px}.meta{color:#64748b;font-size:12px}.metrics{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.metric{border:1px solid #dfe5ee;border-radius:8px;padding:10px 14px;min-width:120px}.metric b{display:block;font-size:20px}.metric span{font-size:12px;color:#64748b}li{margin:6px 0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #dfe5ee;padding:7px;text-align:left}th{background:#f5f7fb}</style></head><body><h1>${escapeHtml(scope)} · 面试官分析报告</h1><div class="meta">统计范围：${escapeHtml([filters.job && `岗位：${filters.job}`, filters.round && `环节：${filters.round}`, period].filter(Boolean).join(' · '))}　生成时间：${escapeHtml(new Date().toLocaleString('zh-CN'))}</div><h2>一、面试概览</h2><div class="metrics"><div class="metric"><b>${outcomes.completed || 0}</b><span>已完成面试</span></div><div class="metric"><b>${outcomes.passed || 0}</b><span>面试通过</span></div><div class="metric"><b>${outcomes.rejected || 0}</b><span>面试淘汰</span></div><div class="metric"><b>${outcomes.pending || 0}</b><span>待评价</span></div><div class="metric"><b>${selectionScore.score === null || selectionScore.score === undefined ? '样本不足' : selectionScore.score}</b><span>面试表现分</span></div><div class="metric"><b>${selectionScore.completeness ?? 0}%</b><span>评价完成率</span></div></div><h2>二、提问与关注重点</h2><p>标准化问题 ${standardizedQuestionCount} 条，追问信号 ${selectionScore.followTotal || 0} 条，问题覆盖 ${selectionScore.coverage === null || selectionScore.coverage === undefined ? '—' : `${selectionScore.coverage}%`}。</p><ol>${questionHtml}</ol><h2>三、面试改进建议</h2><ul>${recommendations}</ul><h2>四、面试记录</h2><table><thead><tr><th>候选人</th><th>岗位</th><th>环节</th><th>面试时间</th><th>结果</th></tr></thead><tbody>${recordsHtml || '<tr><td colspan="5">当前筛选范围内暂无面试记录。</td></tr>'}</tbody></table><p class="meta">数据来源：Moka 面试记录与 AceCall 已导入转写。报告用于招聘复盘和经验沉淀，最终判断以人工确认结果为准。</p></body></html>`;
 }
 
 function downloadInterviewerReport(payload) {
