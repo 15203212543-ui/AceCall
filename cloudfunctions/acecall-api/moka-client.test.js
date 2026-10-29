@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { getMokaConfig, mokaConnectionStatus, maskSecret, screeningFingerprint, buildScreeningNote, buildSalaryNote, chooseMokaApplication, chooseOperatorEmail, syncScreeningComment } = require('./moka-client');
+const { getMokaConfig, mokaConnectionStatus, maskSecret, screeningFingerprint, buildScreeningNote, buildSalaryNote, chooseMokaApplication, chooseOperatorEmail, applicationOutcome, syncScreeningComment } = require('./moka-client');
 
 assert.deepEqual(getMokaConfig({}), {
   apiKey: '', baseUrl: '', enterpriseId: '', apiKeyHeader: 'Authorization', authMode: 'basic', apiKeyPrefix: '', interviewsPath: '/api-platform/v1/interviews', projectName: 'QS'
@@ -11,6 +11,9 @@ assert.equal(maskSecret('1234567890'), '1234****7890');
 assert.equal(chooseOperatorEmail('Owner@Example.com', 'shared@example.com'), 'owner@example.com');
 assert.equal(chooseOperatorEmail('Rick', 'shared@example.com'), 'shared@example.com');
 assert.equal(chooseOperatorEmail('Rick', ''), '');
+assert.deepEqual(applicationOutcome({ status: 'hired', stageName: '已入职' }), { hired: true, offerAccepted: true, stageName: '已入职', applicationStatus: 'hired' });
+assert.deepEqual(applicationOutcome({ status: 'in_progress', stageName: '待入职' }), { hired: false, offerAccepted: true, stageName: '待入职', applicationStatus: 'in_progress' });
+assert.equal(applicationOutcome({ status: 'in_progress', stageName: '面试' }).hired, false);
 
 const candidate = {
   candidateName: '林夏',

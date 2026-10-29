@@ -432,15 +432,40 @@ function submitQuestionReview(questionId, classification) {
 }
 
 function formatInterviewMoment(value){if(!value)return'—';const date=new Date(value);if(Number.isNaN(date.getTime()))return'—';const day=`${date.getMonth()+1}月${date.getDate()}日`;if(!String(value).includes('T'))return day;return `${day} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;}
+function applyMokaHiresToCases(records = []) {
+  const hires = records.filter(item => item.hired === true && item.candidateName);
+  if (!hires.length || !Array.isArray(app.cases)) return;
+  let changed = false;
+  app.cases.forEach(item => {
+    if (item.hired === true) return;
+    const jobName = item.roleName || app.jobs?.find(job => job.id === item.jobId)?.name || '';
+    const matched = hires.some(hire => {
+      const left = String(hire.candidateName || '').replace(/\s+/g, '');
+      const right = String(item.candidateName || '').replace(/\s+/g, '');
+      if (left.length < 2 || left !== right) return false;
+      const hireJob = String(hire.jobName || '').trim();
+      if (!hireJob || !jobName) return true;
+      return hireJob === jobName || hireJob.includes(jobName) || jobName.includes(hireJob);
+    });
+    if (!matched) return;
+    item.hired = true;
+    item.offerAccepted = true;
+    item.hiredAt = item.hiredAt || new Date().toISOString();
+    item.recruitmentOutcome = item.recruitmentOutcome || '已入职';
+    changed = true;
+  });
+  if (changed && typeof persistCases === 'function') persistCases();
+}
 async function loadMokaInterviews(options = {}) {
   if (!runtime.remoteBackend) return;
   if (!options.force) {
     const cached = readDeferred('moka');
-    if (cached) {
+    if (cached && cached.status?.hireStats) {
       app.mokaInterviews = Array.isArray(cached.records) ? cached.records : [];
       if (Array.isArray(cached.syncedJobs) && cached.syncedJobs.length) app.jobs = mergeRecords(app.jobs, cached.syncedJobs);
       app.mokaAnalytics = cached.analytics || app.mokaAnalytics || null;
       app.mokaInterviewStatus = { ...(cached.status || {}), loading: false, fromCache: true, error: '' };
+      applyMokaHiresToCases(app.mokaInterviews);
       syncInterviewTranscripts();
       return;
     }
@@ -458,13 +483,14 @@ async function loadMokaInterviews(options = {}) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(cloudError(response.status, data));
     app.mokaInterviews = Array.isArray(data.records) ? data.records : [];
+    applyMokaHiresToCases(app.mokaInterviews);
     syncInterviewTranscripts();
     if (Array.isArray(data.syncedJobs) && data.syncedJobs.length) {
       app.jobs = mergeRecords(app.jobs, data.syncedJobs);
       try { persistHydratedState(); } catch (error) { console.warn('[AceCall jobs cache]', error); }
     }
     app.mokaAnalytics = data.analytics || null;
-    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual', fromCache: false, error: '' };
+    app.mokaInterviewStatus = { configured: Boolean(data.configured), loading: false, fetchedAt: data.fetchedAt, totalFetched: data.totalFetched || 0, totalMatched: data.totalMatched || app.mokaInterviews.length, transcriptStats: data.transcriptStats || {}, warnings: data.warnings || [], projectScopeFallback: Boolean(data.projectScopeFallback), scopeDiagnostics: data.scopeDiagnostics || null, mokaJobStats: data.mokaJobStats || null, filters: data.filters || null, feedbackStats: data.feedbackStats || null, hireStats: data.hireStats || { checked: 0, hired: 0, pending: 0 }, httpStatus: response.status, refreshMode: automatic ? 'automatic-12h' : 'manual', fromCache: false, error: '' };
     writeDeferred('moka', { records: app.mokaInterviews, syncedJobs: data.syncedJobs || [], analytics: app.mokaAnalytics, status: app.mokaInterviewStatus });
     if (app.view === 'interviewers') { renderInterviewers(); renderInterviewerFollowups(); }
     if (app.view === 'intelligence') renderIntelligence();
