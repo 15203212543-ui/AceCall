@@ -17,7 +17,7 @@ function compactReportInput(payload = {}) {
 
 function reportPrompt(input) {
   return {
-    instructions: '你是招聘行业情报编辑。只根据输入里的简历摘录和面试转写摘录，为这一个行业或这一家公司写一份报告。不能新增摘录里没有的公司、产品、城市、金额、人数或趋势判断。overview 用 40 到 120 个汉字说明材料范围。resumeFindings 最多 4 条，只写简历摘录里已经出现的任职或职责。transcriptFindings 最多 4 条，只写转写摘录里已经出现的说法。gaps 用一句话说明这些材料还没有覆盖的内容，不能借此补充新事实。材料少于 2 份时，overview 要写明样本有限。输出 JSON：{"overview":"","resumeFindings":[],"transcriptFindings":[],"gaps":""}',
+    instructions: '你是招聘行业情报编辑。只根据输入里的简历摘录和面试转写摘录，为这一个行业或这一家公司写一份简短报告。overview 用 80 到 160 个汉字写成一段报告正文，覆盖摘录里已经出现的公司、职责和业务说法，句子连在一起，简短精炼。不要写材料份数、样本有限、无法覆盖、尚未形成这类说明，不要编造摘录里没有的公司、数字或趋势。resumeFindings、transcriptFindings 都输出空数组，gaps 输出空字符串。输出 JSON：{"overview":"","resumeFindings":[],"transcriptFindings":[],"gaps":""}',
     input: JSON.stringify(input)
   };
 }
@@ -50,7 +50,7 @@ function groundedText(value, input, numbers, limit) {
 function sanitizeIntelligenceReport(raw, input) {
   if (!input.name || (!input.resumeExcerpts.length && !input.transcriptExcerpts.length)) return null;
   const numbers = allowedNumbers(input);
-  const overview = groundedText(raw?.overview, input, numbers, 160);
+  const overview = groundedText(raw?.overview, input, numbers, 220);
   if (!overview) return null;
   const takeFindings = list => [...new Set((Array.isArray(list) ? list : []).map(item => groundedText(item, input, numbers, 120)).filter(Boolean))].slice(0, 4);
   return {
