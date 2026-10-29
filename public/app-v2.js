@@ -113,7 +113,6 @@ function bindShell() {
   if (shellBound) return;
   shellBound = true;
   $$('.nav-item[data-view]').forEach(button => button.addEventListener('click', () => {
-    if (button.closest('[data-nav-group="talent"]')) return;
     if (button.classList.contains('nav-subitem')) {
       activeNavKey = button.dataset.navKey || null;
     } else {
@@ -138,7 +137,6 @@ function bindShell() {
 }
 
 function toggleNavGroup(groupName) {
-  if (groupName === 'talent') return;
   const toggle = $(`[data-nav-toggle="${groupName}"]`);
   const submenu = $(`[data-nav-submenu="${groupName}"]`);
   if (!toggle || !submenu) return;
