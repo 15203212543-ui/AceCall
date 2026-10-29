@@ -310,6 +310,14 @@ function applicationJobId(item) {
   return String(item?.job?.jobId || item?.jobId || '');
 }
 
+function applicationOutcome(application = {}) {
+  const status = String(application.status || '').trim().toLowerCase();
+  const stageName = String(application.stageName || application.stage?.name || '').trim();
+  const hired = status === 'hired' || stageName === '已入职' || stageName.endsWith('已入职');
+  const offerAccepted = hired || stageName === '待入职' || stageName.includes('待入职');
+  return { hired, offerAccepted, stageName, applicationStatus: status };
+}
+
 function chooseMokaApplicationForJob(applications = [], roleName = '', mokaJobId = '') {
   const records = applications.filter(Boolean);
   const active = records.filter(item => item.archived !== true);
@@ -485,5 +493,6 @@ module.exports = {
   isSalaryText,
   chooseMokaApplication,
   chooseMokaApplicationForJob,
+  applicationOutcome,
   syncScreeningComment
 };

@@ -2,7 +2,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
-const { chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
+const { applicationOutcome, chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
 const { actorFromMember, rememberCapture, attributeMokaOperator } = require('./capture-history');
 const { applyScreeningProfile, dedupeStoredJobs, automaticAssignmentJobs, isAutomaticAssignmentJob } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
@@ -682,14 +682,113 @@ function mergeMokaApplication(record, application = {}) {
   if (!application || typeof application !== 'object') return record;
   const raw = { ...(record.raw || {}), application };
   const normalized = normalizeMokaInterview(raw);
+  const outcome = applicationOutcome(application);
   return {
     ...record,
     ...normalized,
     raw,
     applicationId: record.applicationId || application.id || application.applicationId || '',
     projectName: normalized.projectName || record.projectName || '',
-    projectCode: normalized.projectCode || record.projectCode || ''
+    projectCode: normalized.projectCode || record.projectCode || '',
+    hired: record.hired === true || normalized.hired === true || outcome.hired,
+    offerAccepted: record.offerAccepted === true || normalized.offerAccepted === true || outcome.offerAccepted,
+    hireStage: outcome.stageName || record.hireStage || '',
+    applicationStatus: outcome.applicationStatus || record.applicationStatus || ''
   };
+}
+
+function mokaApplicationId(record = {}) {
+  return String(record.applicationId || record.raw?.candidates?.[0]?.applicationId || record.raw?.applicationId || '').trim();
+}
+
+async function attachMokaHireStatus(records, client, result, startedAt) {
+  if (Date.now() - startedAt > 95000) {
+    result.warnings.push('本次面试读取已接近时限，入职状态留到下一次刷新。');
+    result.hireStats = { checked: 0, hired: 0, pending: 0, skipped: true };
+    return records;
+  }
+  const pending = [];
+  const seen = new Set();
+  for (const record of records) {
+    if (record.hired === true) continue;
+    const applicationId = mokaApplicationId(record);
+    if (!applicationId || seen.has(applicationId)) continue;
+    seen.add(applicationId);
+    pending.push(applicationId);
+  }
+  const outcomes = new Map();
+  const deadline = Math.min(Date.now() + 18000, startedAt + 108000);
+  let checked = 0;
+  for (let index = 0; index < pending.length && index < 120 && Date.now() < deadline; index += 12) {
+    const batch = pending.slice(index, index + 12);
+    const rows = await Promise.all(batch.map(async applicationId => {
+      try {
+        const response = await client.request(`${client.config.applicationsPath}/${encodeURIComponent(applicationId)}`);
+        if (!response.ok) return null;
+        const body = response.body && typeof response.body === 'object' ? response.body : {};
+        const application = body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
+        return { applicationId, outcome: applicationOutcome(application) };
+      } catch { return null; }
+    }));
+    rows.filter(Boolean).forEach(row => outcomes.set(row.applicationId, row.outcome));
+    checked += batch.length;
+  }
+  const hiredIds = new Set([...outcomes.entries()].filter(([, outcome]) => outcome.hired).map(([applicationId]) => applicationId));
+  result.hireStats = { checked, hired: hiredIds.size, pending: pending.length, skipped: false };
+  if (pending.length > checked) result.warnings.push(`已核对 ${checked}/${pending.length} 个申请的入职状态，其余留到下一次刷新。`);
+  return records.map(record => {
+    const outcome = outcomes.get(mokaApplicationId(record));
+    if (!outcome) return record;
+    return {
+      ...record,
+      hired: record.hired === true || outcome.hired,
+      offerAccepted: record.offerAccepted === true || outcome.offerAccepted,
+      hireStage: outcome.stageName || record.hireStage || '',
+      applicationStatus: outcome.applicationStatus || record.applicationStatus || ''
+    };
+  });
+}
+
+function sameHireJob(left, right) {
+  const a = String(left || '').trim();
+  const b = String(right || '').trim();
+  if (!a || !b) return true;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+async function syncHiredCandidates(context, records) {
+  const hires = [];
+  const seen = new Set();
+  for (const item of records || []) {
+    const name = String(item.candidateName || '').replace(/\s+/g, '');
+    const job = String(item.jobName || '').trim();
+    if (item.hired !== true || name.length < 2) continue;
+    const key = `${name}\n${job}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hires.push({ name, job });
+  }
+  let updated = 0;
+  for (const hire of hires.slice(0, 40)) {
+    const listed = await getDatabase().collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId, candidateName: hire.name }).limit(20).get();
+    const rows = Array.isArray(listed.data) ? listed.data : [];
+    for (const row of rows) {
+      if (row.hired === true || !sameHireJob(hire.job, row.roleName || row.jobName)) continue;
+      const id = row.id || row._id;
+      if (!id) continue;
+      try {
+        await getDatabase().collection(COLLECTIONS.candidates).doc(String(id)).update({
+          hired: true,
+          offerAccepted: true,
+          hiredAt: row.hiredAt || new Date().toISOString(),
+          recruitmentOutcome: '已入职',
+          updatedAt: new Date().toISOString()
+        });
+        updated += 1;
+      } catch { /* one candidate write should not block the interview response */ }
+    }
+  }
+  return { updated };
 }
 
 async function fetchMokaApplications(records, client, result) {
@@ -1009,6 +1108,9 @@ async function loadMokaInterviews(context) {
     : [];
   result.records = [...enrichedRecords, ...result.records.slice(attachmentLimit)];
   if (result.records.length > attachmentLimit && attachmentLimit > 0) result.warnings.push(`已读取前 ${attachmentLimit} 场面试的录音/转写附件，其余记录保留为待补抓。`);
+  result.records = await attachMokaHireStatus(result.records, client, result, startedAt);
+  try { result.hireCandidateStats = await syncHiredCandidates(context, result.records); }
+  catch { result.warnings.push('入职状态写回候选人未完成，面试官统计仍会使用本次抓到的入职结果。'); }
   result.totalFetched = records.length; result.totalMatched = result.records.length;
   result.transcriptStats = result.records.reduce((stats, record) => { stats.total += 1; if (record.transcriptStatus === 'completed') stats.completed += 1; else if (record.transcriptStatus === 'pending' || record.transcriptStatus === 'audio-ready') stats.pending += 1; else stats.missing += 1; stats.characters += Number(record.transcriptCharacters || 0); return stats; }, { total: 0, completed: 0, pending: 0, missing: 0, characters: 0 });
   result.analytics = buildMokaAnalytics(result.records);
