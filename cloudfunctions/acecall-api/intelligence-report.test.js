@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { compactReportInput, sanitizeIntelligenceReport } = require('./intelligence-report');
+const { compactReportInput, sanitizeIntelligenceReport, sanitizeConfirmedCompanies } = require('./intelligence-report');
 
-test('one industry report drops companies and numbers that are not in the excerpts', () => {
+test('one industry report keeps only grounded section text', () => {
   const input = compactReportInput({
     kind: 'industry',
     name: '证券',
@@ -12,12 +12,27 @@ test('one industry report drops companies and numbers that are not in the excerp
     transcriptExcerpts: ['面试里谈到港股结算经验', '另一份没有提到公司']
   });
   const report = sanitizeIntelligenceReport({
-    overview: '证券相关材料目前有 3 份，简历里出现中信证券的交易系统经历。',
-    resumeFindings: ['简历写明在中信证券负责交易系统开发。', '另有华泰证券融资 20 亿。'],
-    transcriptFindings: ['转写谈到港股结算经验。'],
-    gaps: '这些材料没有写到管理幅度。'
+    sections: [
+      { title: '行业现状', text: '材料提到中信证券的交易系统经历。' },
+      { title: '行业战略', text: '华泰证券融资 20 亿。' },
+      { title: '行业业务', text: '现有材料未提及。' },
+      { title: '行业架构', text: '转写谈到港股结算经验。' }
+    ]
   }, input);
   assert.equal(report.name, '证券');
-  assert.deepEqual(report.resumeFindings, ['简历写明在中信证券负责交易系统开发。']);
-  assert.deepEqual(report.transcriptFindings, ['转写谈到港股结算经验。']);
+  assert.deepEqual(report.sections.map(item => item.title), ['行业现状', '行业战略', '行业业务', '行业架构']);
+  assert.equal(report.sections[0].text, '材料提到中信证券的交易系统经历。');
+  assert.equal(report.sections[1].text, '现有材料未提及。');
+  assert.equal(report.sections[2].text, '现有材料未提及。');
+  assert.equal(report.sections[3].text, '转写谈到港股结算经验。');
+});
+
+test('company confirmation keeps concrete names and drops speech fragments', () => {
+  const kept = sanitizeConfirmedCompanies({
+    companies: ['一些银行', '港的银行', '洋商业银行', '泰隆银行', '工商银行', '腾讯', '工商']
+  }, {
+    names: ['一些银行', '港的银行', '洋商业银行', '泰隆银行', '工商银行'],
+    excerpts: ['候选人在泰隆银行和工商银行做过对公']
+  });
+  assert.deepEqual(kept, ['泰隆银行', '工商银行']);
 });
