@@ -103,6 +103,39 @@ function sameInterviewPerson(left, right) {
   const b = String(right || '').replace(/\s+/g, '').toLowerCase();
   return a.length >= 2 && b.length >= 2 && (a === b || a.includes(b) || b.includes(a));
 }
+
+function interviewerReportDocument({ selected = '', filters = {}, records = [], outcomes = {}, selectionScore = {} } = {}) {
+  const scope = selected || '全部面试官';
+  const period = filters.period ? `近 ${filters.period} 天` : '全部时间';
+  const questions = new Map();
+  records.forEach(record => {
+    String(record.transcript || '').split(/\n+/).forEach(line => {
+      const question = line.replace(/^(?:面试官|Interviewer)[：:]\s*/i, '').trim();
+      if (!question || !(/[？?]$/.test(question) || /(?:吗|呢|什么|怎么|如何|为什么|为何|是否|有没有|能不能)$/.test(question))) return;
+      questions.set(question, (questions.get(question) || 0) + 1);
+    });
+  });
+  const topQuestions = [...questions.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const recordsHtml = records.slice(0, 20).map(record => `<tr><td>${escapeHtml(record.candidateName || '未命名候选人')}</td><td>${escapeHtml(record.jobName || '未识别岗位')}</td><td>${escapeHtml(record.round || '—')}</td><td>${escapeHtml(formatDate(record.startedAt))}</td><td>${escapeHtml(interviewResultLabel(record))}</td></tr>`).join('');
+  const recommendations = (selectionScore.recommendations || []).map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>当前没有需要特别关注的改进项。</li>';
+  const questionHtml = topQuestions.map(([question, count]) => `<li>${escapeHtml(question)} <small>（${count} 次）</small></li>`).join('') || '<li>当前筛选范围内暂无可识别的面试问题。</li>';
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(scope)}面试官报告</title><style>body{font-family:Arial,"Microsoft YaHei",sans-serif;color:#172033;line-height:1.6;margin:38px}h1{font-size:24px;margin:0 0 6px}h2{font-size:16px;border-bottom:1px solid #dfe5ee;padding-bottom:6px;margin-top:26px}.meta{color:#64748b;font-size:12px}.metrics{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.metric{border:1px solid #dfe5ee;border-radius:8px;padding:10px 14px;min-width:120px}.metric b{display:block;font-size:20px}.metric span{font-size:12px;color:#64748b}li{margin:6px 0}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #dfe5ee;padding:7px;text-align:left}th{background:#f5f7fb}</style></head><body><h1>${escapeHtml(scope)} · 面试官分析报告</h1><div class="meta">统计范围：${escapeHtml([filters.job && `岗位：${filters.job}`, filters.round && `环节：${filters.round}`, period].filter(Boolean).join(' · '))}　生成时间：${escapeHtml(new Date().toLocaleString('zh-CN'))}</div><h2>一、面试概览</h2><div class="metrics"><div class="metric"><b>${outcomes.completed || 0}</b><span>已完成面试</span></div><div class="metric"><b>${outcomes.passed || 0}</b><span>面试通过</span></div><div class="metric"><b>${outcomes.rejected || 0}</b><span>面试淘汰</span></div><div class="metric"><b>${outcomes.pending || 0}</b><span>待评价</span></div><div class="metric"><b>${selectionScore.score === null || selectionScore.score === undefined ? '样本不足' : selectionScore.score}</b><span>面试表现分</span></div><div class="metric"><b>${selectionScore.completeness ?? 0}%</b><span>评价完成率</span></div></div><h2>二、提问与关注重点</h2><p>有效问题 ${selectionScore.questionTotal || 0} 条，追问信号 ${selectionScore.followTotal || 0} 条，问题覆盖 ${selectionScore.coverage === null || selectionScore.coverage === undefined ? '—' : `${selectionScore.coverage}%`}。</p><ol>${questionHtml}</ol><h2>三、面试改进建议</h2><ul>${recommendations}</ul><h2>四、面试记录</h2><table><thead><tr><th>候选人</th><th>岗位</th><th>环节</th><th>面试时间</th><th>结果</th></tr></thead><tbody>${recordsHtml || '<tr><td colspan="5">当前筛选范围内暂无面试记录。</td></tr>'}</tbody></table><p class="meta">数据来源：Moka 面试记录与 AceCall 已导入转写。报告用于招聘复盘和经验沉淀，最终判断以人工确认结果为准。</p></body></html>`;
+}
+
+function downloadInterviewerReport(payload) {
+  const scope = payload.selected || '全部面试官';
+  const filename = `${scope.replace(/[\\/:*?"<>|]/g, '_')}_面试官报告_${new Date().toISOString().slice(0, 10)}.doc`;
+  const blob = new Blob([interviewerReportDocument(payload)], { type: 'application/msword;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function matchImportedTranscript(task, interviews) {
   const hint = task.metadata || {};
   const hintTime = Date.parse(hint.interviewAt || '') || 0;
@@ -224,12 +257,28 @@ function renderInterviewers() {
   const selectOptions = (values, value, empty) => `<option value="">${empty}</option>${values.map(item => `<option value="${escapeHtml(item)}"${item === value ? ' selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
   root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和提问方式。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${outcomes.passed || '—'}</b><span>面试通过</span><small>明确通过结论</small></div><div class="metric"><b>${outcomes.rejected || '—'}</b><span>面试淘汰</span><small>明确淘汰/不通过结论</small></div><div class="metric"><b>${outcomes.pending || '—'}</b><span>待评价</span><small>尚未形成结果</small></div><div class="metric"><b>${(outcomes.completed || 0) < 5 ? '样本不足' : pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${(outcomes.completed || 0) < 5 ? '少于 5 场不展示比率' : `${outcomes.passed} 人通过`}</small></div><div class="metric"><b>${(outcomes.completed || 0) < 5 ? '样本不足' : pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>${(outcomes.completed || 0) < 5 ? '少于 5 场不展示比率' : '有明确结论的面试'}</small></div></div><section class="surface interviewer-trend-panel"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><b>${row.count}</b><span class="trend-plot"><i style="height:${row.count ? Math.max(14, Math.round(row.count / trendMax * 132)) : 0}px"></i></span><span>${escapeHtml(row.month)}</span></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section>
   </div>`;
+  const refreshInterviewerButton = root.querySelector('[data-refresh-interviewer]');
+  if (refreshInterviewerButton) {
+    const actions = document.createElement('div');
+    actions.className = 'page-title-actions';
+    const exportButton = document.createElement('button');
+    exportButton.className = 'secondary';
+    exportButton.type = 'button';
+    exportButton.dataset.exportInterviewerReport = 'true';
+    exportButton.textContent = '导出面试官报告';
+    refreshInterviewerButton.replaceWith(actions);
+    actions.append(exportButton, refreshInterviewerButton);
+  }
   const selectionScore = scoreInterviewSelection(records, filters);
   const scoreText = selectionScore.score === null ? (selectionScore.limited ? '样本不足' : '—') : selectionScore.score;
   const coverageText = selectionScore.coverage === null ? '—' : (selectionScore.limited ? `${selectionScore.covered}/${selectionScore.transcribed}` : `${selectionScore.coverage}%`);
   const depthText = selectionScore.depth === null ? '—' : (selectionScore.limited ? `${selectionScore.followTotal} 条` : `${selectionScore.depth}%`);
   const evaluationText = selectionScore.limited ? `${selectionScore.evaluated}/${selectionScore.completed}` : `${selectionScore.completeness}%`;
   root.querySelector('.interviewer-metrics')?.insertAdjacentHTML('afterend', `<section class="surface interviewer-server-analysis"><div class="surface-head"><div><h2>云端结构化分析</h2><p class="surface-subtitle">按上方的面试官、岗位、环节和时间，从已加载转写中提取问题后重新计算</p></div><span>${escapeHtml(selectionScore.scope)}</span></div><div class="server-analysis-grid"><div><b>${scoreText}</b><span>面试表现分</span><small>${selectionScore.limited ? '少于 5 场不展示分数' : escapeHtml(selectionScore.scope)}</small></div><div><b>${coverageText}</b><span>问题覆盖</span><small>${selectionScore.transcribed ? `${selectionScore.questionTotal} 条有效问题 · ${selectionScore.covered}/${selectionScore.transcribed} 份转写` : '当前筛选没有可用转写'}</small></div><div><b>${depthText}</b><span>追问深度</span><small>${selectionScore.questionTotal ? '候选人回答后的职责或结果追问' : '还没有可分析的有效问题'}</small></div><div><b>${evaluationText}</b><span>评价完成</span><small>${selectionScore.evaluated} / ${selectionScore.completed} 场</small></div></div><div class="recommendation-list server-analysis-recommendations">${selectionScore.recommendations.map(item => `<p><b>建议：</b>${escapeHtml(item)}</p>`).join('')}</div></section>`);
+  root.querySelector('[data-export-interviewer-report]')?.addEventListener('click', () => {
+    if (!records.length) { window.alert('当前筛选范围内暂无可导出的面试数据。'); return; }
+    downloadInterviewerReport({ selected, filters, records, outcomes, selectionScore });
+  });
     const detailRecords = interviewerRecords({ ...filters, includeIncomplete: true }).slice().sort((a, b) => (Date.parse(b.startedAt || '') || 0) - (Date.parse(a.startedAt || '') || 0));
   const feedbackCount = detailRecords.filter(item => String(item.feedback || '').trim()).length;
   const resultCounts = detailRecords.reduce((result, item) => { const label = interviewResultLabel(item); result[label] = (result[label] || 0) + 1; return result; }, {});
