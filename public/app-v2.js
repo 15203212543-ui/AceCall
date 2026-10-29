@@ -825,6 +825,8 @@ function renderTalentMarket() {
  }
 
  function renderIntelligenceResearchPage() {
+   applyCachedCompanyConfirmation();
+   void confirmIntelligenceCompanies();
    const topic = app.intelligenceTopic || '';
    const records = intelligenceRecords({ source: app.intelligenceSource, period: app.intelligencePeriod });
    const sourceSummary = intelligenceSourceSummary({ period: app.intelligencePeriod });
@@ -980,13 +982,14 @@ function renderTalentMarket() {
    return { kind, name: item.name, overview: `《${item.name}》这份报告由已解析材料整理：简历 ${resumes.length} 条，面试转写 ${transcripts.length} 条，涉及 ${people} 位候选人。下面只保留材料里已经写到的内容。`, resumeFindings: resumes.slice(0, 4), transcriptFindings: transcripts.slice(0, 4), gaps: !resumes.length ? '简历里还没有对上这个名称的任职描述。' : !transcripts.length ? '面试转写里还没有直接谈到这个名称。' : '材料没有写到的公司、数字和趋势，不在这份报告里补充。', materialCount: item.count || 0, candidateCount: people, drafted: true };
  }
  function reportMarkup(report, pending) {
-   if (!report?.overview || report.drafted) return `<div class="intelligence-home-empty">${pending ? '正在根据简历和面试转写生成简短报告…' : '有简历或转写后，会生成一份简短报告。'}</div>`;
-   return `<article class="intelligence-selected-evidence"><span>报告</span><p>${escapeHtml(report.overview)}</p></article>`;
+   const sections = Array.isArray(report?.sections) ? report.sections.filter(item => item?.title && item?.text) : [];
+   if (!sections.length || report.drafted) return `<div class="intelligence-home-empty">${pending ? '正在根据简历和面试转写整理调研报告…' : '有简历或转写后，会生成一份调研报告。'}</div>`;
+   return `<article class="intelligence-selected-evidence"><span>报告</span>${sections.map(item => `<p><b>${escapeHtml(item.title)}</b>${escapeHtml(item.text)}</p>`).join('')}</article>`;
  }
  function reportWritePlan(kind, item) {
    const pack = reportSourcePack(kind, item);
    if (!pack.resumeExcerpts.length && !pack.transcriptExcerpts.length) return null;
-   const sourceKey = JSON.stringify({ v: 2, ...pack });
+   const sourceKey = JSON.stringify({ v: 3, ...pack });
    const stored = readIntelligenceReports()[`${kind}:${item.name}`];
    if (stored?.sourceKey === sourceKey && stored.overview) return null;
    if (app.intelligenceReportFailed?.[`${kind}:${item.name}`] === sourceKey) return null;
@@ -1001,8 +1004,42 @@ function renderTalentMarket() {
  }
  function storedReportFor(kind, item) {
    const stored = readIntelligenceReports()[`${kind}:${item.name}`];
-   const sourceKey = JSON.stringify({ v: 2, ...reportSourcePack(kind, item) });
-   return stored?.overview && !stored.drafted && stored.sourceKey === sourceKey ? stored : null;
+   const sourceKey = JSON.stringify({ v: 3, ...reportSourcePack(kind, item) });
+   return stored?.sections?.length && !stored.drafted && stored.sourceKey === sourceKey ? stored : null;
+ }
+ function companyNameKey() {
+   return intelligenceRecords({ period: 'all', skipConfirmed: true }).map(item => item.name).sort().join('\n');
+ }
+ function readConfirmedCompanies() {
+   try { return JSON.parse(localStorage.getItem('acecall-confirmed-companies-v1') || '{}'); } catch { return {}; }
+ }
+ function applyCachedCompanyConfirmation() {
+   const key = companyNameKey();
+   const cached = readConfirmedCompanies();
+   if (cached?.key === key && Array.isArray(cached.companies) && cached.companies.length) {
+     app.confirmedCompanies = cached.companies;
+     app.confirmedCompanyKey = key;
+   }
+ }
+ async function confirmIntelligenceCompanies() {
+   if (!REMOTE_BACKEND) return;
+   const key = companyNameKey();
+   if (!key || app.confirmedCompanyKey === key || app.confirmingCompanyKey === key) return;
+   app.confirmingCompanyKey = key;
+   const records = intelligenceRecords({ period: 'all', skipConfirmed: true });
+   try {
+     const result = await generate({ action: 'confirm-company-names', names: records.map(item => item.name).slice(0, 40), excerpts: records.map(item => item.evidence).filter(Boolean).slice(0, 12) });
+     const companies = Array.isArray(result?.companies) ? result.companies.map(name => String(name || '').trim()).filter(Boolean) : [];
+     if (!companies.length) return;
+     app.confirmedCompanies = companies;
+     app.confirmedCompanyKey = key;
+     localStorage.setItem('acecall-confirmed-companies-v1', JSON.stringify({ key, companies }));
+     if (app.view === 'intelligence') renderIntelligence();
+   } catch (error) {
+     console.warn('[AceCall company names]', error);
+   } finally {
+     if (app.confirmingCompanyKey === key) app.confirmingCompanyKey = '';
+   }
  }
  function refreshIntelligenceReport(kind, item) {
    const plan = reportWritePlan(kind, item);
@@ -1325,6 +1362,10 @@ function renderTalentMarket() {
        const name = normalizeCompanyName(rawName);
        const key = name.toLowerCase();
        if (!acceptableOrganizationName(name)) return;
+       if (!filters.skipConfirmed && Array.isArray(app.confirmedCompanies) && app.confirmedCompanies.length) {
+         const allowed = app.confirmedCompanies.map(value => normalizeCompanyName(value).toLowerCase());
+         if (!allowed.some(value => value.length >= 2 && !/^(银行|证券|基金|保险|科技|集团|公司|资本)$/.test(value) && (value === key || key.startsWith(value) || value.startsWith(key)))) return;
+       }
        const acceptedKeys = new Set([...explicitTextNames, ...resumeNames, ...experiences.map(experience => experience.company)].map(value => normalizeCompanyName(value).toLowerCase()));
        if (!isReliableCompanyName(name) && !structuredCompanyKeys.has(key) && !acceptedKeys.has(key)) return;
        const existing = groups.get(key) || { key, name, count: 0, transcripts: 0, evidence: '', summary: '', confidence: '中', latest: '', sources: [], industries: [], products: [], businesses: [], recordKeys: [] };
@@ -1377,8 +1418,9 @@ function renderTalentMarket() {
  function acceptableOrganizationName(name = '') {
    const value = String(name || '').trim();
    if (value.length < 2 || value.length > 16) return false;
-   if (/[，。！？、呢啊吧嘛哦呀]/.test(value)) return false;
-   if (/说|就是|之前|之后|我是|我们|这个|那个|反正|比如|从事|负责|做过|在做|一家|哪种|什么|哪|从金/.test(value)) return false;
+   if (/[，。！？、呢啊吧嘛哦呀的些类种某]/.test(value)) return false;
+   if (/说|就是|之前|之后|我是|我们|这个|那个|反正|比如|从事|负责|做过|在做|一家|哪种|什么|哪|从金|一些|这些|那些|各类|多家|其他|其它/.test(value)) return false;
+   if (/商业银|外资银|中资银|城市商业|农村商业|村镇银|网上银|手机银|电子银/.test(value)) return false;
    if (/^(手机|网上|电子|村镇|商业|民营|国有|城市|农村|零售|对公|个人|互联网|金融|传统|大型|中小|股份)(银行|基金|证券|科技)$/.test(value)) return false;
    if (isReliableCompanyName(value)) {
      const head = value.replace(/(?:股份有限公司|有限公司|集团公司|集团|科技|证券|银行|基金|保险|资本)$/, '');
