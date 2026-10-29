@@ -822,7 +822,7 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .candidate-pager span{color:#7b899d;font-size:10px}
 @media(max-width:900px){.candidates-page{padding-bottom:45px}}
 .quality-control{position:relative;display:inline-flex}.quality-control .quality{border:0;cursor:pointer}.quality-popover{position:absolute;z-index:5;top:calc(100% + 6px);left:0;min-width:150px;padding:8px 10px;border:1px solid #e2e8e4;border-radius:5px;background:#fff;box-shadow:0 8px 24px rgba(29,48,38,.12);color:var(--ink);font-size:9px;white-space:normal}
-@media(min-width:981px){#inboxView.active{display:block;height:auto;overflow:visible}.resume-center-page{display:block;height:auto;padding-top:18px;padding-bottom:45px;box-sizing:border-box}.resume-center-page .ingest-aside{display:grid;gap:14px;height:auto;overflow:visible}.resume-center-page .batch-surface,.resume-center-page .batch-surface .surface-body{display:block;height:auto;overflow:visible}}
+@media(min-width:981px){#inboxView.active{display:block;height:auto;overflow:visible}.resume-center-page{display:block;height:auto;padding-top:18px;padding-bottom:45px;box-sizing:border-box}.resume-center-page .ingest-layout{grid-template-columns:1fr}.resume-center-page .ingest-aside{order:-1;display:block;height:auto;overflow:visible}.resume-center-page .desktop-agent-panel .surface-body{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px}.resume-center-page .desktop-agent-panel .muted-text{max-width:720px}.resume-center-page .desktop-agent-actions{justify-content:flex-end}}
 #jobsView.active{display:block;height:auto;overflow:visible}
 .jobs-page{display:block;height:auto;padding-top:18px;padding-bottom:45px;box-sizing:border-box}
 .jobs-page>.rules-library{max-height:none;overflow:visible}
