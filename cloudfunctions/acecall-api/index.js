@@ -1959,39 +1959,35 @@ async function assertWritableRecord(collection, id, tenantId) {
 async function repairCandidateNames(context) {
   requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
-  const result = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
-  const rows = Array.isArray(result.data) ? result.data : [];
   let repaired = 0;
   let kept = 0;
-  for (const source of rows) {
-    const current = String(source.candidateName || '').trim();
-    if (localNameReason(current).reasonable) { kept += 1; continue; }
-    const id = source.id || source._id;
-    if (!id) continue;
-    try {
-      const fileName = source.resumeMeta?.fileName || '';
-      const text = normalizeResumeText(String(source.resume || ''));
-      const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-      const ranked = rankNameCandidates(proposeNameCandidates({
-        labeled: extractLabeledCandidateName(lines),
-        contextual: extractContextualCandidateName(lines),
-        fromFile: extractNameFromFileName(fileName),
-        fromBody: extractCandidateName(lines),
-        fileName
-      }));
-      const selected = await selectReasonableName(ranked, null);
-      const nextName = selected.candidateName || '';
-      if (nextName === current) { kept += 1; continue; }
-      const now = new Date().toISOString();
-      await db.collection(COLLECTIONS.candidates).doc(id).update({
-        candidateName: nextName,
-        resumeMeta: { ...(source.resumeMeta || {}), candidateName: nextName, candidateNameSource: selected.candidateNameSource, candidateNameStatus: selected.candidateNameStatus, candidateNameReview: selected.candidateNameReview, nameReviewedAt: now },
-        updatedAt: now
-      });
-      repaired += 1;
-    } catch (error) {
-      console.warn('[AceCall name repair]', error?.message || error);
+  for (let skip = 0; skip < 500; skip += 100) {
+    const result = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).field({ id: true, candidateName: true, resumeMeta: true }).skip(skip).limit(100).get();
+    const rows = Array.isArray(result.data) ? result.data : [];
+    if (!rows.length) break;
+    for (const source of rows) {
+      const current = String(source.candidateName || '').trim();
+      if (localNameReason(current).reasonable) { kept += 1; continue; }
+      const id = source.id || source._id;
+      if (!id) continue;
+      try {
+        const fileName = source.resumeMeta?.fileName || source.resumeMeta?.originalFileName || '';
+        const fromFile = extractNameFromFileName(fileName);
+        const selected = await selectReasonableName(rankNameCandidates(proposeNameCandidates({ fromFile, fileName })), null);
+        const nextName = selected.candidateName || '';
+        if (!nextName || nextName === current) { kept += 1; continue; }
+        const now = new Date().toISOString();
+        await db.collection(COLLECTIONS.candidates).doc(id).update({
+          candidateName: nextName,
+          resumeMeta: { ...(source.resumeMeta || {}), candidateName: nextName, candidateNameSource: selected.candidateNameSource || '文件名', candidateNameStatus: selected.candidateNameStatus, candidateNameReview: selected.candidateNameReview, nameReviewedAt: now },
+          updatedAt: now
+        });
+        repaired += 1;
+      } catch (error) {
+        console.warn('[AceCall name repair]', error?.message || error);
+      }
     }
+    if (rows.length < 100) break;
   }
   await audit(context, 'candidate.name.repair', 'all', { repaired, kept });
   return { ok: true, repaired, kept };

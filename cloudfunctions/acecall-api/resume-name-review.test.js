@@ -13,7 +13,7 @@ test('a section title after the name field is not captured as the name', () => {
   assert.equal(extractCandidateName(['外语水平', '英语 CET-6']), '');
 });
 
-test('the recruitment file name wins when the resume body only has a section title', () => {
+test('the recruitment file name wins when the resume body only has a section title', async () => {
   const displayed = chooseDisplayedName(proposeNameCandidates({
     labeled: '外语水平',
     fromBody: '外语水平',
@@ -23,6 +23,11 @@ test('the recruitment file name wins when the resume body only has a section tit
   assert.equal(displayed.candidateName, '杨月');
   assert.equal(displayed.candidateNameStatus, '已识别');
   assert.equal(displayed.candidateNameSource, '文件名');
+  const repaired = await selectReasonableName(require('./resume-profile').rankNameCandidates(proposeNameCandidates({
+    fromFile: extractNameFromFileName(fileName),
+    fileName
+  })), null);
+  assert.equal(repaired.candidateName, '杨月');
 });
 
 test('surname check keeps 杨月 and rejects a section title or a name without a surname', () => {
