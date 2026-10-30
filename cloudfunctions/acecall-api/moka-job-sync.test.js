@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeOpenMokaJob, mokaSyncDue, planMokaJobSync } = require('./moka-job-sync');
+const { normalizeOpenMokaJob, mokaSyncDue, planMokaJobSync, ownedOpenJobs, interviewBelongsToOwnedJobs, interviewOnOrAfterScope } = require('./moka-job-sync');
 
 test('open Moka jobs keep the manager and assistant emails', () => {
   const job = normalizeOpenMokaJob({
@@ -53,6 +53,22 @@ test('a stopped job is reopened when Moka lists it again', () => {
   assert.equal(plan.creates.length, 0);
   assert.equal(plan.updates[0].patch.status, 'active');
   assert.equal(plan.updates[0].patch.jd, '说明');
+});
+
+test('interviews stay with the open jobs owned by the signed-in email after 1 August 2026', () => {
+  const jobs = ownedOpenJobs([
+    { id: 'aabbccdd-eeff-0011-2233-445566778899', name: '人力管培', emails: ['lead@example.com'] },
+    { id: 'other-job', name: '行情产品经理', emails: ['other@example.com'] },
+    { id: 'closed-looking', name: '结算专员', emails: [] }
+  ], 'Lead@Example.com');
+  assert.deepEqual(jobs, [{ id: 'aabbccdd-eeff-0011-2233-445566778899', name: '人力管培' }]);
+  assert.equal(interviewBelongsToOwnedJobs({ jobId: 'AABBCCDDEEFF00112233445566778899' }, jobs), true);
+  assert.equal(interviewBelongsToOwnedJobs({ jobId: 'other-job', jobName: '人力管培' }, jobs), false);
+  assert.equal(interviewBelongsToOwnedJobs({ jobName: '人力管培' }, jobs), true);
+  assert.equal(interviewBelongsToOwnedJobs({ jobName: '人力管培' }, [...jobs, { id: 'dup', name: '人力管培' }]), false);
+  assert.equal(interviewOnOrAfterScope('2026-08-01T00:00:00+08:00'), true);
+  assert.equal(interviewOnOrAfterScope('2026-07-31T23:00:00+08:00'), false);
+  assert.equal(ownedOpenJobs(jobs, '').length, 0);
 });
 
 test('the automatic check is due after 24 hours', () => {
