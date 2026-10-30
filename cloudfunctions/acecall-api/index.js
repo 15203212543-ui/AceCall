@@ -9,7 +9,8 @@ const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback'
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
 const { prepareDocumentVersions } = require('./document-text');
 const { resolveJobAssignment, draftJobProfile, confirmJobProfile, evaluateJobMatches, applyUploadedResumeAssignment } = require('./job-assignment');
-const { proposeNameCandidates, chooseDisplayedName, extractProfileFields } = require('./resume-profile');
+const { proposeNameCandidates, rankNameCandidates, extractProfileFields } = require('./resume-profile');
+const { localNameReason, nameReviewPrompt, selectReasonableName } = require('./resume-name-review');
 const { buildCallQuestions } = require('./call-preparation');
 const { PHONE_SCREEN_STANDARD, prepareQuestionGuide, selectPhoneScreenQuestions } = require('./phone-screen-questions');
 const { extractTranscriptFindings, checkCallSummary, checkSynthesis, protectInterviewerReview, applyTeamVisibility } = require('./transcript-analysis');
@@ -213,6 +214,9 @@ const server = http.createServer(async (request, response) => {
       const candidate = await readJson(request);
       const saved = await saveCandidate(await getRequestContext(request), id, candidate);
       return sendJson(response, 200, saved);
+    }
+    if (request.method === 'POST' && url.pathname === '/api/candidates/repair-names') {
+      return sendJson(response, 200, await repairCandidateNames(await getRequestContext(request)));
     }
     if (request.method === 'POST' && url.pathname === '/api/migrate-resumes') {
       return sendJson(response, 200, await migrateStoredResumes(await getRequestContext(request)));
@@ -1952,6 +1956,47 @@ async function assertWritableRecord(collection, id, tenantId) {
   assertSameTenant(existing, { tenantId });
 }
 
+async function repairCandidateNames(context) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const db = getDatabase();
+  const result = await db.collection(COLLECTIONS.candidates).where({ tenantId: context.tenantId }).limit(500).get();
+  const rows = Array.isArray(result.data) ? result.data : [];
+  let repaired = 0;
+  let kept = 0;
+  for (const source of rows) {
+    const current = String(source.candidateName || '').trim();
+    if (localNameReason(current).reasonable) { kept += 1; continue; }
+    const id = source.id || source._id;
+    if (!id) continue;
+    try {
+      const fileName = source.resumeMeta?.fileName || '';
+      const text = normalizeResumeText(String(source.resume || ''));
+      const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+      const ranked = rankNameCandidates(proposeNameCandidates({
+        labeled: extractLabeledCandidateName(lines),
+        contextual: extractContextualCandidateName(lines),
+        fromFile: extractNameFromFileName(fileName),
+        fromBody: extractCandidateName(lines),
+        fileName
+      }));
+      const selected = await selectReasonableName(ranked, null);
+      const nextName = selected.candidateName || '';
+      if (nextName === current) { kept += 1; continue; }
+      const now = new Date().toISOString();
+      await db.collection(COLLECTIONS.candidates).doc(id).update({
+        candidateName: nextName,
+        resumeMeta: { ...(source.resumeMeta || {}), candidateName: nextName, candidateNameSource: selected.candidateNameSource, candidateNameStatus: selected.candidateNameStatus, candidateNameReview: selected.candidateNameReview, nameReviewedAt: now },
+        updatedAt: now
+      });
+      repaired += 1;
+    } catch (error) {
+      console.warn('[AceCall name repair]', error?.message || error);
+    }
+  }
+  await audit(context, 'candidate.name.repair', 'all', { repaired, kept });
+  return { ok: true, repaired, kept };
+}
+
 async function migrateStoredResumes(context) {
   requireRole(context, ['owner', 'admin', 'recruiter']);
   const db = getDatabase();
@@ -2296,11 +2341,11 @@ async function parseResumeFile(fileName, buffer) {
   const contextualName = extractContextualCandidateName(resumeLines);
   const fileNameName = extractNameFromFileName(fileName);
   const contentName = extractCandidateName(resumeLines);
-  const nameCandidates = proposeNameCandidates({ labeled: labeledName, contextual: contextualName, fromFile: fileNameName, fromBody: contentName });
-  const displayedName = chooseDisplayedName(nameCandidates);
-  const candidateName = displayedName.candidateName || chooseCandidateName(labeledName, contextualName, fileNameName, contentName);
+  const nameCandidates = proposeNameCandidates({ labeled: labeledName, contextual: contextualName, fromFile: fileNameName, fromBody: contentName, fileName });
+  const reviewedName = await selectReasonableName(rankNameCandidates(nameCandidates), process.env.DEEPSEEK_API_KEY ? confirmCandidateName : null);
+  const candidateName = reviewedName.candidateName || '';
   const profile = extractProfileFields(text);
-  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: displayedName.candidateNameSource, candidateNameStatus: displayedName.candidateNameStatus, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears || extractExperienceYearsFromFileName(fileName), education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
+  return { text, document: versions, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateName, candidateNameSource: reviewedName.candidateNameSource, candidateNameStatus: reviewedName.candidateNameStatus, candidateNameReview: reviewedName.candidateNameReview, nameCandidates, phone: profile.phone, email: profile.email, age: profile.age?.value || '', ageUsedForMatch: false, experienceYears: profile.experienceYears || extractExperienceYearsFromFileName(fileName), education: profile.education, school: profile.school, certificates: profile.certificates, experiences: profile.experiences, profileFields: profile.fields, parseVersion: versions.parseVersion, parseQuality: { level: text.length >= 300 ? 'good' : 'warn', label: text.length >= 300 ? '文本完整' : '文本较少', characters: text.length } } };
 }
 
 let baiduAccessToken = { value: '', expiresAt: 0 };
@@ -2409,6 +2454,23 @@ function buildModelPrompt(payload) {
     instructions: `你是金融与互联网行业的专业招聘电话初筛助手。只依据输入事实工作，不得推断性别、年龄、婚育、籍贯等非岗位因素。区分“材料陈述”“电话确认”“仍待核验”，未知信息写“待确认”。输出严格 JSON，不含 Markdown。每项判断必须附事实依据，不得自动淘汰，最终决策由招聘人员完成。对于 prepare 任务，必须优先使用候选人简历全文、当前岗位 JD 和初筛规则：问题应点名材料里的具体公司、岗位、项目、职责、技能、结果或 JD 要求，不得用通用模板替代已经存在的事实；每个问题都要在 evidence 中提供对应依据。${schema}`,
     input: JSON.stringify(payload)
   };
+}
+
+async function confirmCandidateName(name) {
+  const prompt = nameReviewPrompt(name);
+  const apiResponse = await fetch(process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: process.env.DEEPSEEK_MODEL || 'deepseek-chat', messages: [{ role: 'system', content: prompt.instructions }, { role: 'user', content: prompt.input }], response_format: { type: 'json_object' }, temperature: 0, stream: false }),
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!apiResponse.ok) throw new Error(`DeepSeek API error: ${apiResponse.status}`);
+  const data = await apiResponse.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('DeepSeek 未返回有效内容');
+  const parsed = JSON.parse(content);
+  if (typeof parsed.reasonable !== 'boolean') throw new Error('DeepSeek 姓名判断无效');
+  return parsed.reasonable;
 }
 
 async function completeQuestionAi(prompt) {

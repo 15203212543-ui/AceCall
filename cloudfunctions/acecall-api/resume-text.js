@@ -66,8 +66,8 @@ function extractExperienceYearsFromFileName(fileName = '') {
 function extractCandidateName(lines = []) {
   const labeled = extractLabeledCandidateName(lines);
   if (labeled) return labeled;
-  for (const line of lines.slice(0, 30)) {
-    if (!isNameHeading(line) || isNameNoise(line) || /@|1[3-9]\d{9}|\d{2,4}[-/.年]/.test(line)) continue;
+  for (const line of lines.slice(0, 8)) {
+    if (line.length > 80 || isNameNoise(line) || /@|1[3-9]\d{9}|\d{2,4}[-/.年]/.test(line)) continue;
     const chinese = [...line.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(item => item[0]);
     const candidate = chinese.reverse().find(isPlausibleCandidateName);
     if (candidate) return normalizeCandidateName(candidate);
@@ -78,7 +78,7 @@ function extractCandidateName(lines = []) {
 }
 
 function extractContextualCandidateName(lines = []) {
-  const limit = Math.min(lines.length, 40);
+  const limit = Math.min(lines.length, 12);
   const contactPattern = /性别|男|女|手机|电话|邮箱|email|联系方式|联系地址|出生|年龄|1[3-9]\d{9}|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i;
   const candidates = [];
   for (let index = 0; index < limit; index += 1) {
@@ -86,7 +86,7 @@ function extractContextualCandidateName(lines = []) {
     const context = lines.slice(start, end).join(' ');
     if (!contactPattern.test(context)) continue;
     const source = lines[index];
-    if (!isNameHeading(source)) continue;
+    if (!source || source.length > 80 || isNameNoise(source)) continue;
     const chinese = [...source.matchAll(/(?<![\u4e00-\u9fff])[\u4e00-\u9fff]{2,4}(?![\u4e00-\u9fff])/g)].map(match => match[0]);
     chinese.forEach(candidate => { if (isPlausibleCandidateName(candidate)) candidates.push({ candidate, score: contactPattern.test(source) ? 2 : 1 }); });
   }
@@ -97,8 +97,8 @@ function extractContextualCandidateName(lines = []) {
 function extractLabeledCandidateName(lines = []) {
   for (const line of lines.slice(0, 30)) {
     const source = String(line || '').trim();
-    const nameField = source.match(/(?:^|[\s|｜])(?:姓名|Name)\s*[:：]?\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i);
-    const markedField = source.match(/(?:^|[\s|｜])(?:候选人|Candidate)\s*[:：]\s*([\u4e00-\u9fff]{2,4}|[A-Za-z][A-Za-z .'-]{1,30})/i);
+    const nameField = source.match(/(?:^|[\s|｜])(?:姓名|Name)\s*[:：]\s*([\u4e00-\u9fff]{2,4})(?![\u4e00-\u9fff])/i) || source.match(/(?:^|[\s|｜])(?:姓名|Name)\s*[:：]\s*([A-Za-z][A-Za-z .'-]{1,30}?)(?=\s|$|[|｜,，])/i);
+    const markedField = source.match(/(?:^|[\s|｜])(?:候选人|Candidate)\s*[:：]\s*([\u4e00-\u9fff]{2,4})(?![\u4e00-\u9fff])/i) || source.match(/(?:^|[\s|｜])(?:候选人|Candidate)\s*[:：]\s*([A-Za-z][A-Za-z .'-]{1,30}?)(?=\s|$|[|｜,，])/i);
     const labeled = nameField?.[1] || markedField?.[1];
     if (isPlausibleCandidateName(labeled)) return normalizeCandidateName(labeled);
   }
@@ -121,8 +121,17 @@ function isNameHeading(value = '') {
   return String(value || '').trim().length > 0 && String(value).trim().length <= 24;
 }
 
+const RESUME_SECTION_NAMES = new Set('外语水平、语言能力、英语水平、计算机水平、专业技能、技能特长、自我评价、求职意向、教育背景、工作经历、项目经历、实习经历、培训经历、证书荣誉、个人优势、基本信息、联系方式、兴趣爱好、主修课程、个人简介、获奖情况、技能证书、英语、法语、日语、德语、韩语、俄语、粤语、普通话、国语'.split('、'));
+
+function isResumeSectionName(value = '') {
+  const name = String(value || '').trim();
+  if (!name) return false;
+  if (RESUME_SECTION_NAMES.has(name)) return true;
+  return /水平|能力|经历|背景|技能|评价|意向|证书|课程|荣誉/.test(name);
+}
+
 function isNonPersonName(value = '') {
-  return /初步|撰写|到岗|入职|离职|在职|沟通|跟进|推动|负责|协助|执行|留痕|合规|核验|招聘|简历|应届|实习|全职|兼职|求职|背景|候选人|岗位|职位|大学|学院|公司|经验|学历|通过|推荐|匹配|确认|完成|目前|合适|数据|完整|要求|全程|已读|未读|产品|需求|方案|项目|职责|技能|能力|优势|总结|介绍|目标|结果|内容|运营|开发|设计|分析|管理|规划|维护|北京|上海|深圳|广州|杭州|成都|南京|武汉|苏州|香港/.test(String(value || ''));
+  return isResumeSectionName(value) || /初步|撰写|到岗|入职|离职|在职|沟通|跟进|推动|负责|协助|执行|留痕|合规|核验|招聘|简历|应届|实习|全职|兼职|求职|背景|候选人|岗位|职位|大学|学院|公司|经验|学历|通过|推荐|匹配|确认|完成|目前|合适|数据|完整|要求|全程|已读|未读|产品|需求|方案|项目|职责|技能|能力|优势|总结|介绍|目标|结果|内容|运营|开发|设计|分析|管理|规划|维护|北京|上海|深圳|广州|杭州|成都|南京|武汉|苏州|香港/.test(String(value || ''));
 }
 
 function isNameNoise(value = '') {
@@ -153,5 +162,6 @@ module.exports = {
   normalizeCandidateName,
   isPlausibleCandidateName,
   isNonPersonName,
+  isResumeSectionName,
   chooseCandidateName
 };
