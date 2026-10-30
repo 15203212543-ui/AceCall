@@ -110,6 +110,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   ensureDeferredViewData(app.view);
   void refreshEnteredView(app.view);
   void migrateStoredResumesOnce();
+  void repairCandidateNamesOnce();
   void reconcilePendingAssignments();
   void syncMokaOpenJobs(false);
   void checkService();
@@ -671,7 +672,7 @@ function applyCaseSummaries(data) {
   const previous = new Map(app.cases.map(item => [item.id, item]));
   const incomingCases = (data.cases || []).filter(isMeaningfulCandidate);
   if (!incomingCases.length && app.cases.length) throw new Error('云端本次未返回候选人列表，已保留当前数据');
-  app.cases = incomingCases.map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+  app.cases = incomingCases.map(item => retainLoadedCase(previous.get(item.id), normalizeCandidateDisplayName(item))).sort(byImported);
   if (data.bodiesIncluded) app.analysisTextsLoaded = true;
   if (app.remoteState) app.remoteState.cases = app.cases;
   localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
@@ -2896,7 +2897,7 @@ function infoLabel(key){return({currentCompanyRole:'当前公司及职位',locat
 function readField(text,label){return text.match(new RegExp(`${label}[：:为是]?([^，。；;\\n]{2,24})`))?.[1]?.trim()||'待确认';}
 function normalizeCandidateDisplayName(item = {}) {
   const name = String(item.candidateName || '').trim();
-  if (!name || !/(初步|撰写|负责|产品|需求|方案|项目|职责|技能|能力|优势|总结|介绍|目标|结果|内容|运营|开发|设计|分析|管理|规划|维护)/.test(name)) return item;
+  if (!name || !/(初步|撰写|负责|产品|需求|方案|项目|职责|技能|能力|优势|总结|介绍|目标|结果|内容|运营|开发|设计|分析|管理|规划|维护|外语水平|语言能力|英语水平|计算机水平|专业技能|技能特长|自我评价|求职意向|教育背景|工作经历|项目经历|实习经历|培训经历|证书荣誉|个人优势|基本信息|联系方式|兴趣爱好|主修课程|个人简介|获奖情况|英语|法语|日语|德语|韩语|俄语|粤语|普通话|国语|水平|经历|背景|评价|意向|证书|课程|荣誉)/.test(name)) return item;
   return { ...item, candidateName: '', resumeMeta: item.resumeMeta ? { ...item.resumeMeta, candidateName: '' } : item.resumeMeta };
 }
 function escapeHtml(value=''){return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));}
@@ -2920,6 +2921,7 @@ function recordTimestamp(record){const value=record?.updatedAt||record?.createdA
 function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
 async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
 async function migrateStoredResumesOnce(){if(!FORCE_MIGRATION&&localStorage.getItem('acecall-resume-migration-v2'))return;try{const response=await authenticatedFetch(apiUrl('/api/migrate-resumes'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok)throw new Error('存量简历迁移失败');const result=await response.json();localStorage.setItem('acecall-resume-migration-v2',JSON.stringify({migrated:result.migrated||0,failed:result.failed?.length||0,at:new Date().toISOString()}));if(result.migrated){toast(`已修复 ${result.migrated} 份候选人姓名`); await hydrateState();}}catch(error){console.error(error);toast('存量简历迁移未完成，请稍后重试');}}
+async function repairCandidateNamesOnce(){if(!REMOTE_BACKEND||localStorage.getItem('acecall-name-repair-v1'))return;try{const response=await authenticatedFetch(apiUrl('/api/candidates/repair-names'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeoutMs:90000});if(response.status===404)return;const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'姓名修复失败');localStorage.setItem('acecall-name-repair-v1',JSON.stringify({repaired:result.repaired||0,kept:result.kept||0,at:new Date().toISOString()}));if(result.repaired){const data=await requestCases();applyCaseSummaries(data);if(app.view==='candidates'||app.view==='candidate'||app.view==='dashboard')renderCurrent();toast(`已更正 ${result.repaired} 位候选人姓名`);}}catch(error){console.warn('[AceCall name repair]',error);}}
 async function checkService(){if(STATIC_DEMO){$('#serviceStatus').innerHTML='<i></i>在线演示';return;}try{const response=await authenticatedFetch(apiUrl('/api/health'));const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));$('#serviceStatus').innerHTML=`<i></i>${data.mode==='ai'?'DeepSeek AI · CloudBase':'CloudBase演示模式'}`;}catch(error){console.warn('[AceCall service]',error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);} $('#serviceStatus').textContent=error.message||'服务状态未知';}}
 async function authenticatedFetch(url, options = {}) {
   // The login screen is controlled by initializeAuth/signIn only. A rejected

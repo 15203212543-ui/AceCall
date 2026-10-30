@@ -18,6 +18,8 @@ const {
   isPlausibleCandidateName,
   chooseCandidateName
 } = require('./cloudfunctions/acecall-api/resume-text');
+const { proposeNameCandidates, rankNameCandidates } = require('./cloudfunctions/acecall-api/resume-profile');
+const { selectReasonableName } = require('./cloudfunctions/acecall-api/resume-name-review');
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '127.0.0.1';
@@ -155,8 +157,15 @@ async function parseResumeFile(fileName, buffer) {
   if (text.length < 20) throw Object.assign(new Error('未提取到足够文字；如果是扫描版 PDF，请先进行 OCR'), { statusCode: 422 });
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
   const basics = parseResumeBasics(text);
-  basics.candidateName = chooseCandidateName(extractLabeledCandidateName(lines), extractContextualCandidateName(lines), extractNameFromFileName(fileName), basics.candidateName);
-  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, ...basics } };
+  const reviewedName = await selectReasonableName(rankNameCandidates(proposeNameCandidates({
+    labeled: extractLabeledCandidateName(lines),
+    contextual: extractContextualCandidateName(lines),
+    fromFile: extractNameFromFileName(fileName),
+    fromBody: basics.candidateName,
+    fileName
+  })), null);
+  basics.candidateName = reviewedName.candidateName || '';
+  return { text, metadata: { fileName, extension: extension.slice(1).toUpperCase(), characters: text.length, candidateNameSource: reviewedName.candidateNameSource, candidateNameStatus: reviewedName.candidateNameStatus, candidateNameReview: reviewedName.candidateNameReview, ...basics } };
 }
 
 function compactInterviewerReview(payload = {}) {

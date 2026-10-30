@@ -1,8 +1,16 @@
 const { extractPhone, isPlausibleCandidateName } = require('./resume-text');
 
-const CONFIDENCE = { explicit_field: 0.95, context_inference: 0.45, filename_pattern: 0.7, layout_inference: 0.6 };
+const CONFIDENCE = { explicit_field: 0.95, context_inference: 0.45, filename_pattern: 0.7, filename_exact: 0.9, layout_inference: 0.6 };
 
-function proposeNameCandidates({ labeled = '', contextual = '', fromFile = '', fromBody = '' } = {}) {
+function fileNameBasis(fileName = '', name = '') {
+  const base = String(fileName || '').replace(/\.[^.]+$/, '');
+  if (!name || !base) return 'filename_pattern';
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`】\\s*${escaped}\\s+\\d{1,2}\\s*年`).test(base) || base.includes(`${name}的简历`)) return 'filename_exact';
+  return 'filename_pattern';
+}
+
+function proposeNameCandidates({ labeled = '', contextual = '', fromFile = '', fromBody = '', fileName = '' } = {}) {
   const found = [];
   const add = (value, source, basis) => {
     const name = String(value || '').trim();
@@ -11,18 +19,24 @@ function proposeNameCandidates({ labeled = '', contextual = '', fromFile = '', f
   };
   add(labeled, '简历姓名字段', 'explicit_field');
   add(contextual, '联系方式附近文本', 'context_inference');
-  add(fromFile, '文件名', 'filename_pattern');
+  add(fromFile, '文件名', fileNameBasis(fileName, fromFile));
   add(fromBody, '简历正文', 'layout_inference');
   return found.sort((left, right) => right.confidence - left.confidence).slice(0, 3);
 }
 
-function chooseDisplayedName(candidates = []) {
+function rankNameCandidates(candidates = []) {
   const usable = candidates.filter(item => isPlausibleCandidateName(item.value));
-  const filename = usable.find(item => item.confidenceBasis === 'filename_pattern');
-  const ranked = usable.map(item => {
-    if (filename && item.value !== filename.value && item.confidence < 0.9) return { ...item, confidence: Math.min(item.confidence, 0.4) };
+  const exactFile = usable.find(item => item.confidenceBasis === 'filename_exact');
+  const filename = exactFile || usable.find(item => item.confidenceBasis === 'filename_pattern');
+  return usable.map(item => {
+    if (exactFile && item.value !== exactFile.value) return { ...item, confidence: Math.min(item.confidence, 0.4) };
+    if (!exactFile && filename && item.value !== filename.value && item.confidence < 0.9) return { ...item, confidence: Math.min(item.confidence, 0.4) };
     return item;
   }).sort((left, right) => right.confidence - left.confidence);
+}
+
+function chooseDisplayedName(candidates = []) {
+  const ranked = rankNameCandidates(candidates);
   const top = ranked[0];
   if (!top) return { candidateName: '', candidateNameStatus: '待确认', candidateNameSource: '' };
   const second = ranked[1];
@@ -54,4 +68,4 @@ function extractProfileFields(text = '') {
   };
 }
 
-module.exports = { proposeNameCandidates, chooseDisplayedName, extractProfileFields };
+module.exports = { proposeNameCandidates, rankNameCandidates, chooseDisplayedName, extractProfileFields, fileNameBasis };
