@@ -34,6 +34,47 @@ function normalizeOpenMokaJob(job = {}) {
   };
 }
 
+const INTERVIEW_SCOPE_START = '2026-08-01T00:00:00+08:00';
+
+function compactJobTitle(value = '') {
+  return String(value || '').toLowerCase().replace(/[\s\-_/（）()【】[\]：:·,，、]/g, '');
+}
+
+function ownedOpenJobs(openJobs = [], email = '') {
+  const actor = normalizeEmail(email);
+  if (!actor) return [];
+  const seen = new Set();
+  const jobs = [];
+  for (const job of openJobs) {
+    const id = String(job.id || '').trim();
+    const key = mokaIdKey(id);
+    if (!key || seen.has(key) || !(job.emails || []).includes(actor)) continue;
+    seen.add(key);
+    jobs.push({ id, name: String(job.name || '').trim() });
+  }
+  return jobs;
+}
+
+function interviewJobIds(record = {}) {
+  return [record.jobId, record.job_id, record.positionId, record.mokaJobId, record.job?.id, record.position?.id, record.application?.jobId, record.application?.job?.id, record.raw?.jobId, record.raw?.job?.id, record.raw?.positionId, record.raw?.application?.jobId, record.raw?.application?.job?.id];
+}
+
+function interviewBelongsToOwnedJobs(record = {}, jobs = []) {
+  const keys = new Set(jobs.map(job => mokaIdKey(job.id)).filter(Boolean));
+  const ids = interviewJobIds(record).map(mokaIdKey).filter(Boolean);
+  if (ids.some(key => keys.has(key))) return true;
+  if (ids.length) return false;
+  const role = compactJobTitle(record.jobName || record.jobTitle || record.name || '');
+  if (!role) return false;
+  return jobs.filter(job => compactJobTitle(job.name) === role).length === 1;
+}
+
+function interviewOnOrAfterScope(startedAt, floor = INTERVIEW_SCOPE_START) {
+  const time = Date.parse(startedAt || '');
+  if (!Number.isFinite(time)) return true;
+  return time >= Date.parse(floor);
+}
+
 function mokaSyncDue(lastCheckedAt, now = Date.now(), intervalMs = MOKA_JOB_SYNC_INTERVAL_MS) {
   const time = Date.parse(lastCheckedAt || '');
   if (!Number.isFinite(time)) return true;
@@ -93,9 +134,13 @@ function planMokaJobSync({ localJobs = [], openJobs = [], email = '', catalogCom
 }
 
 module.exports = {
+  INTERVIEW_SCOPE_START,
   MOKA_JOB_SYNC_INTERVAL_MS,
   collectMokaEmails,
   normalizeOpenMokaJob,
+  ownedOpenJobs,
+  interviewBelongsToOwnedJobs,
+  interviewOnOrAfterScope,
   mokaSyncDue,
   planMokaJobSync
 };

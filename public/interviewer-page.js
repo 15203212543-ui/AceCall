@@ -276,11 +276,11 @@ function renderInterviewers() {
   const trendMax = Math.max(1, ...monthRows.map(row => row.count));
   const status = app.mokaInterviewStatus || {};
   const diagnostics = app.connectionDiagnostics || {};
-  const jobSyncCount = status.mokaJobStats?.matched ?? status.mokaJobStats?.fallbackMatched;
-  const jobSyncNote = Number.isFinite(jobSyncCount) ? ` · 目标岗位 ${jobSyncCount} 个` : '';
-  const lookbackNote = status.filters?.lookbackDays ? `近 ${status.filters.lookbackDays} 天 · ` : '';
+  const jobCount = status.filters?.jobCount;
+  const jobSyncNote = Number.isFinite(jobCount) ? ` · 在招岗位 ${jobCount} 个` : '';
+  const sinceNote = status.filters?.since ? `${status.filters.since} 起 · ` : '';
   const lastSyncNote = status.fetchedAt ? `，上次同步 ${formatDate(status.fetchedAt)}` : '';
-  const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}${lastSyncNote}` : status.configured ? `${lookbackNote}Moka 只读数据 · 按 13 个目标岗位名称筛选${status.fromCache ? lastSyncNote : ''}` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
+  const dataNote = `${status.loading ? '正在读取 Moka 面试数据' : status.error ? `Moka 读取失败：${status.error}${lastSyncNote}` : status.configured ? `${sinceNote}Moka 只读数据 · 当前账号负责或协助的在招岗位${status.fromCache ? lastSyncNote : ''}` : 'Moka 接口待配置 · 当前仅展示 AceCall 已标记面试官的数据'}${jobSyncNote} · CloudBase 网关：${diagnostics.error || diagnostics.gateway || '未检查'}${status.warnings?.length ? ` · ${status.warnings.join('；')}` : ''}`;
   const diagnosticRow = (label, value, tone = '') => `<div class="connection-diagnostic-row"><span>${escapeHtml(label)}</span><b class="${tone}">${escapeHtml(value || '未检查')}</b></div>`;
   const selectOptions = (values, value, empty) => `<option value="">${empty}</option>${values.map(item => `<option value="${escapeHtml(item)}"${item === value ? ' selected' : ''}>${escapeHtml(item)}</option>`).join('')}`;
   root.innerHTML = `<div class="page research-page interviewer-analysis-page"><div class="page-title"><div><span class="eyebrow">INTERVIEWER ANALYTICS</span><h1>面试官分析</h1><p>以面试官为主语，查看面试工作量、判断结果和提问方式。</p></div><button class="secondary" type="button" data-refresh-interviewer>刷新 Moka 数据</button></div><div class="interviewer-scope"><div><span>当前面试官</span><strong>${escapeHtml(selected || '尚未识别')}</strong></div><p>${dataNote}</p><span class="data-status">不等同于岗位招聘大盘</span></div><div class="interviewer-filters"><select id="interviewerFilter">${selectOptions(interviewers, selected, '全部面试官')}</select><select id="interviewerJobFilter">${selectOptions(jobs, filters.job, '全部岗位')}</select><select id="interviewerRoundFilter">${selectOptions(rounds, filters.round, '全部面试环节')}</select><select id="interviewerPeriodFilter"><option value=""${!filters.period ? ' selected' : ''}>全部时间</option><option value="30"${filters.period === '30' ? ' selected' : ''}>近 30 天</option><option value="90"${filters.period === '90' ? ' selected' : ''}>近 90 天</option><option value="365"${filters.period === '365' ? ' selected' : ''}>近一年</option></select></div><div class="metrics research-metrics interviewer-metrics"><div class="metric"><b>${outcomes.completed || '—'}</b><span>已完成面试</span><small>${selected || '选择面试官'}参与的记录</small></div><div class="metric"><b>${outcomes.passed || '—'}</b><span>面试通过</span><small>明确通过结论</small></div><div class="metric"><b>${outcomes.rejected || '—'}</b><span>面试淘汰</span><small>明确淘汰/不通过结论</small></div><div class="metric"><b>${outcomes.pending || '—'}</b><span>待评价</span><small>尚未形成结果</small></div><div class="metric"><b>${(outcomes.completed || 0) < 5 ? '样本不足' : pct(outcomes.passed, outcomes.completed)}</b><span>面试通过率</span><small>${(outcomes.completed || 0) < 5 ? '少于 5 场不展示比率' : `${outcomes.passed} 人通过`}</small></div><div class="metric"><b>${(outcomes.completed || 0) < 5 ? '样本不足' : pct(outcomes.evaluated, outcomes.completed)}</b><span>评价完成率</span><small>${(outcomes.completed || 0) < 5 ? '少于 5 场不展示比率' : '有明确结论的面试'}</small></div></div><section class="surface interviewer-trend-panel"><div class="surface-head"><div><h2>面试量趋势</h2><p class="surface-subtitle">只统计当前面试官的已完成面试</p></div><span>最近 6 个月</span></div><div class="surface-body interviewer-trend">${monthRows.map(row => `<div><b>${row.count}</b><span class="trend-plot"><i style="height:${row.count ? Math.max(14, Math.round(row.count / trendMax * 132)) : 0}px"></i></span><span>${escapeHtml(row.month)}</span></div>`).join('') || '<div class="empty">暂无带日期的 Moka 面试记录。</div>'}</div></section>
@@ -537,7 +537,7 @@ function cachedRecently(cached, fields) {
 async function loadMokaInterviews(options = {}) {
   if (!runtime.remoteBackend) return;
   const cached = readDeferred('moka');
-  const cacheUsable = !options.force && cached && cached.status?.hireStats;
+  const cacheUsable = !options.force && cached && cached.status?.hireStats && cached.status?.filters?.since === '2026-08-01';
   if (cacheUsable) {
     app.mokaInterviews = Array.isArray(cached.records) ? cached.records : [];
     if (Array.isArray(cached.syncedJobs) && cached.syncedJobs.length) app.jobs = mergeRecords(app.jobs, cached.syncedJobs);
@@ -556,7 +556,10 @@ async function loadMokaInterviews(options = {}) {
     const debugResponse = await authenticatedFetch(apiUrl('/api/debug/status'), { timeoutMs: 8000 });
     const debugData = await debugResponse.json().catch(() => ({}));
     app.connectionDiagnostics = { gateway: debugResponse.ok && debugData.route === 'reachable' ? '正常' : `HTTP ${debugResponse.status}`, checkedAt: debugData.timestamp || new Date().toISOString(), error: debugResponse.ok ? '' : cloudError(debugResponse.status, debugData) };
-    const response = await authenticatedFetch(apiUrl('/api/integrations/moka/interviews'), { timeoutMs: 120000 });
+    const member = app.workspace?.currentMember || {};
+    const user = app.authUser || {};
+    const email = String(member.email || user.email || (/@/.test(member.username || '') ? member.username : '') || (/@/.test(user.username || '') ? user.username : '')).trim();
+    const response = await authenticatedFetch(apiUrl(`/api/integrations/moka/interviews?email=${encodeURIComponent(email)}`), { timeoutMs: 120000 });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(cloudError(response.status, data));
     app.mokaInterviews = Array.isArray(data.records) ? data.records : [];

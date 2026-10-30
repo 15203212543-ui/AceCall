@@ -26,7 +26,7 @@ const { presentCandidateForState, presentCaseSummary, presentCaseDetail, buildLe
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
 const { findDuplicateCandidate, collapseDuplicateCases, resumeIdentity } = require('./candidate-dedupe');
 const { planMokaLinks } = require('./job-moka-link');
-const { normalizeOpenMokaJob, mokaSyncDue, planMokaJobSync } = require('./moka-job-sync');
+const { INTERVIEW_SCOPE_START, normalizeOpenMokaJob, ownedOpenJobs, interviewBelongsToOwnedJobs, interviewOnOrAfterScope, mokaSyncDue, planMokaJobSync } = require('./moka-job-sync');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -161,7 +161,7 @@ const server = http.createServer(async (request, response) => {
       });
     }
     if (request.method === 'GET' && url.pathname === '/api/integrations/moka/interviews') {
-      return sendJson(response, 200, await loadMokaInterviews(await getRequestContext(request)));
+      return sendJson(response, 200, await loadMokaInterviews(await getRequestContext(request), url.searchParams.get('email') || ''));
     }
     if (request.method === 'POST' && url.pathname === '/api/workspace/bootstrap') return sendJson(response, 200, await bootstrapWorkspace(await readJson(request), request));
     if (request.method === 'GET' && url.pathname === '/api/workspace') return sendJson(response, 200, await workspaceSummary(await getRequestContext(request)));
@@ -1030,19 +1030,51 @@ async function fetchMokaFeedbacks(client, fromTime, result) {
   return records;
 }
 
-async function loadMokaInterviews(context) {
+async function resolveInterviewJobScope(context, client, requestedEmail = '') {
+  const email = actorFromMember(context.member, context.uid).email || normalizeEmail(requestedEmail);
+  const empty = { jobs: [], source: 'missing-email', note: '当前账号没有邮箱，无法按负责人匹配面试。' };
+  if (!email) return empty;
+  const db = getDatabase();
+  const tenant = storedRecord(await db.collection(COLLECTIONS.tenants).doc(context.tenantId).get().catch(() => ({ data: null }))) || {};
+  const sync = tenant.mokaJobSync && typeof tenant.mokaJobSync === 'object' ? tenant.mokaJobSync : {};
+  const cached = sync.scopes && typeof sync.scopes === 'object' ? sync.scopes[context.uid] : null;
+  if (cached && Array.isArray(cached.jobs) && !mokaSyncDue(cached.checkedAt)) return { jobs: cached.jobs, source: 'cached', note: '' };
+  const catalog = await listOpenMokaCatalog(client);
+  const jobs = ownedOpenJobs(catalog.jobs, email).slice(0, 200);
+  const hasOwnerEmails = catalog.jobs.some(job => (job.emails || []).length);
+  let note = '';
+  if (!catalog.complete) note = 'Moka 开放岗位没有完整返回，本次面试范围可能不完整。';
+  else if (catalog.jobs.length && !hasOwnerEmails) note = 'Moka 开放岗位没有返回负责人邮箱，无法按账号匹配面试。';
+  else if (!jobs.length) note = '当前账号没有负责或协助的在招岗位。';
+  if (catalog.complete && hasOwnerEmails && context.uid) {
+    try {
+      const scopes = { ...(sync.scopes && typeof sync.scopes === 'object' ? sync.scopes : {}) };
+      scopes[context.uid] = { jobs, checkedAt: new Date().toISOString() };
+      await db.collection(COLLECTIONS.tenants).doc(context.tenantId).update({ mokaJobSync: { ...sync, scopes }, updatedAt: new Date().toISOString() });
+    } catch (error) {
+      console.warn('[AceCall interview job scope]', error?.message || error);
+    }
+  }
+  return { jobs, source: catalog.complete ? 'catalog' : 'partial', note };
+}
+
+async function loadMokaInterviews(context, requestedEmail = '') {
   const status = mokaConnectionStatus();
-  const projectName = String(status.projectName || process.env.MOKA_PROJECT_NAME || 'QS').trim();
   const client = createMokaClient({ timeoutMs: Math.max(3000, Number(process.env.MOKA_REQUEST_TIMEOUT_MS || 8000)) });
-  const targetJobs = client.config.jobNames;
-  const result = { ok: true, source: 'moka', configured: status.configured, filters: { project: '', jobs: targetJobs, interviewer: 'all' }, records: [], fetchedAt: new Date().toISOString(), warnings: [] };
+  const result = { ok: true, source: 'moka', configured: status.configured, filters: { since: '2026-08-01', jobCount: 0, interviewer: 'all' }, records: [], fetchedAt: new Date().toISOString(), warnings: [], syncedJobs: [] };
   if (!status.configured) return result;
-  const syncedJobs = await syncMokaJobs(context, client, targetJobs, result);
-  result.syncedJobs = syncedJobs;
+  const scope = await resolveInterviewJobScope(context, client, requestedEmail);
+  result.filters.jobCount = scope.jobs.length;
+  result.filters.scope = scope.source;
+  if (scope.note) result.warnings.push(scope.note);
+  if (!scope.jobs.length) {
+    result.analytics = buildMokaAnalytics([]);
+    return result;
+  }
   const startedAt = Date.now();
-  const lookbackDays = Math.min(60, Math.max(1, Number(process.env.MOKA_INTERVIEWS_LOOKBACK_DAYS || 60)));
-  result.filters.lookbackDays = lookbackDays;
-  const end = new Date(); const start = new Date(end.getTime() - lookbackDays * 86400000); const records = [];
+  const end = new Date();
+  const start = new Date(INTERVIEW_SCOPE_START);
+  const records = [];
   const windows = [];
   for (let cursor = new Date(start); cursor < end; cursor = new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000))) {
     windows.push([cursor, new Date(Math.min(end.getTime(), cursor.getTime() + 30 * 86400000))]);
@@ -1066,23 +1098,16 @@ async function loadMokaInterviews(context) {
   // application once before filtering so project scope is based on Moka's
   // canonical application object rather than an incomplete interview row.
   const recordsWithApplications = await fetchMokaApplications(records, client, result);
-  const filtered = recordsWithApplications.filter(record => matchesMokaJobNames(record.raw || record, targetJobs));
-  await syncMokaJobsFromRecords(context, recordsWithApplications, targetJobs, result);
-  if (result.mokaJobStats?.fallbackMatched) {
-    result.warnings = (result.warnings || []).filter(message => !String(message).startsWith('Moka 岗位接口未返回可用岗位列表'));
-  }
-  // Interviewer analysis is scoped by the explicit Moka job title allowlist.
-  // AceCall job records and the unavailable Moka department field are not used.
+  const filtered = recordsWithApplications.filter(record => interviewOnOrAfterScope(record.startedAt) && interviewBelongsToOwnedJobs(record, scope.jobs));
   result.projectScopeFallback = false;
   result.scopeDiagnostics = {
-    jobProfiles: 0,
     matched: filtered.length,
     fetched: records.length,
-    targetJobs,
-    matchedJobs: [...new Set(filtered.map(record => mokaRoleText(record.raw || record)).filter(Boolean))],
-    roleSamples: [...new Set(recordsWithApplications.map(record => mokaRoleText(record.raw || record)).filter(Boolean))].slice(0, 20)
+    jobCount: scope.jobs.length,
+    scope: scope.source,
+    matchedJobs: [...new Set(filtered.map(record => record.jobName).filter(Boolean))].slice(0, 20)
   };
-  if (!filtered.length && records.length) result.warnings.push(`目标岗位匹配结果为 0：Moka 返回 ${records.length} 条面试，但没有记录的岗位名称命中配置的 13 个目标岗位。`);
+  if (!filtered.length && records.length) result.warnings.push(`已读取 ${records.length} 条面试，没有落在当前账号的在招岗位里。`);
   const feedbackRecords = await fetchMokaFeedbacks(client, start.toISOString(), result);
   const feedbackByApplication = new Map();
   for (const item of feedbackRecords) {
@@ -1333,7 +1358,12 @@ async function workspaceSummary(context) {
     db.collection(COLLECTIONS.tenants).doc(context.tenantId).get(),
     db.collection(COLLECTIONS.members).where({ tenantId: context.tenantId, status: 'active' }).limit(200).get()
   ]);
-  return { workspace: cleanDocument(tenantResult.data || { id: context.tenantId, name: '公司工作区', status: 'active' }), currentMember: cleanDocument(context.member || { uid: context.uid, tenantId: context.tenantId, role: context.role }), members: (memberResult.data || []).map(cleanDocument) };
+  const workspace = cleanDocument(tenantResult.data || { id: context.tenantId, name: '公司工作区', status: 'active' });
+  if (workspace.mokaJobSync?.scopes) {
+    const { scopes, ...syncState } = workspace.mokaJobSync;
+    workspace.mokaJobSync = syncState;
+  }
+  return { workspace, currentMember: cleanDocument(context.member || { uid: context.uid, tenantId: context.tenantId, role: context.role }), members: (memberResult.data || []).map(cleanDocument) };
 }
 
 async function updateWorkspace(context, input = {}) {
@@ -1711,9 +1741,12 @@ async function syncTenantMokaJobs(context, input = {}) {
   const counts = { created: created.length, updated: updated.length, closed: closed.length, matched: plan.matched };
   const finished = catalog.complete && plan.creates.length <= 100;
   const lastResult = { note: plan.note, counts, catalogComplete: catalog.complete };
+  const hasOwnerEmails = catalog.jobs.some(job => (job.emails || []).length);
   if (finished) {
     try {
-      await db.collection(COLLECTIONS.tenants).doc(context.tenantId).update({ mokaJobSync: { intervalHours: 24, lastCheckedAt: now, lastResult }, updatedAt: now });
+      const scopes = { ...(sync.scopes && typeof sync.scopes === 'object' ? sync.scopes : {}) };
+      if (context.uid && email && hasOwnerEmails) scopes[context.uid] = { jobs: ownedOpenJobs(catalog.jobs, email).slice(0, 200), checkedAt: now };
+      await db.collection(COLLECTIONS.tenants).doc(context.tenantId).update({ mokaJobSync: { intervalHours: 24, lastCheckedAt: now, lastResult, scopes }, updatedAt: now });
     } catch (error) {
       console.warn('[AceCall moka job sync state]', error?.message || error);
     }
