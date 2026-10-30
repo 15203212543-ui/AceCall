@@ -95,13 +95,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (!await initializeAuth()) return;
   bindShell();
   updateUserHeader();
+  restoreCachedRecords();
+  seedJobs();
+  const initialView = location.hash.replace('#', '') || 'dashboard';
+  skipEnteredViewRefresh = true;
+  navigate(initialView);
+  skipEnteredViewRefresh = false;
+  if (!REMOTE_BACKEND) return;
   await hydrateWorkspace();
   // 工作区没准备好（典型是凭据被拒）就不要再打后续接口，否则每个请求都会
   // 以同样的方式失败，用户看到的是一屏互不相关的报错。
   if (workspaceReady === false) return;
-  await hydrateState();
-  seedJobs();
-  navigate(location.hash.replace('#', '') || 'dashboard');
+  updateUserHeader();
+  ensureDeferredViewData(app.view);
+  void refreshEnteredView(app.view);
+  void migrateStoredResumesOnce();
   void reconcilePendingAssignments();
   void checkService();
   void restoreDesktopRecording();
@@ -597,9 +605,96 @@ function navigate(view, updateHash = true) {
   void refreshEnteredView(view);
 }
 
-const CASE_REFRESH_VIEWS = new Set(['dashboard', 'inbox', 'candidates', 'talentMarket', 'recruitmentAnalysis']);
+const CASE_AND_JOB_VIEWS = new Set(['dashboard', 'inbox', 'candidates', 'candidate', 'talentMarket', 'recruitmentAnalysis', 'intelligence']);
 let enteredViewSerial = 0;
 let skipEnteredViewRefresh = false;
+let casesRequest = null;
+let jobsRequest = null;
+let rulesRequest = null;
+
+function viewDataNeeds(view) {
+  if (CASE_AND_JOB_VIEWS.has(view)) return ['cases', 'jobs'];
+  if (view === 'jobs') return ['jobs', 'rules'];
+  if (view === 'settings') return ['workspace'];
+  return [];
+}
+
+function restoreCachedRecords() {
+  if (!REMOTE_BACKEND) return;
+  const cachedCases = readStore(CASES_KEY).filter(isMeaningfulCandidate).map(normalizeCandidateDisplayName).sort(byImported);
+  const cachedJobs = readStore(JOBS_KEY);
+  const cachedRules = readStore(RULES_KEY);
+  if (cachedCases.length) app.cases = cachedCases;
+  if (cachedJobs.length) app.jobs = cachedJobs;
+  if (cachedRules.length) teamRules = cachedRules;
+}
+
+function requestCases() {
+  if (!casesRequest) {
+    casesRequest = authenticatedFetch(apiUrl('/api/cases?detail=summary'), { timeoutMs: 45000 }).then(async response => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      return data;
+    }).finally(() => { casesRequest = null; });
+  }
+  return casesRequest;
+}
+
+function requestJobs() {
+  if (!jobsRequest) {
+    jobsRequest = authenticatedFetch(apiUrl('/api/jobs'), { timeoutMs: 60000 }).then(async response => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      return data;
+    }).finally(() => { jobsRequest = null; });
+  }
+  return jobsRequest;
+}
+
+function requestRules() {
+  if (!rulesRequest) {
+    rulesRequest = authenticatedFetch(apiUrl('/api/rules'), { timeoutMs: 20000 }).then(async response => {
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(cloudError(response.status, data));
+      return data;
+    }).finally(() => { rulesRequest = null; });
+  }
+  return rulesRequest;
+}
+
+function applyCaseSummaries(data) {
+  const previous = new Map(app.cases.map(item => [item.id, item]));
+  const incomingCases = (data.cases || []).filter(isMeaningfulCandidate);
+  if (!incomingCases.length && app.cases.length) throw new Error('云端本次未返回候选人列表，已保留当前数据');
+  app.cases = incomingCases.map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
+  if (data.bodiesIncluded) app.analysisTextsLoaded = true;
+  if (app.remoteState) app.remoteState.cases = app.cases;
+  localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
+}
+
+function applyJobCatalog(data) {
+  app.jobs = data.jobs || [];
+  if (app.remoteState) app.remoteState.jobs = app.jobs;
+  localStorage.setItem(JOBS_KEY, JSON.stringify(app.jobs));
+}
+
+function applyRules(data) {
+  if (!data || !Array.isArray(data.rules)) return;
+  teamRules = data.rules.map(item => item.content).filter(Boolean);
+  localStorage.setItem(RULES_KEY, JSON.stringify(teamRules));
+  if (app.remoteState) app.remoteState.rules = data.rules;
+}
+
+async function refreshWorkspaceSnapshot() {
+  const response = await authenticatedFetch(apiUrl('/api/workspace'));
+  if (!response.ok) return;
+  const workspace = await response.json().catch(() => null);
+  if (!workspace) return;
+  workspace.currentMember = { ...(app.authUser || {}), ...(workspace.currentMember || {}), email: workspace.currentMember?.email || app.authUser?.email || '' };
+  app.workspace = workspace;
+  updateUserHeader();
+}
 
 function retainLoadedCase(previous, incoming) {
   if (!previous) return incoming;
@@ -611,56 +706,29 @@ function retainLoadedCase(previous, incoming) {
 }
 
 async function refreshEnteredView(view) {
-  if (!REMOTE_BACKEND) return;
+  if (!REMOTE_BACKEND || workspaceReady !== true) return;
   const serial = ++enteredViewSerial;
   const stillHere = () => serial === enteredViewSerial && app.view === view;
-  try {
-    if (CASE_REFRESH_VIEWS.has(view)) {
-      const response = await authenticatedFetch(apiUrl('/api/cases?detail=summary'), { timeoutMs: 45000 });
-      if (!stillHere()) return;
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(cloudError(response.status, data));
-      const previous = new Map(app.cases.map(item => [item.id, item]));
-      const incomingCases = (data.cases || []).filter(isMeaningfulCandidate);
-      // A transient empty response must never erase the list already visible to
-      // the user. An actually empty workspace is established by initial state,
-      // not by a later refresh that can be interrupted by a gateway timeout.
-      if (!incomingCases.length && app.cases.length) throw new Error('云端本次未返回候选人列表，已保留当前数据');
-      app.cases = incomingCases.map(item => retainLoadedCase(previous.get(item.id), item)).sort(byImported);
-      if (data.bodiesIncluded) app.analysisTextsLoaded = true;
-      if (app.remoteState) app.remoteState.cases = app.cases;
-      localStorage.setItem(CASES_KEY, JSON.stringify(app.cases.map(caseForCache)));
+  await Promise.all(viewDataNeeds(view).map(async kind => {
+    try {
+      if (kind === 'cases') applyCaseSummaries(await requestCases());
+      else if (kind === 'jobs') applyJobCatalog(await requestJobs());
+      else if (kind === 'rules') applyRules(await requestRules());
+      else if (kind === 'workspace') await refreshWorkspaceSnapshot();
       if (stillHere()) renderCurrent();
-      return;
+    } catch (error) {
+      console.warn('[AceCall view refresh]', kind, error);
     }
-    if (view === 'jobs') {
-      const response = await authenticatedFetch(apiUrl('/api/jobs'), { timeoutMs: 60000 });
-      if (!stillHere()) return;
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(cloudError(response.status, data));
-      app.jobs = data.jobs || [];
-      if (app.remoteState) app.remoteState.jobs = app.jobs;
-      localStorage.setItem(JOBS_KEY, JSON.stringify(app.jobs));
-      if (stillHere()) renderCurrent();
-    }
-  } catch (error) {
-    console.warn('[AceCall view refresh]', error);
-  }
+  }));
 }
 
 function ensureDeferredViewData(view) {
-  if (!REMOTE_BACKEND) return;
-  if (view === 'interviewers') {
-    void loadMokaInterviews();
-    void loadInterviewerLibrary();
-    void loadTranscriptImports();
-    void loadAnalysisTexts();
-  }
-  if (view === 'intelligence') {
-    void loadMokaInterviews();
-    void loadTranscriptImports();
-    void loadAnalysisTexts();
-  }
+  if (!REMOTE_BACKEND || workspaceReady !== true) return;
+  if (view !== 'interviewers' && view !== 'intelligence') return;
+  void loadMokaInterviews({ background: true });
+  void loadTranscriptImports({ background: true });
+  void loadAnalysisTexts(false);
+  if (view === 'interviewers') void loadInterviewerLibrary({ background: true });
 }
 
 function renderCurrent() {
@@ -1530,7 +1598,7 @@ function renderDashboard() {
   $('#dashboardJobFilter').addEventListener('change', filterDashboardJob);
   $$('#dashboardView [data-dashboard-filter-job]').forEach(button => button.addEventListener('click', () => { app.dashboardFilter = 'job'; navigate('candidates'); requestAnimationFrame(() => { $('#candidateJobFilter').value = button.dataset.dashboardFilterJob; filterCandidates(true); }); }));
   $$('#dashboardView [data-dashboard-filter]').forEach(button => button.addEventListener('click', () => openDashboardFilter(button.dataset.dashboardFilter)));
-  $('#dashboardView [data-dashboard-refresh]').addEventListener('click', () => { renderDashboard(); toast('工作台数据已刷新'); });
+  $('#dashboardView [data-dashboard-refresh]').addEventListener('click', async () => { await refreshEnteredView('dashboard'); if (!REMOTE_BACKEND) renderDashboard(); toast('工作台数据已刷新'); });
 }
 
 function filterDashboardJob(event) {
@@ -2759,7 +2827,7 @@ function cloudError(status, body = {}) {
   return ({401:'登录凭证已失效，请重新登录',403:'当前账号没有工作区权限',404:'CloudBase接口不存在',408:'CloudBase请求超时',429:'CloudBase请求过于频繁，正在自动重试',443:'CloudBase网关没有放行这次请求，请稍后重试',500:'CloudBase云函数内部错误',502:'CloudBase网关暂时不可用',503:'CloudBase服务暂时不可用',504:'CloudBase响应超时'}[status] || `CloudBase请求失败（${status}）`);
 }
 async function saveRemote(path,payload,silent=false){try{const response=await authenticatedFetch(apiUrl(path),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,result));return result;}catch(error){console.error(error);if(!silent)toast(`已保存在本机，云端未同步：${error.message||'未知错误'}`);return null;}}
-async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'),{timeoutMs:45000});if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate);const remoteCases=(remote.cases||[]).filter(isMeaningfulCandidate).map(normalizeCandidateDisplayName);const previous=new Map([...cachedCases,...app.cases].map(item=>[item.id,item]));const mergedCases=remoteCases.map(item=>retainLoadedCase(previous.get(item.id),item));app.remoteState={jobs:remote.jobs||[],cases:mergedCases,rules:remote.rules||[]};app.jobs=app.remoteState.jobs.length?app.remoteState.jobs:readStore(JOBS_KEY);app.cases=(mergedCases.length||!cachedCases.length?mergedCases:cachedCases).sort(byImported);teamRules=(app.remoteState.rules.length?app.remoteState.rules.map(item=>item.content).filter(Boolean):readStore(RULES_KEY));app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();skipEnteredViewRefresh=true;}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).map(normalizeCandidateDisplayName).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);if(cachedCases.length)app.cases=cachedCases;if(cachedJobs.length)app.jobs=cachedJobs;if(cachedRules.length)teamRules=cachedRules;app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};toast(`云端读取较慢，已保留当前数据并可稍后自动刷新：${error.message||'服务请求失败'}`);}}
+async function hydrateState(){if(!REMOTE_BACKEND)return;try{let response=await authenticatedFetch(apiUrl('/api/state'),{timeoutMs:45000});if(!response.ok){const body=await response.clone().json().catch(()=>({}));throw new Error(cloudError(response.status,body));}const remote=await response.json();const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate);const remoteCases=(remote.cases||[]).filter(isMeaningfulCandidate).map(normalizeCandidateDisplayName);const previous=new Map([...cachedCases,...app.cases].map(item=>[item.id,item]));const mergedCases=remoteCases.map(item=>retainLoadedCase(previous.get(item.id),item));app.remoteState={jobs:remote.jobs||[],cases:mergedCases,rules:remote.rules||[]};app.jobs=app.remoteState.jobs.length?app.remoteState.jobs:readStore(JOBS_KEY);app.cases=(mergedCases.length||!cachedCases.length?mergedCases:cachedCases).sort(byImported);teamRules=(app.remoteState.rules.length?app.remoteState.rules.map(item=>item.content).filter(Boolean):readStore(RULES_KEY));app.legacyLocalState=null;app.analysisTextsLoaded=false;persistHydratedState();void migrateStoredResumesOnce();}catch(error){console.error(error);if(error.authRequired){$('#loginScreen').classList.remove('hidden');showLoginMessage(error.message||'登录状态已失效，请重新登录',false);return;}const cachedCases=readStore(CASES_KEY).filter(isMeaningfulCandidate).map(normalizeCandidateDisplayName).sort(byImported);const cachedJobs=readStore(JOBS_KEY);const cachedRules=readStore(RULES_KEY);if(cachedCases.length)app.cases=cachedCases;if(cachedJobs.length)app.jobs=cachedJobs;if(cachedRules.length)teamRules=cachedRules;app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};toast(`云端读取较慢，已保留当前数据并可稍后自动刷新：${error.message||'服务请求失败'}`);}}
 function currentWorkspaceId(){return String(app.workspace?.workspace?.id||app.workspace?.workspace?.tenantId||'').trim();}
 function migrationStorageKey(){const tenantId=currentWorkspaceId();return tenantId?`${LOCAL_MIGRATION_KEY_PREFIX}${tenantId}`:'';}
 function caseForCache(item){const copy={...item};['transcript','communicationSummary','report','preparation','resume','resumeRaw','screeningLoading','screeningLoadFailed','resumeLoading','resumeLoadFailed'].forEach(key=>delete copy[key]);if(copy.resumeMeta){copy.resumeMeta={...copy.resumeMeta};delete copy.resumeMeta.originalTempUrl;delete copy.resumeMeta.originalFile;}return copy;}
@@ -2767,7 +2835,7 @@ function persistHydratedState(){localStorage.setItem(JOBS_KEY,JSON.stringify(app
 function mergeScreeningBody(item, body = {}){if(!item||!body)return;if(body.preparation)item.preparation=body.preparation;if(body.transcript)item.transcript=body.transcript;if(body.communicationSummary)item.communicationSummary=body.communicationSummary;if(body.report)item.report=body.report;if(body.consentConfirmed)item.consentConfirmed=true;if(body.callRecording)item.callRecording=body.callRecording;}
 async function loadCandidateScreening(id){const item=app.cases.find(candidate=>candidate.id===id);if(!item||!REMOTE_BACKEND||item.screeningLoading)return;if(!screeningRecordPending(item))return;item.screeningLoading=true;try{const response=await authenticatedFetch(apiUrl(`/api/candidates/${encodeURIComponent(id)}/screening`));if(!response.ok){item.screeningLoadFailed=true;if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();return;}const data=await response.json().catch(()=>({}));mergeScreeningBody(item,data);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();if(legacyTemplatePreparation(item))void regenerateLegacyPreparation(item);}catch(error){item.screeningLoadFailed=true;console.warn('[AceCall candidate screening]',error);if(app.view==='candidate'&&app.candidateId===id)renderCandidateDetail();}finally{item.screeningLoading=false;}}
 let analysisTextsInFlight=null;
-async function loadAnalysisTexts(force=false){if(!REMOTE_BACKEND)return;if(app.analysisTextsLoaded&&!force)return;if(analysisTextsInFlight&&!force)return analysisTextsInFlight;analysisTextsInFlight=(async()=>{const response=await authenticatedFetch(apiUrl('/api/screenings/texts'));if(response.status===404)return;const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));const byId=new Map((data.records||[]).map(record=>[record.candidateId,record]));app.cases.forEach(item=>mergeScreeningBody(item,byId.get(item.id)));app.analysisTextsLoaded=true;if(app.view==='interviewers'){renderInterviewers();renderInterviewerFollowups();}if(app.view==='intelligence')renderIntelligence();})().catch(error=>console.warn('[AceCall screening texts]',error));try{return await analysisTextsInFlight;}finally{analysisTextsInFlight=null;}}
+async function loadAnalysisTexts(force=false){if(!REMOTE_BACKEND)return;const fetchedAt=Number(app.analysisTextsFetchedAt||0);if(!force&&fetchedAt&&Date.now()-fetchedAt<120000)return;if(analysisTextsInFlight)return analysisTextsInFlight;analysisTextsInFlight=(async()=>{const response=await authenticatedFetch(apiUrl('/api/screenings/texts'));if(response.status===404)return;const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(cloudError(response.status,data));const byId=new Map((data.records||[]).map(record=>[record.candidateId,record]));app.cases.forEach(item=>mergeScreeningBody(item,byId.get(item.id)));app.analysisTextsLoaded=true;app.analysisTextsFetchedAt=Date.now();if(app.view==='interviewers'){renderInterviewers();renderInterviewerFollowups();}if(app.view==='intelligence')renderIntelligence();})().catch(error=>console.warn('[AceCall screening texts]',error));try{return await analysisTextsInFlight;}finally{analysisTextsInFlight=null;}}
 function recordTimestamp(record){const value=record?.updatedAt||record?.createdAt||0;const time=Date.parse(value);return Number.isFinite(time)?time:0;}
 function mergeRecords(remoteRecords=[], localRecords=[]){const merged=new Map(remoteRecords.map(record=>[record.id||record._id,record]));for(const record of localRecords){const id=record.id||record._id;if(!id)continue;const existing=merged.get(id);if(!existing||recordTimestamp(record)>recordTimestamp(existing))merged.set(id,record);}return [...merged.values()];}
 async function migrateLegacyLocalState(){const local=app.legacyLocalState||{jobs:[],cases:[],rules:[]};const remote=app.remoteState||{jobs:[],cases:[],rules:[]};let failed=0;for(const job of local.jobs.filter(item=>{const existing=remote.jobs.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/jobs/${job.id}`,job,true))failed++;await sleep(120);}for(const candidate of local.cases.filter(item=>{const existing=remote.cases.find(record=>(record.id||record._id)===(item.id||item._id));return !existing||recordTimestamp(item)>recordTimestamp(existing); })){if(!await saveRemote(`/api/candidates/${candidate.id}`,candidate,true))failed++;await sleep(120);}const remoteRuleContents=new Set(remote.rules.map(item=>item.content).filter(Boolean));for(const content of local.rules.filter(item=>item&&!remoteRuleContents.has(item))){if(!await saveRemote(`/api/rules/${crypto.randomUUID()}`,{content,version:1},true))failed++;await sleep(120);}app.jobs=mergeRecords(remote.jobs,local.jobs);app.cases=mergeRecords(remote.cases,local.cases);teamRules=[...new Set([...remote.rules.map(item=>item.content).filter(Boolean),...local.rules.filter(Boolean)])];app.remoteState={jobs:app.jobs,cases:app.cases,rules:teamRules.map(content=>({content}))};persistHydratedState();if(!failed){const key=migrationStorageKey();if(key)localStorage.setItem(key,'completed');app.legacyLocalState=null;toast('本机旧数据已合并到当前工作区');}else toast(`部分本机数据同步失败，${failed} 条记录可稍后重试`);}
