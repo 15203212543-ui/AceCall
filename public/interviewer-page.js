@@ -528,25 +528,30 @@ function applyMokaHiresToCases(records = []) {
   });
   if (changed && typeof persistCases === 'function') persistCases();
 }
+function cachedRecently(cached, fields) {
+  return fields.some(value => {
+    const time = Date.parse(value || '');
+    return Number.isFinite(time) && Date.now() - time < 120000;
+  });
+}
 async function loadMokaInterviews(options = {}) {
   if (!runtime.remoteBackend) return;
-  if (!options.force) {
-    const cached = readDeferred('moka');
-    if (cached && cached.status?.hireStats) {
-      app.mokaInterviews = Array.isArray(cached.records) ? cached.records : [];
-      if (Array.isArray(cached.syncedJobs) && cached.syncedJobs.length) app.jobs = mergeRecords(app.jobs, cached.syncedJobs);
-      app.mokaAnalytics = cached.analytics || app.mokaAnalytics || null;
-      app.mokaInterviewStatus = { ...(cached.status || {}), loading: false, fromCache: true, error: '' };
-      applyMokaHiresToCases(app.mokaInterviews);
-      syncInterviewTranscripts();
-      return;
-    }
+  const cached = readDeferred('moka');
+  const cacheUsable = !options.force && cached && cached.status?.hireStats;
+  if (cacheUsable) {
+    app.mokaInterviews = Array.isArray(cached.records) ? cached.records : [];
+    if (Array.isArray(cached.syncedJobs) && cached.syncedJobs.length) app.jobs = mergeRecords(app.jobs, cached.syncedJobs);
+    app.mokaAnalytics = cached.analytics || app.mokaAnalytics || null;
+    app.mokaInterviewStatus = { ...(cached.status || {}), loading: false, fromCache: true, error: '' };
+    applyMokaHiresToCases(app.mokaInterviews);
+    syncInterviewTranscripts();
+    if (!options.background || cachedRecently(cached, [cached.savedAt, cached.status?.fetchedAt])) return;
   }
   if (mokaRefreshInFlight) return mokaRefreshInFlight;
   const automatic = options.automatic === true;
   mokaRefreshInFlight = (async () => {
   const previousStatus = app.mokaInterviewStatus || {};
-  app.mokaInterviewStatus = { ...previousStatus, loading: true, error: '' };
+  if (!app.mokaInterviews.length) app.mokaInterviewStatus = { ...previousStatus, loading: true, error: '' };
   try {
     const debugResponse = await authenticatedFetch(apiUrl('/api/debug/status'), { timeoutMs: 8000 });
     const debugData = await debugResponse.json().catch(() => ({}));
@@ -577,9 +582,10 @@ async function loadMokaInterviews(options = {}) {
 }
 async function loadInterviewerLibrary(options = {}) {
   if (!runtime.remoteBackend) return;
-  if (!options.force) {
-    const cached = readDeferred('interviewers');
-    if (cached) { app.interviewerLibrary = Array.isArray(cached.records) ? cached.records : []; return; }
+  const cached = !options.force && readDeferred('interviewers');
+  if (cached) {
+    app.interviewerLibrary = Array.isArray(cached.records) ? cached.records : [];
+    if (!options.background || cachedRecently(cached, [cached.savedAt])) return;
   }
   if (interviewerLibraryInFlight) return interviewerLibraryInFlight;
   interviewerLibraryInFlight = (async () => {
@@ -604,13 +610,11 @@ async function addInterviewerName(name) {
 }
 async function loadTranscriptImports(options = {}) {
   if (!runtime.remoteBackend) return;
-  if (!options.force) {
-    const cached = readDeferred('transcripts');
-    if (cached) {
-      app.transcriptImports = Array.isArray(cached.records) ? cached.records : [];
-      syncInterviewTranscripts();
-      return;
-    }
+  const cached = !options.force && readDeferred('transcripts');
+  if (cached) {
+    app.transcriptImports = Array.isArray(cached.records) ? cached.records : [];
+    syncInterviewTranscripts();
+    if (!options.background || cachedRecently(cached, [cached.savedAt])) return;
   }
   if (transcriptImportsInFlight) return transcriptImportsInFlight;
   transcriptImportsInFlight = (async () => {

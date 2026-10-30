@@ -116,6 +116,7 @@ const server = http.createServer(async (request, response) => {
       '/state': '/api/state',
       '/cases': '/api/cases',
       '/jobs': '/api/jobs',
+      '/rules': '/api/rules',
       '/integrations/moka/status': '/api/integrations/moka/status',
       '/integrations/moka/interviews': '/api/integrations/moka/interviews'
     }[url.pathname];
@@ -212,6 +213,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/migrate-resumes') {
       return sendJson(response, 200, await migrateStoredResumes(await getRequestContext(request)));
     }
+    if (request.method === 'GET' && url.pathname === '/api/rules') return sendJson(response, 200, await listRules(await getRequestContext(request)));
     if (request.method === 'PUT' && url.pathname.startsWith('/api/rules/')) {
       const context = await getRequestContext(request);
       const id = validateId(url.pathname.slice('/api/rules/'.length)); const rule = await readJson(request); const now = new Date().toISOString();
@@ -1469,6 +1471,11 @@ async function loadCaseSummaries(context) {
 async function loadJobCatalog(context) {
   const jobs = await listTenantJobs(context.tenantId);
   return jobs.map(job => ({ ...job, matchingEligible: isAutomaticAssignmentJob(job) }));
+}
+
+async function listRules(context) {
+  const rulesResult = await getDatabase().collection(COLLECTIONS.rules).where({ tenantId: context.tenantId }).orderBy('updatedAt', 'desc').limit(200).get();
+  return { rules: (rulesResult.data || []).map(cleanDocument) };
 }
 
 async function loadState(context) {
