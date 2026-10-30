@@ -37,7 +37,7 @@ const INTELLIGENCE_LEXICON = {
   business: ['机构业务', '资产管理', '做市', '自营交易', '量化交易', '风险管理', '合规', '清算', '产品研发', '销售获客', '客户成功', '招聘运营'],
   city: ['北京', '上海', '深圳', '广州', '杭州', '成都', '南京', '武汉', '苏州', '香港']
 };
-const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null, mokaInterviews: [], mokaInterviewStatus: { configured: false, loading: false }, intelligenceReviewed: {}, intelligenceView: 'company', intelligenceSelected: '', intelligenceQuery: '', intelligenceSource: '', intelligencePeriod: 'all', intelligenceIndustry: '' };
+const app = { cases: REMOTE_BACKEND ? [] : initialLocalState.cases, jobs: REMOTE_BACKEND ? [] : initialLocalState.jobs, view: 'dashboard', candidateId: null, detailTab: 'overview', resumeMeta: null, resumeFile: null, workspace: null, authUser: null, legacyLocalState: REMOTE_BACKEND ? null : initialLocalState, remoteState: null, mokaInterviews: [], mokaInterviewStatus: { configured: false, loading: false }, intelligenceReviewed: {}, intelligenceView: 'company', intelligenceSelected: '', intelligenceQuery: '', intelligenceSource: '', intelligencePeriod: 'all', intelligenceIndustry: '', mokaJobSync: null, mokaJobs: [] };
 app.dashboardFilter = '';
 
 attachInterviewerRuntime({
@@ -111,6 +111,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   void refreshEnteredView(app.view);
   void migrateStoredResumesOnce();
   void reconcilePendingAssignments();
+  void syncMokaOpenJobs(false);
   void checkService();
   void restoreDesktopRecording();
 });
@@ -568,6 +569,7 @@ async function enterWorkspace(username = '', companyName = '') {
   seedJobs();
   navigate(location.hash.replace('#', '') || 'dashboard');
   void reconcilePendingAssignments();
+  void syncMokaOpenJobs(false);
   void checkService();
   void restoreDesktopRecording();
 }
@@ -642,9 +644,11 @@ function requestCases() {
 
 function requestJobs() {
   if (!jobsRequest) {
+    const started = Date.now();
     jobsRequest = authenticatedFetch(apiUrl('/api/jobs'), { timeoutMs: 60000 }).then(async response => {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(cloudError(response.status, data));
+      data._started = started;
       return data;
     }).finally(() => { jobsRequest = null; });
   }
@@ -674,6 +678,8 @@ function applyCaseSummaries(data) {
 }
 
 function applyJobCatalog(data) {
+  if (Number(data?._started) && app.jobsAppliedAt && data._started < app.jobsAppliedAt) return;
+  if (Number(data?._started)) app.jobsAppliedAt = data._started;
   app.jobs = data.jobs || [];
   if (app.remoteState) app.remoteState.jobs = app.jobs;
   localStorage.setItem(JOBS_KEY, JSON.stringify(app.jobs));
@@ -1864,13 +1870,13 @@ function candidateTable(items, title) {
 }
 
 function renderJobs() {
-  $('#jobsView').innerHTML = `<div class="page jobs-page"><div class="page-title"><div><h1>岗位</h1><p>一次维护 JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry).filter(Boolean))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select><select id="jobStatusFilter"><option value="active">在招岗位</option><option value="closed">已关闭岗位</option><option value="">全部岗位</option></select></div><div class="job-board" id="jobBoard"></div></div>`;
+  $('#jobsView').innerHTML = `<div class="page jobs-page"><div class="page-title"><div><h1>岗位</h1><p>一次维护 JD、关键词和初筛规则，后续候选人自动复用。</p></div><button class="primary" data-add-job>＋ 新建岗位</button></div><div class="toolbar"><input id="jobSearch" placeholder="搜索岗位名称、行业或关键词"><select id="jobIndustryFilter"><option value="">全部行业</option>${[...new Set(app.jobs.map(job => job.industry).filter(Boolean))].map(value => `<option>${escapeHtml(value)}</option>`).join('')}</select><select id="jobStatusFilter"><option value="active">在招岗位</option><option value="closed">已关闭岗位</option><option value="">全部岗位</option></select></div>${mokaJobSyncMarkup()}<div class="job-board" id="jobBoard"></div></div>`;
   bindCommonActions($('#jobsView'));
   $('#jobSearch').addEventListener('input', () => filterJobs(true)); $('#jobIndustryFilter').addEventListener('input', () => filterJobs(true)); $('#jobStatusFilter').addEventListener('change', () => filterJobs(true));
   const library = document.createElement('div'); library.className = 'surface rules-library'; library.innerHTML = `<div class="surface-head"><h2>团队规则库</h2><span>共享给团队成员</span></div><div class="surface-body"><div class="rule-add"><input id="teamRuleInput" placeholder="添加常用核验规则"><button class="secondary" id="addTeamRule" type="button">添加规则</button></div><div class="rule-list">${teamRules.map((rule, index) => `<button class="rule-chip" data-use-rule="${index}" type="button">＋ ${escapeHtml(rule)}</button>`).join('') || '<span class="muted-text">还没有共享规则</span>'}</div></div>`; $('#jobsView .page').append(library);
   $('#addTeamRule').addEventListener('click', addTeamRule); $$('#jobsView [data-use-rule]').forEach(button => button.addEventListener('click', () => useTeamRule(Number(button.dataset.useRule))));
+  $('#jobsView [data-sync-moka-jobs]')?.addEventListener('click', () => syncMokaOpenJobs(true));
   filterJobs();
-  void syncMokaJobLinks();
 }
 
 function addTeamRule() { const value = $('#teamRuleInput').value.trim(); if (!value) return toast('请输入规则内容'); if (!teamRules.includes(value)) { teamRules.push(value); const rule = { id: crypto.randomUUID(), content: value, version: 1, createdAt: new Date().toISOString() }; if (REMOTE_BACKEND) saveRemote(`/api/rules/${rule.id}`, rule); } localStorage.setItem(RULES_KEY, JSON.stringify(teamRules)); renderJobs(); toast('规则已加入团队库'); }
@@ -1913,8 +1919,82 @@ async function syncMokaJobLinks() {
   })().catch(error => { mokaLinkSync = null; console.warn('[AceCall moka jobs]', error); });
   return mokaLinkSync;
 }
-function openMokaLinkDialog(id) {
+function mokaJobSyncMarkup() {
+  const sync = app.mokaJobSync || {};
+  const when = sync.lastCheckedAt ? formatDate(sync.lastCheckedAt) : '尚未检测';
+  const counts = sync.counts || {};
+  const result = sync.lastCheckedAt ? `新增 ${counts.created || 0}，更新 ${counts.updated || 0}，停招 ${counts.closed || 0}` : '打开系统后自动检测';
+  const note = sync.note ? ` ${sync.note}` : '';
+  return `<div class="moka-job-sync" id="mokaJobSyncBar"><span>Moka 在招岗位每 24 小时自动检测。上次检测：${escapeHtml(when)}。${escapeHtml(result)}${escapeHtml(note)}</span><button class="secondary" type="button" data-sync-moka-jobs>立即检测</button></div>`;
+}
+function paintMokaJobSyncBar() {
+  const bar = $('#mokaJobSyncBar');
+  if (!bar) return;
+  bar.outerHTML = mokaJobSyncMarkup();
+  $('#jobsView [data-sync-moka-jobs]')?.addEventListener('click', () => syncMokaOpenJobs(true));
+}
+function applyMokaJobSync(data) {
+  if (!data || data.ok === false) return;
+  app.mokaJobSync = { lastCheckedAt: data.lastCheckedAt || '', intervalHours: 24, counts: data.counts || {}, note: data.note || '' };
+  for (const job of data.created || []) {
+    if (!app.jobs.some(item => item.id === job.id)) app.jobs.unshift(job);
+  }
+  for (const patch of data.updated || []) {
+    const job = app.jobs.find(item => item.id === patch.id);
+    if (job) Object.assign(job, patch);
+  }
+  for (const item of data.closed || []) {
+    const job = app.jobs.find(entry => entry.id === item.id);
+    if (job) job.status = 'closed';
+  }
+  if ((data.created || []).length || (data.updated || []).length || (data.closed || []).length) {
+    if (app.remoteState) app.remoteState.jobs = app.jobs;
+    localStorage.setItem(JOBS_KEY, JSON.stringify(app.jobs));
+  }
+}
+let mokaOpenJobSync = null;
+async function syncMokaOpenJobs(force = false) {
+  if (!REMOTE_BACKEND || workspaceReady === false) return null;
+  if (mokaOpenJobSync) return mokaOpenJobSync;
+  const button = $('#jobsView [data-sync-moka-jobs]');
+  if (button) button.disabled = true;
+  mokaOpenJobSync = (async () => {
+    const response = await authenticatedFetch(apiUrl('/api/jobs/moka-sync'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: Boolean(force), email: currentActor().email || '' }), timeoutMs: 120000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Moka 岗位检测失败');
+    applyMokaJobSync(data);
+    if (!data.skipped) {
+      const started = Date.now();
+      const jobResponse = await authenticatedFetch(apiUrl('/api/jobs'), { timeoutMs: 60000 });
+      const jobs = await jobResponse.json().catch(() => ({}));
+      if (jobResponse.ok) { jobs._started = started; applyJobCatalog(jobs); }
+    }
+    if (app.view === 'jobs') { paintMokaJobSyncBar(); if (!data.skipped) filterJobs(); }
+    const counts = data.counts || {};
+    if (force || (!data.skipped && ((counts.created || 0) + (counts.updated || 0) + (counts.closed || 0) > 0))) toast(`${data.note ? `${data.note} ` : ''}新增 ${counts.created || 0}，更新 ${counts.updated || 0}，停招 ${counts.closed || 0}`);
+    return data;
+  })().catch(error => {
+    if (force) toast(error.message || 'Moka 岗位检测失败');
+    console.warn('[AceCall moka job sync]', error);
+    return null;
+  }).finally(() => {
+    mokaOpenJobSync = null;
+    const current = $('#jobsView [data-sync-moka-jobs]');
+    if (current) current.disabled = false;
+  });
+  return mokaOpenJobSync;
+}
+async function openMokaLinkDialog(id) {
   const job = app.jobs.find(item => item.id === id); if (!job) return;
+  if (!(app.mokaJobs || []).length && REMOTE_BACKEND) {
+    try {
+      const response = await authenticatedFetch(apiUrl('/api/integrations/moka/jobs'), { timeoutMs: 60000 });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) app.mokaJobs = data.jobs || [];
+    } catch (error) {
+      console.warn('[AceCall moka jobs]', error);
+    }
+  }
   const used = new Set(app.jobs.filter(item => item.id !== id && item.mokaJobId).map(item => item.mokaJobId));
   const options = app.mokaJobs || [];
   $('#mokaLinkJobId').value = id;

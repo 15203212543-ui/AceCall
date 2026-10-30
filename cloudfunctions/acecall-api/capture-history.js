@@ -49,4 +49,4 @@ function attributeMokaOperator(result, actor, operatorEmail) {
   };
 }
 
-module.exports = { actorFromMember, rememberCapture, attributeMokaOperator, hasResume };
+module.exports = { actorFromMember, rememberCapture, attributeMokaOperator, hasResume, normalizeEmail };
