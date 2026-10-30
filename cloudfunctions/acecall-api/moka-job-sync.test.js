@@ -9,9 +9,11 @@ test('open Moka jobs keep the manager and assistant emails', () => {
     mjCode: 'MJ001',
     description: '负责行情产品',
     jobManager: { email: 'Lead@Example.com' },
-    jobAssistants: [{ email: 'helper@example.com' }, { name: '无邮箱' }]
+    jobHrAssistant: [{ email: 'helper@example.com' }, { name: '无邮箱' }]
   });
   assert.deepEqual(job.emails, ['lead@example.com', 'helper@example.com']);
+  const assistantOnly = normalizeOpenMokaJob({ id: 'hr-job', title: '人力管培', mjCode: 'MJ005759', jobHrAssistant: [{ email: 'Helper@Example.com' }] });
+  assert.deepEqual(ownedOpenJobs([assistantOnly], 'helper@example.com'), [{ id: 'hr-job', name: '人力管培', code: 'MJ005759' }]);
   assert.equal(job.code, 'MJ001');
   assert.equal(job.description, '负责行情产品');
 });
@@ -61,7 +63,8 @@ test('interviews stay with the open jobs owned by the signed-in email after 1 Au
     { id: 'other-job', name: '行情产品经理', emails: ['other@example.com'] },
     { id: 'closed-looking', name: '结算专员', emails: [] }
   ], 'Lead@Example.com');
-  assert.deepEqual(jobs, [{ id: 'aabbccdd-eeff-0011-2233-445566778899', name: '人力管培' }]);
+  assert.deepEqual(jobs, [{ id: 'aabbccdd-eeff-0011-2233-445566778899', name: '人力管培', code: '' }]);
+  assert.equal(interviewBelongsToOwnedJobs({ jobName: '其他叫法', jobs: [{ mjCode: 'MJ005759' }] }, [{ id: 'hr', name: '人力管培', code: 'MJ005759' }]), true);
   assert.equal(interviewBelongsToOwnedJobs({ jobId: 'AABBCCDDEEFF00112233445566778899' }, jobs), true);
   assert.equal(interviewBelongsToOwnedJobs({ jobId: 'other-job', jobName: '人力管培' }, jobs), false);
   assert.equal(interviewBelongsToOwnedJobs({ jobName: '人力管培' }, jobs), true);

@@ -5,7 +5,7 @@ const MOKA_JOB_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function collectMokaEmails(job = {}) {
   const values = [job.jobManagerEmail, job.managerEmail, job.recruiterEmail, job.jobManager, job.recruitmentManager, job.manager, job.recruiter, job.owner];
-  for (const key of ['jobAssistants', 'assistants', 'jobAssistant', 'hiringManagers', 'jobHiringManagers']) {
+  for (const key of ['jobHrAssistant', 'jobAssistants', 'assistants', 'jobAssistant', 'hiringManagers', 'jobHiringManagers']) {
     if (Array.isArray(job[key])) values.push(...job[key]);
   }
   const emails = [];
@@ -50,7 +50,7 @@ function ownedOpenJobs(openJobs = [], email = '') {
     const key = mokaIdKey(id);
     if (!key || seen.has(key) || !(job.emails || []).includes(actor)) continue;
     seen.add(key);
-    jobs.push({ id, name: String(job.name || '').trim() });
+    jobs.push({ id, name: String(job.name || '').trim(), code: String(job.code || '').trim() });
   }
   return jobs;
 }
@@ -59,10 +59,21 @@ function interviewJobIds(record = {}) {
   return [record.jobId, record.job_id, record.positionId, record.mokaJobId, record.job?.id, record.position?.id, record.application?.jobId, record.application?.job?.id, record.raw?.jobId, record.raw?.job?.id, record.raw?.positionId, record.raw?.application?.jobId, record.raw?.application?.job?.id];
 }
 
+function interviewJobCodes(record = {}) {
+  const codes = [];
+  for (const list of [record.jobs, record.raw?.jobs]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) codes.push(typeof item === 'string' ? item : item?.mjCode || item?.code || '');
+  }
+  return codes.map(item => String(item || '').trim().toLowerCase()).filter(Boolean);
+}
+
 function interviewBelongsToOwnedJobs(record = {}, jobs = []) {
   const keys = new Set(jobs.map(job => mokaIdKey(job.id)).filter(Boolean));
   const ids = interviewJobIds(record).map(mokaIdKey).filter(Boolean);
   if (ids.some(key => keys.has(key))) return true;
+  const codes = new Set(jobs.map(job => String(job.code || '').trim().toLowerCase()).filter(Boolean));
+  if (interviewJobCodes(record).some(code => codes.has(code))) return true;
   if (ids.length) return false;
   const role = compactJobTitle(record.jobName || record.jobTitle || record.name || '');
   if (!role) return false;

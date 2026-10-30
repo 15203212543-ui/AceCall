@@ -1038,7 +1038,7 @@ async function resolveInterviewJobScope(context, client, requestedEmail = '') {
   const tenant = storedRecord(await db.collection(COLLECTIONS.tenants).doc(context.tenantId).get().catch(() => ({ data: null }))) || {};
   const sync = tenant.mokaJobSync && typeof tenant.mokaJobSync === 'object' ? tenant.mokaJobSync : {};
   const cached = sync.scopes && typeof sync.scopes === 'object' ? sync.scopes[context.uid] : null;
-  if (cached && Array.isArray(cached.jobs) && !mokaSyncDue(cached.checkedAt)) return { jobs: cached.jobs, source: 'cached', note: '' };
+  if (cached && cached.scopeVersion === 2 && Array.isArray(cached.jobs) && !mokaSyncDue(cached.checkedAt)) return { jobs: cached.jobs, source: 'cached', note: '' };
   const catalog = await listOpenMokaCatalog(client);
   const jobs = ownedOpenJobs(catalog.jobs, email).slice(0, 200);
   const hasOwnerEmails = catalog.jobs.some(job => (job.emails || []).length);
@@ -1049,7 +1049,7 @@ async function resolveInterviewJobScope(context, client, requestedEmail = '') {
   if (catalog.complete && hasOwnerEmails && context.uid) {
     try {
       const scopes = { ...(sync.scopes && typeof sync.scopes === 'object' ? sync.scopes : {}) };
-      scopes[context.uid] = { jobs, checkedAt: new Date().toISOString() };
+      scopes[context.uid] = { jobs, checkedAt: new Date().toISOString(), scopeVersion: 2 };
       await db.collection(COLLECTIONS.tenants).doc(context.tenantId).update({ mokaJobSync: { ...sync, scopes }, updatedAt: new Date().toISOString() });
     } catch (error) {
       console.warn('[AceCall interview job scope]', error?.message || error);
@@ -1745,7 +1745,7 @@ async function syncTenantMokaJobs(context, input = {}) {
   if (finished) {
     try {
       const scopes = { ...(sync.scopes && typeof sync.scopes === 'object' ? sync.scopes : {}) };
-      if (context.uid && email && hasOwnerEmails) scopes[context.uid] = { jobs: ownedOpenJobs(catalog.jobs, email).slice(0, 200), checkedAt: now };
+      if (context.uid && email && hasOwnerEmails) scopes[context.uid] = { jobs: ownedOpenJobs(catalog.jobs, email).slice(0, 200), checkedAt: now, scopeVersion: 2 };
       await db.collection(COLLECTIONS.tenants).doc(context.tenantId).update({ mokaJobSync: { intervalHours: 24, lastCheckedAt: now, lastResult, scopes }, updatedAt: now });
     } catch (error) {
       console.warn('[AceCall moka job sync state]', error?.message || error);
