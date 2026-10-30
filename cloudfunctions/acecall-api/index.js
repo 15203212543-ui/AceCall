@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const tcb = require('@cloudbase/node-sdk');
 const { applicationOutcome, chooseOperatorEmail, createMokaClient, mokaConnectionStatus, screeningFingerprint, screeningWritePlan, syncScreeningComment } = require('./moka-client');
-const { actorFromMember, rememberCapture, attributeMokaOperator } = require('./capture-history');
+const { actorFromMember, rememberCapture, attributeMokaOperator, normalizeEmail } = require('./capture-history');
 const { applyScreeningProfile, dedupeStoredJobs, automaticAssignmentJobs, isAutomaticAssignmentJob } = require('./screening-jobs');
 const { selectMokaFeedbacks, summarizeMokaFeedback } = require('./moka-feedback');
 const { isTranscriptFileName, mergeTranscriptMetadata } = require('./transcript-match');
@@ -25,6 +25,7 @@ const { presentCandidateForState, presentCaseSummary, presentCaseDetail, buildLe
 const { originalResumeCloudPath, originalResumeMeta, retainOriginalResume } = require('./resume-original');
 const { findDuplicateCandidate, collapseDuplicateCases, resumeIdentity } = require('./candidate-dedupe');
 const { planMokaLinks } = require('./job-moka-link');
+const { normalizeOpenMokaJob, mokaSyncDue, planMokaJobSync } = require('./moka-job-sync');
 const {
   normalizeResumeText,
   parseResumeBasics,
@@ -186,6 +187,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/integrations/moka/jobs') {
       await getRequestContext(request);
       return sendJson(response, 200, { jobs: await listMokaJobOptions() });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/jobs/moka-sync') {
+      return sendJson(response, 200, await syncTenantMokaJobs(await getRequestContext(request), await readJson(request)));
     }
     if (request.method === 'POST' && url.pathname === '/api/jobs/moka-links') {
       return sendJson(response, 200, await linkStoredJobsToMoka(await getRequestContext(request)));
@@ -1575,36 +1579,150 @@ async function requestMokaJobPage(client, hireMode, offset) {
     if (!response.ok || !Array.isArray(jobs)) return null;
     return {
       total: Number(response.body.data?.total || jobs.length),
-      jobs: jobs.map(job => ({ id: String(job.id || '').trim(), name: String(job.title || job.name || '').trim(), code: String(job.mjCode || '').trim() })).filter(job => job.id && job.name)
+      jobs: jobs.map(normalizeOpenMokaJob).filter(job => job.id && job.name)
     };
   } catch { return null; }
-}
-
-async function listOpenMokaJobs(client, hireMode) {
-  const first = await requestMokaJobPage(client, hireMode, 0);
-  if (!first?.jobs.length) return [];
-  const jobs = [...first.jobs];
-  const pageSize = first.jobs.length;
-  const offsets = [];
-  for (let offset = pageSize; offset < first.total; offset += pageSize) offsets.push(offset);
-  for (let index = 0; index < offsets.length; index += 8) {
-    const pages = await Promise.all(offsets.slice(index, index + 8).map(offset => requestMokaJobPage(client, hireMode, offset)));
-    for (const page of pages) if (page) jobs.push(...page.jobs);
-  }
-  return jobs;
 }
 
 async function listMokaJobOptions() {
   const client = createMokaClient();
   if (!client.config.baseUrl || !client.config.apiKey) return [];
+  const catalog = await listOpenMokaCatalog(client);
+  return catalog.jobs.map(job => ({ id: job.id, name: job.name, code: job.code }));
+}
+
+async function collectOpenMokaHireMode(client, hireMode) {
+  const first = await requestMokaJobPage(client, hireMode, 0);
+  if (!first) return { complete: false, jobs: [] };
+  if (first.jobs.length >= first.total) return { complete: true, jobs: first.jobs };
+  const jobs = [...first.jobs];
+  const pageSize = first.jobs.length || 100;
+  let complete = true;
+  for (let offset = pageSize; offset < first.total; offset += pageSize * 8) {
+    const offsets = [];
+    for (let cursor = offset; cursor < Math.min(first.total, offset + pageSize * 8); cursor += pageSize) offsets.push(cursor);
+    const pages = await Promise.all(offsets.map(item => requestMokaJobPage(client, hireMode, item)));
+    for (const page of pages) {
+      if (!page) complete = false;
+      else jobs.push(...page.jobs);
+    }
+  }
+  if (jobs.length < first.total) complete = false;
+  return { complete, jobs };
+}
+
+async function listOpenMokaCatalog(client) {
   const collected = [];
-  for (const hireMode of ['social', 'campus']) collected.push(...await listOpenMokaJobs(client, hireMode));
+  let complete = true;
+  for (const hireMode of ['social', 'campus']) {
+    const page = await collectOpenMokaHireMode(client, hireMode);
+    if (!page.complete) complete = false;
+    collected.push(...page.jobs);
+  }
   const seen = new Set();
-  return collected.filter(job => {
-    if (seen.has(job.id)) return false;
-    seen.add(job.id);
-    return true;
-  });
+  return {
+    complete,
+    jobs: collected.filter(job => {
+      if (!job.id || seen.has(job.id)) return false;
+      seen.add(job.id);
+      return true;
+    })
+  };
+}
+
+function publicMokaJobSync(sync = {}, extra = {}) {
+  const lastResult = sync.lastResult && typeof sync.lastResult === 'object' ? sync.lastResult : {};
+  return {
+    ok: true,
+    intervalHours: 24,
+    lastCheckedAt: sync.lastCheckedAt || '',
+    note: lastResult.note || '',
+    counts: lastResult.counts || { created: 0, updated: 0, closed: 0, matched: 0 },
+    ...extra
+  };
+}
+
+async function syncTenantMokaJobs(context, input = {}) {
+  requireRole(context, ['owner', 'admin', 'recruiter']);
+  const db = getDatabase();
+  const tenantResult = await db.collection(COLLECTIONS.tenants).doc(context.tenantId).get().catch(() => ({ data: null }));
+  const tenant = storedRecord(tenantResult) || {};
+  const sync = tenant.mokaJobSync && typeof tenant.mokaJobSync === 'object' ? tenant.mokaJobSync : {};
+  const force = input.force === true;
+  if (!force && !mokaSyncDue(sync.lastCheckedAt)) return publicMokaJobSync(sync, { skipped: true });
+  const client = createMokaClient();
+  if (!client.config.baseUrl || !client.config.apiKey) return publicMokaJobSync(sync, { skipped: true, note: 'Moka 尚未配置' });
+  const catalog = await listOpenMokaCatalog(client);
+  const actor = actorFromMember(context.member, context.uid);
+  const email = actor.email || normalizeEmail(input.email);
+  const localJobs = await listTenantJobs(context.tenantId);
+  const plan = planMokaJobSync({ localJobs, openJobs: catalog.jobs, email, catalogComplete: catalog.complete });
+  const now = new Date().toISOString();
+  const created = [];
+  const updated = [];
+  const closed = [];
+  for (const open of plan.creates.slice(0, 100)) {
+    try {
+      const id = validateId(open.id);
+      const existingResult = await db.collection(COLLECTIONS.jobs).doc(id).get().catch(() => ({ data: null }));
+      const existing = storedRecord(existingResult);
+      if (existing?.tenantId && existing.tenantId !== context.tenantId) continue;
+      if (existing?.tenantId === context.tenantId) {
+        const patch = { name: open.name, mokaJobId: open.id, mokaJobCode: open.code || existing.mokaJobCode || '', status: 'active', syncedFromMokaAt: now, updatedAt: now };
+        if (!String(existing.jd || '').trim() && open.description) patch.jd = open.description;
+        await db.collection(COLLECTIONS.jobs).doc(id).update(patch);
+        updated.push({ id, ...patch });
+        continue;
+      }
+      const job = {
+        id, tenantId: context.tenantId, name: open.name, mokaJobId: open.id, mokaJobCode: open.code || '',
+        jd: open.description || '', status: 'active', source: 'moka', industry: '其他', category: '', location: '',
+        department: open.department || '', keywords: [], rules: '', syncedFromMokaAt: now, createdAt: now, updatedAt: now, createdBy: context.uid
+      };
+      await db.collection(COLLECTIONS.jobs).doc(id).set(persistable(job));
+      created.push({ id, name: job.name, mokaJobId: job.mokaJobId, mokaJobCode: job.mokaJobCode, jd: job.jd, status: 'active', industry: '其他', department: job.department, source: 'moka' });
+    } catch (error) {
+      console.warn('[AceCall moka job create]', error?.message || error);
+    }
+  }
+  for (const change of plan.updates) {
+    if (!change.id) continue;
+    const patch = { ...change.patch, syncedFromMokaAt: now, updatedAt: now };
+    try {
+      await db.collection(COLLECTIONS.jobs).doc(String(change.id)).update(patch);
+      updated.push({ id: change.id, ...patch });
+    } catch (error) {
+      console.warn('[AceCall moka job update]', error?.message || error);
+    }
+  }
+  for (const change of plan.closes) {
+    if (!change.id) continue;
+    try {
+      await db.collection(COLLECTIONS.jobs).doc(String(change.id)).update({ status: 'closed', syncedFromMokaAt: now, updatedAt: now });
+      closed.push({ id: change.id, name: change.name || '' });
+    } catch (error) {
+      console.warn('[AceCall moka job close]', error?.message || error);
+    }
+  }
+  const counts = { created: created.length, updated: updated.length, closed: closed.length, matched: plan.matched };
+  const finished = catalog.complete && plan.creates.length <= 100;
+  const lastResult = { note: plan.note, counts, catalogComplete: catalog.complete };
+  if (finished) {
+    try {
+      await db.collection(COLLECTIONS.tenants).doc(context.tenantId).update({ mokaJobSync: { intervalHours: 24, lastCheckedAt: now, lastResult }, updatedAt: now });
+    } catch (error) {
+      console.warn('[AceCall moka job sync state]', error?.message || error);
+    }
+  }
+  return {
+    ok: true,
+    skipped: false,
+    intervalHours: 24,
+    lastCheckedAt: finished ? now : (sync.lastCheckedAt || ''),
+    note: plan.note,
+    counts,
+    created, updated, closed
+  };
 }
 
 async function linkStoredJobsToMoka(context) {

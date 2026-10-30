@@ -827,6 +827,8 @@ body,.app-main{background:#f3f6fb;color:#142442}
 .jobs-page{display:block;height:auto;padding-top:18px;padding-bottom:45px;box-sizing:border-box}
 .jobs-page>.rules-library{max-height:none;overflow:visible}
 .job-board{display:block}
+.moka-job-sync{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;padding:10px 12px;border:1px solid #e3e2dc;background:#f7f7f4;color:#59656a;font-size:12px}
+.moka-job-sync button{height:30px;padding:0 10px;white-space:nowrap}
 .job-board .job-grid{align-content:start;overflow:visible}
 .job-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:8px 0 0}
 .job-pager button{width:auto;height:28px;padding:0 10px;border:1px solid #d5ddd8;border-radius:4px;background:#fff;color:#35665d;font-size:10px}
